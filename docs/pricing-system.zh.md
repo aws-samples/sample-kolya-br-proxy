@@ -161,7 +161,8 @@ flowchart TD
 
 2. **启动应用**
    ```bash
-   python run_dev.py  # 开发环境
+   cd backend
+   python main.py  # 开发环境（带自动重载）
    # 或
    uvicorn main:app --host 0.0.0.0 --port 8000  # 生产环境
    ```

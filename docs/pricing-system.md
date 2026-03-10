@@ -174,7 +174,8 @@ If model pricing is not found:
 
 2. **Start Application**
    ```bash
-   python run_dev.py  # Development
+   cd backend
+   python main.py  # Development (with auto-reload)
    # or
    uvicorn main:app --host 0.0.0.0 --port 8000  # Production
    ```

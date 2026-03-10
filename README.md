@@ -101,7 +101,8 @@ cp .env.example .env
 uv run alembic upgrade head
 
 # Start development server
-uv run python run_dev.py
+cd backend
+uv run python main.py
 ```
 
 The backend runs at `http://localhost:8000`. Visit `/docs` for Swagger UI.
@@ -170,7 +171,12 @@ kolya-br-proxy/
 │   │   └── services/         # Business logic (Bedrock, OAuth, etc.)
 │   ├── alembic/              # Database migrations
 │   ├── main.py               # Application entry point
-│   └── run_dev.py            # Development server launcher
+│   ├── app/                  # Application code
+│   │   ├── api/              # API endpoints
+│   │   ├── core/             # Core configuration
+│   │   ├── models/           # Database models
+│   │   ├── schemas/          # Pydantic schemas
+│   │   └── services/         # Business logic
 ├── frontend/                 # Vue 3 + Quasar admin dashboard
 │   └── src/
 │       ├── pages/            # Page components
