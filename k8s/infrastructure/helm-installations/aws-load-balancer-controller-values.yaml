@@ -1,0 +1,11 @@
+# AWS Load Balancer Controller Helm Values
+# Generated automatically from Terraform outputs
+
+clusterName: kbr-proxy-eks-kolya
+region: us-west-2
+vpcId: vpc-0690939e876e94d95
+
+serviceAccount:
+  name: aws-load-balancer-controller
+  # Note: Pod Identity Association is managed by Terraform
+  # The IAM role is created in modules/eks-addons

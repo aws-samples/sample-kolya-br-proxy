@@ -1,0 +1,10 @@
+# Karpenter Helm Values
+# Generated automatically from Terraform outputs
+
+serviceAccount:
+  name: karpenter
+
+settings:
+  clusterName: kbr-proxy-eks-kolya
+  clusterEndpoint: https://3D4A3F21F8D5EF478D802ACA536DE8CE.gr7.us-west-2.eks.amazonaws.com
+  interruptionQueue: kbr-proxy-kolya-karpenter

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  namespace: kbp
+data:
+  VITE_API_BASE_URL: "https://${API_DOMAIN}${API_PORT_SUFFIX}"
+  VITE_MICROSOFT_REDIRECT_URI: "https://${FRONTEND_DOMAIN}/auth/microsoft/callback"
+  VITE_COGNITO_REDIRECT_URI: "https://${FRONTEND_DOMAIN}/auth/cognito/callback"
+  NODE_ENV: "production"

@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: kbp
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      nodeSelector:
+        karpenter.sh/nodepool: common-nodepool
+      containers:
+      - name: frontend
+        image: 612674025488.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-frontend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+          name: http
+        envFrom:
+        - configMapRef:
+            name: frontend-config
+        resources:
+          requests:
+            cpu: ${FRONTEND_CPU_REQUEST}
+            memory: ${FRONTEND_MEMORY_REQUEST}
+          limits:
+            cpu: ${FRONTEND_CPU_LIMIT}
+            memory: ${FRONTEND_MEMORY_LIMIT}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2

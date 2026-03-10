@@ -1,0 +1,95 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+backend/.env.*
+frontend/.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*credentials*
+*secret*
+*password*
+aws-credentials
+.aws/credentials
+.aws/config
+
+# Sensitive configuration files
+config/secrets.yaml
+config/secrets.yml
+secrets.yaml
+secrets.yml
+k8s/secrets.yaml
+k8s/application/secrets.yaml
+
+# Generated k8s manifests (generated from templates, contain environment-specific values)
+k8s/ingress-frontend.yaml
+k8s/ingress-api.yaml
+k8s/application/ingress-frontend.yaml
+k8s/application/ingress-api.yaml
+k8s/application/backend-configmap.yaml
+k8s/application/frontend-configmap.yaml
+k8s/application/backend-deployment.yaml
+k8s/application/frontend-deployment.yaml
+k8s/application/hpa-backend.yaml
+k8s/application/hpa-frontend.yaml
+
+# Temporary files
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.backup
+
+# Python and uv
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+uv.lock
+
+# Node.js (if any Node.js components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.gitnexus

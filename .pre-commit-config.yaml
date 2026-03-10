@@ -1,0 +1,117 @@
+repos:
+- repo: https://github.com/antonbabenko/pre-commit-terraform
+  rev: v1.99.0 # Get the latest from: https://github.com/antonbabenko/pre-commit-terraform/releases
+  hooks:
+  - id: terraform_fmt
+  - id: terraform_docs
+    args:
+      - --hook-config=--path-to-file=README.md
+      - --hook-config=--add-to-existing-file=true
+      - --hook-config=--create-file-if-not-exist=true
+  - id: terraform_validate
+    files: ^iac-612674025488-us-west-2/[^/]+\.tf$
+  - id: terraform_tflint
+    args:
+      - --args=--only=terraform_deprecated_interpolation
+      - --args=--only=terraform_deprecated_index
+      - --args=--only=terraform_unused_declarations
+      - --args=--only=terraform_comment_syntax
+      - --args=--only=terraform_documented_outputs
+      - --args=--only=terraform_documented_variables
+      - --args=--only=terraform_typed_variables
+      - --args=--only=terraform_module_pinned_source
+      - --args=--only=terraform_naming_convention
+      - --args=--only=terraform_required_version
+      - --args=--only=terraform_required_providers
+      - --args=--only=terraform_standard_module_structure
+      - --args=--only=terraform_workspace_remote
+
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v4.6.0
+  hooks:
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-yaml
+    args: ['--allow-multiple-documents']
+  - id: check-added-large-files
+    exclude: ^frontend/src/assets/.*\.(gif|png|jpg|jpeg)$
+  - id: check-case-conflict
+  - id: check-merge-conflict
+  - id: check-executables-have-shebangs
+  - id: check-shebang-scripts-are-executable
+
+# Python 代码格式化和检查
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.8.4
+  hooks:
+  - id: ruff
+    args: [--fix]
+    files: ^backend/.*\.py$
+  - id: ruff-format
+    files: ^backend/.*\.py$
+
+# Python 类型检查 (暂时禁用，等项目添加完整类型注解后再启用)
+# - repo: https://github.com/pre-commit/mirrors-mypy
+#   rev: v1.13.0
+#   hooks:
+#   - id: mypy
+#     files: ^backend/.*\.py$
+#     args: [--ignore-missing-imports, --no-strict-optional, --check-untyped-defs]
+
+# Vue/TypeScript/JavaScript 代码检查 (使用本地 eslint)
+- repo: local
+  hooks:
+  - id: eslint
+    name: ESLint
+    entry: bash -c 'cd frontend && npm run lint'
+    language: system
+    files: ^frontend/src/.*\.(vue|ts|js)$
+    pass_filenames: false
+
+# 敏感信息检测
+- repo: https://github.com/Yelp/detect-secrets
+  rev: v1.5.0
+  hooks:
+  - id: detect-secrets
+    args: ['--baseline', '.secrets.baseline']
+    exclude: |
+      (?x)^(
+        .*\.lock$|
+        .*\.tfstate$|
+        .*\.tfstate\.backup$|
+        .*\.terraform/.*$|
+        .*/\.terraform/.*$|
+        uv\.lock$
+      )$
+
+# AWS/敏感信息检测 (本地 hook，使用 uv 环境)
+- repo: local
+  hooks:
+  - id: aws-secrets-check
+    name: AWS Secrets Check
+    entry: bash
+    args:
+      - -c
+      - |
+        # 检查 AWS Access Key ID 格式 (AKIA开头的20位)
+        if grep -r -E "AKIA[0-9A-Z]{16}" --exclude-dir=.git --exclude-dir=.terraform --exclude-dir=.venv --exclude="*.tfstate*" --exclude="uv.lock" --exclude=".env" --exclude=".env.*" .; then
+          echo "❌ AWS Access Key ID detected!"
+          exit 1
+        fi
+
+        # 检查 AWS Secret Access Key 格式 (40位base64字符)
+        if grep -r -E "aws_secret_access_key\s*[:=]\s*['\"][A-Za-z0-9/+=]{40}['\"]" --exclude-dir=.git --exclude-dir=.terraform --exclude-dir=.venv --exclude="*.tfstate*" --exclude="uv.lock" --exclude=".env" --exclude=".env.*" .; then
+          echo "❌ AWS Secret Access Key detected!"
+          exit 1
+        fi
+
+        # 检查其他常见的敏感信息模式
+        if grep -r -E "(password|token|secret)\s*[:=]\s*['\"][^'\"]{12,}['\"]" --exclude-dir=.git --exclude-dir=.terraform --exclude-dir=.venv --exclude="*.tfstate*" --exclude="uv.lock" --exclude-dir=node_modules --exclude=".env" --exclude=".env.*" .; then
+          echo "⚠️  Potential sensitive information detected! Please review."
+          echo "If this is a false positive, you can add it to .secrets.baseline"
+        fi
+
+        echo "✅ No AWS credentials detected"
+    language: system
+    pass_filenames: false
+    always_run: true

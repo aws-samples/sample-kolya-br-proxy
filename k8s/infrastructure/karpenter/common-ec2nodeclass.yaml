@@ -1,0 +1,33 @@
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: common-nodeclass
+spec:
+  role: "${node_iam_role_name}"
+  amiFamily: AL2023
+  amiSelectorTerms:
+    - name: amazon-eks-node-al2023-*
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: ${volume_size}
+        volumeType: gp3
+        iops: 6000
+        encrypted: true
+        deleteOnTermination: true
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: ${subnetSelectorTermsValue}
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: ${subnetSelectorTermsValue}
+  tags:
+    karpenter.sh/discovery: ${subnetSelectorTermsValue}
+    Project: kolya-br-proxy
+    Environment: ${workspace}
+    ManagedBy: karpenter

@@ -1,0 +1,50 @@
+[project]
+name = "kolya-br-proxy"
+version = "0.1.0"
+description = "AI Gateway Proxy infrastructure and application"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pre-commit>=4.3.0",
+    # FastAPI and web framework
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    # Database
+    "sqlalchemy[asyncio]>=2.0.0",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+    # AWS SDK
+    "boto3>=1.34.0",
+    "botocore>=1.34.0",
+    "aioboto3>=13.0.0",
+    "aiobotocore>=2.11.0",
+    # Authentication and security
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=3.2.0,<4.0.0",
+    "python-multipart>=0.0.6",
+    # HTTP client
+    "httpx>=0.25.0",
+    # Background tasks
+    "apscheduler>=3.10.0",
+    # Email
+    "aiosmtplib>=3.0.0",
+    "jinja2>=3.1.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "email-validator>=2.3.0",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "aiosqlite>=0.22.1",
+    "openai>=2.21.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pre-commit>=4.3.0",
+    "detect-secrets>=1.5.0",
+    "gitpython>=3.1.0",
+]
