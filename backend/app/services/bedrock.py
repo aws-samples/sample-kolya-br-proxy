@@ -107,7 +107,7 @@ class BedrockClient:
         base = model_id
         for prefix in cls.INFERENCE_PROFILE_PREFIXES:
             if model_id.startswith(prefix):
-                base = model_id[len(prefix):]
+                base = model_id[len(prefix) :]
                 break
         return base.startswith(cls.ANTHROPIC_BASE_PREFIX)
 
@@ -341,33 +341,39 @@ class BedrockClient:
                         # Converse wants format without the "image/" prefix
                         fmt = media_type.split("/")[-1]  # e.g. "jpeg", "png"
                         raw_bytes = base64.b64decode(source.get("data", ""))
-                        converse_content.append({
-                            "image": {
-                                "format": fmt,
-                                "source": {"bytes": raw_bytes},
+                        converse_content.append(
+                            {
+                                "image": {
+                                    "format": fmt,
+                                    "source": {"bytes": raw_bytes},
+                                }
                             }
-                        })
+                        )
 
                     elif ptype == "tool_use":
-                        converse_content.append({
-                            "toolUse": {
-                                "toolUseId": part_dict.get("id", ""),
-                                "name": part_dict.get("name", ""),
-                                "input": part_dict.get("input", {}),
+                        converse_content.append(
+                            {
+                                "toolUse": {
+                                    "toolUseId": part_dict.get("id", ""),
+                                    "name": part_dict.get("name", ""),
+                                    "input": part_dict.get("input", {}),
+                                }
                             }
-                        })
+                        )
 
                     elif ptype == "tool_result":
                         result_content = []
                         text_val = part_dict.get("content")
                         if text_val:
                             result_content.append({"text": text_val})
-                        converse_content.append({
-                            "toolResult": {
-                                "toolUseId": part_dict.get("tool_use_id", ""),
-                                "content": result_content,
+                        converse_content.append(
+                            {
+                                "toolResult": {
+                                    "toolUseId": part_dict.get("tool_use_id", ""),
+                                    "content": result_content,
+                                }
                             }
-                        })
+                        )
 
             messages.append({"role": msg.role, "content": converse_content})
 
@@ -394,13 +400,15 @@ class BedrockClient:
         if request.tools:
             tool_specs = []
             for t in request.tools:
-                tool_specs.append({
-                    "toolSpec": {
-                        "name": t.name,
-                        "description": t.description,
-                        "inputSchema": {"json": t.input_schema},
+                tool_specs.append(
+                    {
+                        "toolSpec": {
+                            "name": t.name,
+                            "description": t.description,
+                            "inputSchema": {"json": t.input_schema},
+                        }
                     }
-                })
+                )
             tool_config: dict = {"tools": tool_specs}
 
             # tool_choice mapping (already in Anthropic-style dict from translator)
@@ -430,7 +438,9 @@ class BedrockClient:
 
         # --- additional model request fields (pass-through) ---
         if request.additional_model_request_fields:
-            params["additionalModelRequestFields"] = request.additional_model_request_fields
+            params["additionalModelRequestFields"] = (
+                request.additional_model_request_fields
+            )
 
         # --- performance config ---
         if request.performance_config:
@@ -654,7 +664,9 @@ class BedrockClient:
                                 logger.debug(
                                     "Skipping thinking content block in non-streaming response"
                                 )
-                                content_blocks.append(BedrockContentBlock(type="thinking"))
+                                content_blocks.append(
+                                    BedrockContentBlock(type="thinking")
+                                )
 
                         # Usage — Anthropic format uses snake_case
                         usage_data = response_body.get("usage", {})
@@ -798,7 +810,9 @@ class BedrockClient:
                         extra={
                             "model": model_name,
                             "model_id": model_id,
-                            "api": "converse_stream" if use_converse else "invoke_model_stream",
+                            "api": "converse_stream"
+                            if use_converse
+                            else "invoke_model_stream",
                             "attempt": attempt + 1,
                         },
                     )
@@ -808,7 +822,9 @@ class BedrockClient:
                     if use_converse:
                         async for event in response["stream"]:
                             stream_started = True
-                            bedrock_event = self._converse_stream_event_to_bedrock(event)
+                            bedrock_event = self._converse_stream_event_to_bedrock(
+                                event
+                            )
                             if bedrock_event:
                                 yield bedrock_event
                                 event_count += 1

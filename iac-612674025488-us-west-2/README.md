@@ -81,7 +81,6 @@ No resources.
 | <a name="input_enable_global_accelerator"></a> [enable\_global\_accelerator](#input\_enable\_global\_accelerator) | Enable AWS Global Accelerator for reduced latency | `bool` | `false` | no |
 | <a name="input_ga_api_alb_name"></a> [ga\_api\_alb\_name](#input\_ga\_api\_alb\_name) | Name of the API ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
 | <a name="input_ga_frontend_alb_name"></a> [ga\_frontend\_alb\_name](#input\_ga\_frontend\_alb\_name) | Name of the frontend ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
-| <a name="input_inbound_cidrs"></a> [inbound\_cidrs](#input\_inbound\_cidrs) | Comma-separated list of CIDR blocks allowed to access the public subnet | `string` | `"13.248.0.0/22,15.248.0.0/20,52.46.0.0/18,52.82.0.0/22,52.94.0.0/22,52.95.0.0/24,52.119.0.0/22,54.222.0.0/21,54.239.0.0/20,54.240.192.0/22,54.240.199.105/32,70.232.0.0/21,72.21.196.0/24,99.77.0.0/18,99.78.0.0/20,99.82.0.0/18,99.87.0.0/24,104.153.112.0/21,177.72.240.0/21,204.246.160.0/22,205.251.232.0/22,205.251.236.0/22,27.0.0.0/22,51.0.0.0/21"` | no |
 | <a name="input_project_name"></a> [project\_name](#input\_project\_name) | The name of the project | `string` | `"kolya-br-proxy"` | no |
 | <a name="input_project_name_alias"></a> [project\_name\_alias](#input\_project\_name\_alias) | The short name of the project | `string` | `"kbr-proxy"` | no |
 | <a name="input_region"></a> [region](#input\_region) | AWS region | `string` | n/a | yes |
@@ -91,7 +90,6 @@ No resources.
 
 | Name | Description |
 |------|-------------|
-| <a name="output_alb_security_group_id"></a> [alb\_security\_group\_id](#output\_alb\_security\_group\_id) | ID of the ALB security group |
 | <a name="output_cluster_arn"></a> [cluster\_arn](#output\_cluster\_arn) | EKS cluster ARN |
 | <a name="output_cluster_endpoint"></a> [cluster\_endpoint](#output\_cluster\_endpoint) | Endpoint for EKS control plane |
 | <a name="output_cluster_id"></a> [cluster\_id](#output\_cluster\_id) | EKS cluster ID |

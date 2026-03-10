@@ -33,6 +33,7 @@ repos:
   - id: end-of-file-fixer
   - id: check-yaml
     args: ['--allow-multiple-documents']
+    exclude: ^k8s/infrastructure/karpenter/.*\.yaml$  # Exclude Karpenter templates with variables
   - id: check-added-large-files
     exclude: ^frontend/src/assets/.*\.(gif|png|jpg|jpeg)$
   - id: check-case-conflict
@@ -77,11 +78,16 @@ repos:
     exclude: |
       (?x)^(
         .*\.lock$|
+        .*lock\.yaml$|
+        .*lock\.json$|
         .*\.tfstate$|
         .*\.tfstate\.backup$|
         .*\.terraform/.*$|
         .*/\.terraform/.*$|
-        uv\.lock$
+        uv\.lock$|
+        pnpm-lock\.yaml$|
+        package-lock\.json$|
+        yarn\.lock$
       )$
 
 # AWS/敏感信息检测 (本地 hook，使用 uv 环境)

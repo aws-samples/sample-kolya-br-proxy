@@ -722,10 +722,10 @@ run_config_wizard() {
     echo ""
     echo "Please enter your domain names:"
     echo ""
-    
+
     # Ensure stdin is available
     exec < /dev/tty
-    
+
     read -p "Frontend domain (e.g. kbp.kolya.fun): " cfg_frontend_domain
     read -p "API domain (e.g. api.kbp.kolya.fun): " cfg_api_domain
 
@@ -1152,7 +1152,7 @@ deploy_application() {
     # Try to update DNS automatically
     echo ""
     print_header "DNS Configuration"
-    
+
     # Check if domains are in Route53
     print_substep "Checking if domains are managed in Route53..."
     local frontend_zone_id=$(aws route53 list-hosted-zones-by-name --query "HostedZones[?Name=='${frontend_domain#*.}.'].Id" --output text 2>/dev/null | cut -d'/' -f3)
@@ -1162,7 +1162,7 @@ deploy_application() {
         print_success "Domains found in Route53"
         print_info "Frontend zone: $frontend_zone_id"
         print_info "API zone: $api_zone_id"
-        
+
         echo ""
         print_warning "Do you want to automatically update DNS records in Route53?"
         echo "  This will create/update CNAME records:"
@@ -1170,10 +1170,10 @@ deploy_application() {
         echo "    $api_domain      → $api_alb"
         echo ""
         read -p "Update DNS automatically? (yes/no): " update_dns
-        
+
         if [[ "$update_dns" == "yes" ]]; then
             print_substep "Updating DNS records..."
-            
+
             # Update frontend CNAME
             local frontend_change_batch=$(cat <<EOF
 {
@@ -1197,7 +1197,7 @@ EOF
             else
                 print_error "Failed to update frontend DNS record"
             fi
-            
+
             # Update API CNAME
             local api_change_batch=$(cat <<EOF
 {
@@ -1221,7 +1221,7 @@ EOF
             else
                 print_error "Failed to update API DNS record"
             fi
-            
+
             echo ""
             print_success "DNS records updated successfully!"
             print_info "DNS propagation may take a few minutes"
