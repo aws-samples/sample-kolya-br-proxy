@@ -96,3 +96,40 @@ variable "cognito_allowed_email_domains" {
   type        = list(string)
   default     = ["amazon.com"]
 }
+
+# WAF configuration
+variable "enable_waf" {
+  description = "Enable AWS WAF for rate limiting and security protection on ALBs"
+  type        = bool
+  default     = true
+}
+
+variable "waf_frontend_alb_name" {
+  description = "Name of the frontend ALB for WAF association (auto-discovery)"
+  type        = string
+  default     = "kolya-br-proxy-frontend-alb"
+}
+
+variable "waf_api_alb_name" {
+  description = "Name of the API ALB for WAF association (auto-discovery)"
+  type        = string
+  default     = "kolya-br-proxy-api-alb"
+}
+
+variable "waf_rate_limit_global" {
+  description = "WAF global rate limit per IP (requests per 5 minutes)"
+  type        = number
+  default     = 2000
+}
+
+variable "waf_rate_limit_auth" {
+  description = "WAF rate limit per IP for /admin/auth/* (requests per 5 minutes)"
+  type        = number
+  default     = 20
+}
+
+variable "waf_rate_limit_chat" {
+  description = "WAF rate limit per IP for /v1/chat/completions (requests per 5 minutes)"
+  type        = number
+  default     = 300
+}

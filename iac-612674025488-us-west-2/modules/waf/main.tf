@@ -1,0 +1,191 @@
+terraform {
+  required_version = ">= 1.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.0"
+    }
+  }
+}
+
+resource "aws_wafv2_web_acl" "main" {
+  name        = "${var.project_name_alias}-waf-${var.workspace}"
+  description = "WAF WebACL for ${var.project_name_alias} - ${var.workspace}"
+  scope       = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  # Rule 1: Rate limit on /admin/auth/* (lowest priority = evaluated first)
+  rule {
+    name     = "rate-limit-auth"
+    priority = 1
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.rate_limit_auth
+        aggregate_key_type = "IP"
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/admin/auth/"
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name_alias}-rate-limit-auth"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Rule 2: Rate limit on /v1/chat/completions
+  rule {
+    name     = "rate-limit-chat"
+    priority = 2
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.rate_limit_chat
+        aggregate_key_type = "IP"
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/v1/chat/completions"
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "LOWERCASE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name_alias}-rate-limit-chat"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Rule 3: AWS Managed - Common Rule Set (SQLi, XSS, etc.)
+  rule {
+    name     = "aws-managed-common"
+    priority = 3
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name_alias}-aws-managed-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Rule 4: AWS Managed - Known Bad Inputs
+  rule {
+    name     = "aws-managed-known-bad-inputs"
+    priority = 4
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name_alias}-aws-managed-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Rule 5: Global rate limit (highest priority number = evaluated last, catches everything else)
+  rule {
+    name     = "rate-limit-global"
+    priority = 5
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.rate_limit_global
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name_alias}-rate-limit-global"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.project_name_alias}-waf-${var.workspace}"
+    sampled_requests_enabled   = true
+  }
+
+  tags = merge(var.default_tags, {
+    Name = "${var.project_name_alias}-waf-${var.workspace}"
+  })
+}
+
+# Associate WebACL with frontend ALB
+resource "aws_wafv2_web_acl_association" "frontend" {
+  count        = local.frontend_alb_arn != "" ? 1 : 0
+  resource_arn = local.frontend_alb_arn
+  web_acl_arn  = aws_wafv2_web_acl.main.arn
+}
+
+# Associate WebACL with API ALB
+resource "aws_wafv2_web_acl_association" "api" {
+  count        = local.api_alb_arn != "" ? 1 : 0
+  resource_arn = local.api_alb_arn
+  web_acl_arn  = aws_wafv2_web_acl.main.arn
+}

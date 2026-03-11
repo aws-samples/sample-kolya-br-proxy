@@ -152,6 +152,25 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
+### 5. Swagger UI 测试接口
+
+在 DEBUG 模式下（`KBR_DEBUG=true`），后端自动启用以下 API 文档和测试界面：
+
+| 地址 | 说明 |
+|------|------|
+| `http://localhost:8000/docs` | Swagger UI - 交互式 API 测试界面 |
+| `http://localhost:8000/redoc` | ReDoc - API 文档（只读） |
+| `http://localhost:8000/openapi.json` | OpenAPI Schema（JSON 格式） |
+
+**认证方式：**
+
+在 Swagger UI 页面点击右上角 **Authorize** 按钮：
+- **Gateway API**（`/v1/*`）：输入 `Bearer kbr_your_token_here`（API Token）
+- **Admin API**（`/admin/*`）：输入 `Bearer <jwt_token>`（通过 OAuth 登录获取的 JWT Token）
+- **Health API**（`/health/*`）：无需认证，可直接测试
+
+> 注意：Swagger UI 仅在 `KBR_DEBUG=true` 时可用，生产环境默认关闭。
+
 ---
 
 ## 项目结构
@@ -282,6 +301,7 @@ kolya-br-proxy/
 | 文档 | 描述 |
 |------|------|
 | [docs/architecture.md](docs/architecture.md) | 系统架构与流程图 |
+| [docs/security.zh.md](docs/security.zh.md) | CORS 与 CSRF 安全防护设计 |
 | [docs/deployment.md](docs/deployment.md) | 生产部署指南 |
 | [docs/api-reference.md](docs/api-reference.md) | API 端点参考 |
 | [docs/oauth-setup.md](docs/oauth-setup.md) | OAuth 配置说明 |

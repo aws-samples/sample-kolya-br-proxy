@@ -155,6 +155,25 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
+### 5. Swagger UI (API Testing)
+
+When running in debug mode (`KBR_DEBUG=true`), the backend exposes interactive API documentation:
+
+| URL | Description |
+|-----|-------------|
+| `http://localhost:8000/docs` | Swagger UI - Interactive API testing interface |
+| `http://localhost:8000/redoc` | ReDoc - API documentation (read-only) |
+| `http://localhost:8000/openapi.json` | OpenAPI Schema (JSON) |
+
+**Authentication:**
+
+Click the **Authorize** button in the top-right corner of Swagger UI:
+- **Gateway API** (`/v1/*`): Enter `Bearer kbr_your_token_here` (API Token)
+- **Admin API** (`/admin/*`): Enter `Bearer <jwt_token>` (JWT token obtained via OAuth login)
+- **Health API** (`/health/*`): No authentication required
+
+> Note: Swagger UI is only available when `KBR_DEBUG=true`. It is disabled in production by default.
+
 ---
 
 ## Directory Structure
@@ -287,6 +306,7 @@ Start with [Architecture](docs/architecture.md) for the system overview, then dr
 | Document | Description |
 |----------|-------------|
 | **[Architecture](docs/architecture.md)** | System overview, component diagrams, database ER, auth flows, pricing model |
+| **[Security](docs/security.md)** | CORS & CSRF protection design, attack scenarios, defense-in-depth implementation |
 | ↳ [Request Translation](docs/request-translation.md) | How requests are translated between OpenAI, Bedrock, and Anthropic formats |
 | ↳ [API Reference](docs/api-reference.md) | Full endpoint documentation with request/response examples |
 | ↳ [OAuth Setup](docs/oauth-setup.md) | Microsoft and Cognito OAuth configuration |

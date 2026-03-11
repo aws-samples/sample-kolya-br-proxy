@@ -186,3 +186,27 @@ module "global_accelerator" {
   # Tags
   default_tags = local.default_tags
 }
+
+# WAF Module (Optional)
+# NOTE: This module requires ALBs to be created first by Kubernetes ALB Controller
+# Enable this after deploying the Ingress resources
+module "waf" {
+  count  = var.enable_waf ? 1 : 0
+  source = "./modules/waf"
+
+  # Project configuration
+  project_name_alias = var.project_name_alias
+  workspace          = local.workspace
+
+  # ALB auto-discovery (ALBs created by Kubernetes ALB Controller)
+  frontend_alb_name = var.waf_frontend_alb_name
+  api_alb_name      = var.waf_api_alb_name
+
+  # Rate limit thresholds (requests per 5-minute window)
+  rate_limit_global = var.waf_rate_limit_global
+  rate_limit_auth   = var.waf_rate_limit_auth
+  rate_limit_chat   = var.waf_rate_limit_chat
+
+  # Tags
+  default_tags = local.default_tags
+}

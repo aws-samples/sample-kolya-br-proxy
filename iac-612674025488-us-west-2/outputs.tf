@@ -180,3 +180,19 @@ output "cognito_configuration_instructions" {
     "- User Info: ${var.enable_cognito ? module.cognito[0].oauth_userinfo_url : ""}"
   ]) : "Cognito is not enabled. Set enable_cognito=true to enable it."
 }
+
+# WAF Outputs (conditional)
+output "waf_enabled" {
+  description = "Whether WAF is enabled"
+  value       = var.enable_waf
+}
+
+output "waf_web_acl_arn" {
+  description = "ARN of the WAF WebACL"
+  value       = var.enable_waf ? module.waf[0].web_acl_arn : null
+}
+
+output "waf_web_acl_id" {
+  description = "ID of the WAF WebACL"
+  value       = var.enable_waf ? module.waf[0].web_acl_id : null
+}

@@ -60,6 +60,7 @@ No providers.
 | <a name="module_global_accelerator"></a> [global\_accelerator](#module\_global\_accelerator) | ./modules/global-accelerator | n/a |
 | <a name="module_rds_aurora_postgresql"></a> [rds\_aurora\_postgresql](#module\_rds\_aurora\_postgresql) | ./modules/rds-aurora-postgresql | n/a |
 | <a name="module_vpc"></a> [vpc](#module\_vpc) | ./modules/vpc | n/a |
+| <a name="module_waf"></a> [waf](#module\_waf) | ./modules/waf | n/a |
 
 ## Resources
 
@@ -79,12 +80,18 @@ No resources.
 | <a name="input_eks_version"></a> [eks\_version](#input\_eks\_version) | EKS Kubernetes version | `string` | `"1.35"` | no |
 | <a name="input_enable_cognito"></a> [enable\_cognito](#input\_enable\_cognito) | Enable AWS Cognito for user authentication | `bool` | `true` | no |
 | <a name="input_enable_global_accelerator"></a> [enable\_global\_accelerator](#input\_enable\_global\_accelerator) | Enable AWS Global Accelerator for reduced latency | `bool` | `false` | no |
+| <a name="input_enable_waf"></a> [enable\_waf](#input\_enable\_waf) | Enable AWS WAF for rate limiting and security protection on ALBs | `bool` | `true` | no |
 | <a name="input_ga_api_alb_name"></a> [ga\_api\_alb\_name](#input\_ga\_api\_alb\_name) | Name of the API ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
 | <a name="input_ga_frontend_alb_name"></a> [ga\_frontend\_alb\_name](#input\_ga\_frontend\_alb\_name) | Name of the frontend ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
 | <a name="input_project_name"></a> [project\_name](#input\_project\_name) | The name of the project | `string` | `"kolya-br-proxy"` | no |
 | <a name="input_project_name_alias"></a> [project\_name\_alias](#input\_project\_name\_alias) | The short name of the project | `string` | `"kbr-proxy"` | no |
 | <a name="input_region"></a> [region](#input\_region) | AWS region | `string` | n/a | yes |
 | <a name="input_vpc_cidr"></a> [vpc\_cidr](#input\_vpc\_cidr) | CIDR block for VPC | `string` | `"10.1.8.0/22"` | no |
+| <a name="input_waf_api_alb_name"></a> [waf\_api\_alb\_name](#input\_waf\_api\_alb\_name) | Name of the API ALB for WAF association (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
+| <a name="input_waf_frontend_alb_name"></a> [waf\_frontend\_alb\_name](#input\_waf\_frontend\_alb\_name) | Name of the frontend ALB for WAF association (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
+| <a name="input_waf_rate_limit_auth"></a> [waf\_rate\_limit\_auth](#input\_waf\_rate\_limit\_auth) | WAF rate limit per IP for /admin/auth/* (requests per 5 minutes) | `number` | `20` | no |
+| <a name="input_waf_rate_limit_chat"></a> [waf\_rate\_limit\_chat](#input\_waf\_rate\_limit\_chat) | WAF rate limit per IP for /v1/chat/completions (requests per 5 minutes) | `number` | `300` | no |
+| <a name="input_waf_rate_limit_global"></a> [waf\_rate\_limit\_global](#input\_waf\_rate\_limit\_global) | WAF global rate limit per IP (requests per 5 minutes) | `number` | `2000` | no |
 
 ## Outputs
 
@@ -122,4 +129,7 @@ No resources.
 | <a name="output_region"></a> [region](#output\_region) | AWS region |
 | <a name="output_vpc_cidr_block"></a> [vpc\_cidr\_block](#output\_vpc\_cidr\_block) | CIDR block of the VPC |
 | <a name="output_vpc_id"></a> [vpc\_id](#output\_vpc\_id) | ID of the VPC |
+| <a name="output_waf_enabled"></a> [waf\_enabled](#output\_waf\_enabled) | Whether WAF is enabled |
+| <a name="output_waf_web_acl_arn"></a> [waf\_web\_acl\_arn](#output\_waf\_web\_acl\_arn) | ARN of the WAF WebACL |
+| <a name="output_waf_web_acl_id"></a> [waf\_web\_acl\_id](#output\_waf\_web\_acl\_id) | ID of the WAF WebACL |
 <!-- END_TF_DOCS -->
