@@ -19,7 +19,7 @@ Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway tha
 
 ## 1. System Architecture Overview
 
-The system follows a classic three-tier architecture: a Vue 3 frontend served by Nginx, a FastAPI backend running on Uvicorn, and AWS Bedrock as the upstream LLM provider. All components run inside an AWS EKS cluster with PostgreSQL for persistence and optional Redis for token caching.
+The system follows a classic three-tier architecture: a Vue 3 frontend served by Nginx, a FastAPI backend running on Uvicorn, and AWS Bedrock as the upstream LLM provider. All components run inside an AWS EKS cluster with PostgreSQL for persistence, Redis for distributed rate limiting, and External Secrets Operator (ESO) for secrets management.
 
 ```mermaid
 graph LR
@@ -44,7 +44,7 @@ graph LR
 
     subgraph Data_Stores ["Data Stores"]
         PG["Aurora PostgreSQL"]
-        Redis["Redis<br/>(optional cache)"]
+        Redis["Redis Standalone<br/>(distributed rate limiting)"]
     end
 
     subgraph AWS_Services ["AWS Services"]
@@ -59,7 +59,7 @@ graph LR
     Uvicorn --> FastAPI
     FastAPI -->|"InvokeModel /<br/>Converse API"| Bedrock
     FastAPI -->|"SQLAlchemy async"| PG
-    FastAPI -.->|"Token cache"| Redis
+    FastAPI -.->|"Distributed rate limiting"| Redis
 ```
 
 ### Key Design Decisions
@@ -229,6 +229,8 @@ erDiagram
         int prompt_tokens
         int completion_tokens
         int total_tokens
+        int cache_creation_input_tokens "Cache write tokens"
+        int cache_read_input_tokens "Cache read tokens"
         decimal cost_usd "Numeric(10,4)"
         json request_metadata
         datetime created_at
@@ -369,7 +371,7 @@ The `MainLayout.vue` renders a persistent left drawer with these menu items: Das
 
 ## 5. Infrastructure Architecture
 
-Infrastructure is defined in Terraform (`iac-612674025488-us-west-2/`). It provisions a VPC, EKS cluster with Karpenter autoscaling, Aurora PostgreSQL, and optional Global Accelerator.
+Infrastructure is defined in Terraform (`iac-612674025488-us-west-2/`). It provisions a VPC, EKS cluster with Karpenter autoscaling, Aurora PostgreSQL, Redis for distributed rate limiting, and optional Global Accelerator. Secrets are managed via AWS Secrets Manager with External Secrets Operator (ESO) syncing them into Kubernetes.
 
 ```mermaid
 graph TD
@@ -388,11 +390,14 @@ graph TD
                     BackendPod["Backend Pod<br/>(FastAPI + Uvicorn)"]
                 end
                 Aurora["Aurora PostgreSQL<br/>(RDS Module)<br/>(private, no external access)"]
+                Redis_Pod["Redis Standalone<br/>(kbp namespace)"]
+                ESO["External Secrets<br/>Operator (ESO)"]
             end
         end
 
         ECR["ECR<br/>(Container Registry)"]
         Bedrock["AWS Bedrock"]
+        SecretsManager["AWS Secrets Manager"]
         GA["Global Accelerator<br/>(optional)"]
     end
 
@@ -403,10 +408,39 @@ graph TD
     ALB --> BackendPod
     BackendPod -->|"Via NAT"| Bedrock
     BackendPod --> Aurora
+    BackendPod -.->|"Rate limiting"| Redis_Pod
+    ESO -->|"Sync secrets<br/>(refreshInterval: 1h)"| SecretsManager
     Karpenter --> Private_Subnets
     LBC -.->|"Creates & manages"| ALB
     ECR -.->|"Pull images"| EKS
 ```
+
+### Secrets Management (ESO + AWS Secrets Manager)
+
+Secrets are stored in **AWS Secrets Manager** and automatically synced to Kubernetes Secrets by the **External Secrets Operator (ESO)**. This replaces local `secrets.yaml` files and ensures secrets never exist in version control.
+
+| Component | Role |
+|---|---|
+| AWS Secrets Manager | Single source of truth for all secrets (DB credentials, JWT keys, OAuth client secrets, etc.) |
+| External Secrets Operator (ESO) | Runs in-cluster, watches `ExternalSecret` CRDs, and syncs secrets from AWS Secrets Manager to K8s Secrets |
+| Pod Identity | ESO authenticates to AWS Secrets Manager via EKS Pod Identity (no static AWS credentials) |
+| `deploy-all.sh` | Pushes secrets to AWS Secrets Manager via `aws secretsmanager put-secret-value` during deployment |
+
+**Sync behavior:**
+- `refreshInterval: 1h` -- ESO re-fetches secrets from Secrets Manager every hour
+- Secrets are created as standard Kubernetes Secrets, consumed by Pods via `envFrom` or `env` references
+- Secret rotation in AWS Secrets Manager is automatically picked up within the refresh interval
+
+### Redis for Distributed Rate Limiting
+
+A **Redis standalone** instance runs in the `kbp` (kolya-br-proxy) namespace to provide distributed rate limiting across all backend Pods.
+
+| Aspect | Details |
+|---|---|
+| Deployment | Redis standalone in `kbp` namespace (Kubernetes Deployment + Service) |
+| Purpose | Global token bucket rate limiting via atomic Lua scripts |
+| Fallback | If Redis is unavailable, each Pod falls back to a local in-memory `LocalTokenBucket` (per-Pod rate limiting, not skip) |
+| Access | Backend Pods connect via Kubernetes Service DNS (`redis.kbp.svc.cluster.local`) |
 
 ### Terraform Modules
 
@@ -611,15 +645,17 @@ Cost is calculated per request based on actual AWS Bedrock pricing for each mode
 
 ```mermaid
 graph TD
-    A["API Response received<br/>with token counts"] --> B["Extract model name<br/>+ prompt_tokens + completion_tokens"]
+    A["API Response received<br/>with token counts"] --> B["Extract model, prompt_tokens,<br/>completion_tokens,<br/>cache_creation_input_tokens,<br/>cache_read_input_tokens"]
     B --> C{"Model in<br/>PRICING table?"}
     C -->|"Yes"| D["Get model-specific<br/>(input_rate, output_rate)"]
     C -->|"No"| E["Fallback: Claude 3.5<br/>Sonnet pricing"]
-    D --> F["cost = prompt_tokens * input_rate<br/>+ completion_tokens * output_rate"]
+    D --> F["cost = prompt_tokens × input_rate<br/>+ completion_tokens × output_rate<br/>+ cache_write_tokens × input_rate × 1.25<br/>+ cache_read_tokens × input_rate × 0.1"]
     E --> F
-    F --> G["INSERT UsageRecord<br/>(cost_usd, tokens, model)"]
+    F --> G["INSERT UsageRecord<br/>(cost_usd, tokens, cache tokens, model)"]
     G --> H["Token quota check on<br/>next request:<br/>SUM(cost_usd) vs quota_usd"]
 ```
+
+> **Prompt Cache Pricing**: When prompt caching is enabled, cache write tokens are charged at 1.25x and cache read tokens at 0.1x the base input price. See [Dynamic Pricing System](pricing-system.md#prompt-cache-differentiated-pricing) for details.
 
 ### 8.2 Supported Model Pricing
 
@@ -666,6 +702,7 @@ Displayed costs are estimates based on token usage. Actual AWS billing may diffe
 | Document | Description |
 |---|---|
 | [Request Translation](request-translation.md) | Full request/response translation pipeline (OpenAI → Bedrock → Anthropic) |
+| [Dynamic Pricing System](pricing-system.md) | Price fetching, cache-aware cost calculation, and pricing table display |
 | [API Reference](api-reference.md) | Complete endpoint documentation with request/response examples |
 | [OAuth Setup](oauth-setup.md) | Microsoft and Cognito OAuth configuration |
 | [Deployment](deployment.md) | Production and non-production deployment guide |

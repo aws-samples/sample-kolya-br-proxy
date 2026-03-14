@@ -287,6 +287,7 @@ class RequestTranslator:
             prompt_variables=request.bedrock_prompt_variables,
             additional_model_response_field_paths=request.bedrock_additional_model_response_field_paths,
             request_metadata=request.bedrock_request_metadata,
+            auto_cache=request.bedrock_auto_cache,
         )
 
         # Debug logging
@@ -413,11 +414,23 @@ class ResponseTranslator:
         )
 
         # Create usage info
+        from app.schemas.openai import PromptTokensDetails
+
+        cache_creation = bedrock_response.usage.cache_creation_input_tokens or 0
+        cache_read = bedrock_response.usage.cache_read_input_tokens or 0
+        prompt_tokens_details = None
+        if cache_creation or cache_read:
+            prompt_tokens_details = PromptTokensDetails(
+                cached_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
+            )
+
         usage = UsageInfo(
             prompt_tokens=bedrock_response.usage.input_tokens,
             completion_tokens=bedrock_response.usage.output_tokens,
             total_tokens=bedrock_response.usage.input_tokens
             + bedrock_response.usage.output_tokens,
+            prompt_tokens_details=prompt_tokens_details,
         )
 
         # Build OpenAI response
@@ -486,6 +499,8 @@ class ResponseTranslator:
         model: str,
         prompt_tokens: int,
         completion_tokens: int,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
     ) -> str:
         """
         Create a final streaming chunk with usage information.
@@ -494,13 +509,22 @@ class ResponseTranslator:
         """
         from app.schemas.openai import (
             ChatCompletionStreamResponse,
+            PromptTokensDetails,
             UsageInfo,
         )
+
+        prompt_tokens_details = None
+        if cache_creation_input_tokens or cache_read_input_tokens:
+            prompt_tokens_details = PromptTokensDetails(
+                cached_tokens=cache_read_input_tokens,
+                cache_creation_tokens=cache_creation_input_tokens,
+            )
 
         usage = UsageInfo(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=prompt_tokens + completion_tokens,
+            prompt_tokens_details=prompt_tokens_details,
         )
 
         chunk = ChatCompletionStreamResponse(

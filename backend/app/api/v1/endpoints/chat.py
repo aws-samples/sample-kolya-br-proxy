@@ -134,6 +134,12 @@ async def create_chat_completion(
                     logger.warning(
                         f"Failed to parse X-Bedrock-Response-Field-Paths as JSON: {e}"
                     )
+            elif header_lower == "x-bedrock-auto-cache":
+                request_data.bedrock_auto_cache = header_value.lower() in (
+                    "true",
+                    "1",
+                    "yes",
+                )
             elif header_lower == "x-bedrock-request-metadata":
                 try:
                     parsed_value = json.loads(header_value)
@@ -219,6 +225,7 @@ async def create_chat_completion(
                     token=token,
                     db=db,
                     start_time=start_time,
+                    http_request=http_request,
                 ),
                 media_type="text/event-stream",
             )
@@ -233,6 +240,10 @@ async def create_chat_completion(
             bedrock_response, request_data.model, request_id
         )
 
+        # Extract cache token counts from bedrock response
+        cache_creation_tokens = bedrock_response.usage.cache_creation_input_tokens or 0
+        cache_read_tokens = bedrock_response.usage.cache_read_input_tokens or 0
+
         # Record usage asynchronously (don't block response)
         background_tasks.create_task(
             record_usage(
@@ -242,19 +253,24 @@ async def create_chat_completion(
                 request_id=request_id,
                 prompt_tokens=openai_response.usage.prompt_tokens,
                 completion_tokens=openai_response.usage.completion_tokens,
+                cache_creation_input_tokens=cache_creation_tokens,
+                cache_read_input_tokens=cache_read_tokens,
             ),
             task_name=f"record_usage_{request_id}",
         )
 
         duration = time.time() - start_time
+        cache_info = ""
+        if cache_creation_tokens:
+            cache_info += f", cache_write={cache_creation_tokens}"
+        if cache_read_tokens:
+            cache_info += f", cache_read={cache_read_tokens}"
         logger.info(
-            "Chat completion successful",
-            extra={
-                "request_id": request_id,
-                "duration_seconds": round(duration, 3),
-                "prompt_tokens": openai_response.usage.prompt_tokens,
-                "completion_tokens": openai_response.usage.completion_tokens,
-            },
+            f"Chat completion successful: request_id={request_id}, "
+            f"duration={round(duration, 3)}s, "
+            f"prompt={openai_response.usage.prompt_tokens}, "
+            f"completion={openai_response.usage.completion_tokens}"
+            f"{cache_info}"
         )
 
         return openai_response
@@ -291,6 +307,7 @@ async def stream_chat_completion(
     token: APIToken,
     db: AsyncSession,
     start_time: float,
+    http_request: Request = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream chat completion responses with heartbeat to keep connection alive.
@@ -303,6 +320,7 @@ async def stream_chat_completion(
         token: API token
         db: Database session
         start_time: Request start time
+        http_request: Original HTTP request (for disconnect detection)
 
     Yields:
         SSE formatted response chunks
@@ -312,7 +330,10 @@ async def stream_chat_completion(
     settings = get_settings()
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cache_creation_tokens = 0
+    total_cache_read_tokens = 0
     last_heartbeat = time.time()
+    client_disconnected = False
 
     # Track tool use state for streaming
     tool_use_blocks = {}  # {index: {"id": ..., "name": ..., "input": ""}}
@@ -320,8 +341,18 @@ async def stream_chat_completion(
 
     try:
         async for event in bedrock_client.invoke_stream(model, bedrock_request):
-            # Send heartbeat comment if no data for a while (keeps connection alive)
+            # Check client disconnect (throttled to avoid overhead on every chunk)
             current_time = time.time()
+            if http_request and current_time - last_heartbeat > 1.0:
+                if await http_request.is_disconnected():
+                    client_disconnected = True
+                    logger.info(
+                        "Client disconnected, stopping Bedrock stream",
+                        extra={"request_id": request_id},
+                    )
+                    break
+
+            # Send heartbeat comment if no data for a while (keeps connection alive)
             if current_time - last_heartbeat > settings.STREAM_HEARTBEAT_INTERVAL:
                 try:
                     yield ": heartbeat\n\n"
@@ -338,6 +369,10 @@ async def stream_chat_completion(
                 # Anthropic InvokeModel streams input_tokens in message_start
                 if event.usage:
                     total_input_tokens = event.usage.input_tokens or 0
+                    total_cache_creation_tokens = (
+                        event.usage.cache_creation_input_tokens or 0
+                    )
+                    total_cache_read_tokens = event.usage.cache_read_input_tokens or 0
 
             elif event.type == "content_block_start":
                 # Track content block start
@@ -432,18 +467,21 @@ async def stream_chat_completion(
                 )
                 yield chunk
 
-        # Send usage chunk before done marker (OpenAI spec)
-        yield ResponseTranslator.create_stream_usage_chunk(
-            request_id=request_id,
-            model=model,
-            prompt_tokens=total_input_tokens,
-            completion_tokens=total_output_tokens,
-        )
+        if not client_disconnected:
+            # Send usage chunk before done marker (OpenAI spec)
+            yield ResponseTranslator.create_stream_usage_chunk(
+                request_id=request_id,
+                model=model,
+                prompt_tokens=total_input_tokens,
+                completion_tokens=total_output_tokens,
+                cache_creation_input_tokens=total_cache_creation_tokens,
+                cache_read_input_tokens=total_cache_read_tokens,
+            )
 
-        # Send done marker
-        yield ResponseTranslator.create_stream_done()
+            # Send done marker
+            yield ResponseTranslator.create_stream_done()
 
-        # Record usage asynchronously (don't block stream)
+        # Record usage for tokens already consumed (even if client disconnected)
         background_tasks.create_task(
             record_usage(
                 token_id=token.id,
@@ -452,19 +490,27 @@ async def stream_chat_completion(
                 request_id=request_id,
                 prompt_tokens=total_input_tokens,
                 completion_tokens=total_output_tokens,
+                cache_creation_input_tokens=total_cache_creation_tokens,
+                cache_read_input_tokens=total_cache_read_tokens,
             ),
             task_name=f"record_usage_{request_id}",
         )
 
         duration = time.time() - start_time
+        cache_info = ""
+        if total_cache_creation_tokens:
+            cache_info += f", cache_write={total_cache_creation_tokens}"
+        if total_cache_read_tokens:
+            cache_info += f", cache_read={total_cache_read_tokens}"
+        status = (
+            "aborted (client disconnected)" if client_disconnected else "successful"
+        )
         logger.info(
-            "Streaming chat completion successful",
-            extra={
-                "request_id": request_id,
-                "duration_seconds": round(duration, 3),
-                "prompt_tokens": total_input_tokens,
-                "completion_tokens": total_output_tokens,
-            },
+            f"Streaming chat completion {status}: request_id={request_id}, "
+            f"duration={round(duration, 3)}s, "
+            f"prompt={total_input_tokens}, "
+            f"completion={total_output_tokens}"
+            f"{cache_info}"
         )
 
     except Exception as e:
@@ -490,6 +536,8 @@ async def record_usage(
     request_id: str,
     prompt_tokens: int,
     completion_tokens: int,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
 ):
     """
     Record usage to database.
@@ -499,8 +547,10 @@ async def record_usage(
         user_id: User ID
         model: Model name
         request_id: Request ID
-        prompt_tokens: Number of prompt tokens
+        prompt_tokens: Number of prompt tokens (excludes cache tokens)
         completion_tokens: Number of completion tokens
+        cache_creation_input_tokens: Tokens written to prompt cache
+        cache_read_input_tokens: Tokens read from prompt cache
     """
     # Create new db session for background task
     async for db in get_db():
@@ -511,6 +561,8 @@ async def record_usage(
                 model=model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
             )
 
             # Create usage record
@@ -521,6 +573,8 @@ async def record_usage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
                 cost_usd=cost_usd,
                 request_id=request_id,
             )

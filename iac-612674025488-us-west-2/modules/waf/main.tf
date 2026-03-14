@@ -97,6 +97,11 @@ resource "aws_wafv2_web_acl" "main" {
   }
 
   # Rule 3: AWS Managed - Common Rule Set (SQLi, XSS, etc.)
+  # Certain rules are excluded for /v1/chat/completions because:
+  # - SizeRestrictions_BODY: Agent requests with tools + conversation history exceed 8KB
+  # - CrossSiteScripting_BODY: Code snippets in messages trigger XSS false positives
+  # - NoUserAgent_HEADER: Some SDK clients don't send User-Agent
+  # The API path is already protected by Bearer token auth + per-IP rate limiting.
   rule {
     name     = "aws-managed-common"
     priority = 3
@@ -109,6 +114,27 @@ resource "aws_wafv2_web_acl" "main" {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
         vendor_name = "AWS"
+
+        rule_action_override {
+          name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "CrossSiteScripting_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "NoUserAgent_HEADER"
+          action_to_use {
+            count {}
+          }
+        }
       }
     }
 

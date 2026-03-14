@@ -677,6 +677,7 @@ run_config_wizard() {
     local cfg_rds_endpoint=""
     local cfg_rds_database=""
     local cfg_rds_port="5432"
+    local cfg_secrets_manager_name=""
     local terraform_available=false
 
     if [[ -d "$IAC_DIR" ]]; then
@@ -687,12 +688,14 @@ run_config_wizard() {
             cfg_rds_endpoint=$(terraform output -raw rds_cluster_endpoint 2>/dev/null || echo "")
             cfg_rds_database=$(terraform output -raw rds_cluster_database_name 2>/dev/null || echo "")
             cfg_rds_port=$(terraform output -raw rds_cluster_port 2>/dev/null || echo "5432")
+            cfg_secrets_manager_name=$(terraform output -raw backend_secrets_manager_name 2>/dev/null || echo "")
 
             print_success "Retrieved from Terraform:"
             echo "  AWS Region: $cfg_region"
             [[ -n "$cfg_rds_endpoint" ]] && echo "  RDS Endpoint: $cfg_rds_endpoint"
             [[ -n "$cfg_rds_database" ]] && echo "  RDS Database: $cfg_rds_database"
             [[ -n "$cfg_rds_port" ]] && echo "  RDS Port: $cfg_rds_port"
+            [[ -n "$cfg_secrets_manager_name" ]] && echo "  Secrets Manager: $cfg_secrets_manager_name"
         fi
     fi
 
@@ -703,6 +706,7 @@ run_config_wizard() {
         read -p "RDS Database: " cfg_rds_database
         read -p "RDS Port [5432]: " cfg_rds_port
         cfg_rds_port="${cfg_rds_port:-5432}"
+        read -p "Secrets Manager Secret Name: " cfg_secrets_manager_name
     fi
 
     # --- AWS Account ID ---
@@ -862,7 +866,7 @@ run_config_wizard() {
     echo ""
     print_substep "ACM certificate configuration"
     echo "Listing certificates..."
-    aws acm list-certificates --region "${cfg_region}" --output table 2>/dev/null || true
+    aws acm list-certificates --region "${cfg_region}" --output table --no-cli-pager 2>/dev/null || true
     echo ""
     read -p "Frontend ACM Certificate ARN: " cfg_frontend_cert_arn
     read -p "API ACM Certificate ARN: " cfg_api_cert_arn
@@ -933,7 +937,7 @@ run_config_wizard() {
     echo "  Environment: $DEPLOY_ENV"
     echo ""
     print_warning "The following files will be generated:"
-    echo "  - application/secrets.yaml (contains sensitive data)"
+    echo "  - Secrets → AWS Secrets Manager (via ESO)"
     echo "  - application/backend-configmap.yaml"
     echo "  - application/frontend-configmap.yaml"
     echo "  - application/backend-deployment.yaml ($DEPLOY_ENV resources)"
@@ -949,46 +953,52 @@ run_config_wizard() {
         exit 1
     fi
 
-    # --- Generate secrets.yaml ---
-    print_substep "Generating secrets.yaml..."
-    cat > "$app_dir/secrets.yaml" << SECRETS_EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: backend-secrets
-  namespace: kbp
-type: Opaque
-stringData:
-  # Database connection
-  database-url: "${cfg_database_url}"
+    # --- Push secrets to AWS Secrets Manager ---
+    print_substep "Pushing secrets to AWS Secrets Manager..."
+    local secret_name="${cfg_secrets_manager_name}"
+    if [[ -z "$secret_name" ]]; then
+        print_error "Secrets Manager name not found. Run 'terraform apply' (Step 1) first."
+        exit 1
+    fi
+    local secret_json
+    secret_json=$(jq -n \
+      --arg db_url "$cfg_database_url" \
+      --arg jwt "$cfg_jwt_secret" \
+      --arg ms_client_id "$cfg_ms_client_id" \
+      --arg ms_client_secret "$cfg_ms_client_secret" \
+      --arg ms_tenant_id "$cfg_ms_tenant_id" \
+      --arg cognito_user_pool_id "$cfg_cognito_user_pool_id" \
+      --arg cognito_client_id "$cfg_cognito_client_id" \
+      --arg cognito_client_secret "$cfg_cognito_client_secret" \
+      --arg cognito_region "$cfg_cognito_region" \
+      --arg frontend_cert_arn "$cfg_frontend_cert_arn" \
+      --arg api_cert_arn "$cfg_api_cert_arn" \
+      --arg account_id "$cfg_account_id" \
+      --arg region "$cfg_region" \
+      '{
+        "database-url": $db_url,
+        "jwt-secret-key": $jwt,
+        "aws-access-key-id": "",
+        "aws-secret-access-key": "",
+        "microsoft-client-id": $ms_client_id,
+        "microsoft-client-secret": $ms_client_secret,
+        "microsoft-tenant-id": $ms_tenant_id,
+        "cognito-user-pool-id": $cognito_user_pool_id,
+        "cognito-client-id": $cognito_client_id,
+        "cognito-client-secret": $cognito_client_secret,
+        "cognito-region": $cognito_region,
+        "acm-certificate-frontend-arn": $frontend_cert_arn,
+        "acm-certificate-api-arn": $api_cert_arn,
+        "aws-account-id": $account_id,
+        "aws-region": $region
+      }')
 
-  # JWT secrets
-  jwt-secret-key: "${cfg_jwt_secret}"
-
-  # AWS credentials (optional - prefer IAM roles)
-  aws-access-key-id: ""
-  aws-secret-access-key: ""
-
-  # Microsoft Entra ID OAuth
-  microsoft-client-id: "${cfg_ms_client_id}"
-  microsoft-client-secret: "${cfg_ms_client_secret}"
-  microsoft-tenant-id: "${cfg_ms_tenant_id}"
-
-  # AWS Cognito OAuth
-  cognito-user-pool-id: "${cfg_cognito_user_pool_id}"
-  cognito-client-id: "${cfg_cognito_client_id}"
-  cognito-client-secret: "${cfg_cognito_client_secret}"
-  cognito-region: "${cfg_cognito_region}"
-
-  # ACM Certificate ARNs
-  acm-certificate-frontend-arn: "${cfg_frontend_cert_arn}"
-  acm-certificate-api-arn: "${cfg_api_cert_arn}"
-
-  # AWS Account and Region
-  aws-account-id: "${cfg_account_id}"
-  aws-region: "${cfg_region}"
-SECRETS_EOF
-    print_success "Generated: application/secrets.yaml"
+    aws secretsmanager put-secret-value \
+      --secret-id "$secret_name" \
+      --secret-string "$secret_json" \
+      --region "$cfg_region" \
+      --no-cli-pager
+    print_success "Secrets pushed to AWS Secrets Manager: $secret_name"
 
     # --- Generate ConfigMaps from templates ---
     print_substep "Generating ConfigMaps..."
@@ -998,6 +1008,7 @@ SECRETS_EOF
     export API_PORT_SUFFIX=""  # Set to ":8443" by Step 5 when Global Accelerator is enabled
     export AWS_REGION="$cfg_region"
     export KBR_ENV="$cfg_kbr_env"
+    export SECRETS_MANAGER_SECRET_NAME="$secret_name"
 
     # Get COGNITO_DOMAIN from Terraform output or construct from project naming convention
     if [[ "$terraform_available" == "true" ]]; then
@@ -1015,6 +1026,11 @@ SECRETS_EOF
     envsubst < "$app_dir/frontend-configmap.yaml.template" > "$app_dir/frontend-configmap.yaml"
     print_success "Generated: application/backend-configmap.yaml"
     print_success "Generated: application/frontend-configmap.yaml"
+
+    envsubst < "$app_dir/secret-store.yaml.template" > "$app_dir/secret-store.yaml"
+    envsubst < "$app_dir/external-secret.yaml.template" > "$app_dir/external-secret.yaml"
+    print_success "Generated: application/secret-store.yaml"
+    print_success "Generated: application/external-secret.yaml"
 
     # --- Generate Ingress files ---
     print_substep "Generating Ingress configuration..."
@@ -1042,8 +1058,8 @@ deploy_application() {
     print_info "Checking application configuration..."
 
     local has_config=true
-    if [[ ! -f "application/secrets.yaml" ]]; then
-        print_warning "secrets.yaml not found"
+    if [[ ! -f "application/external-secret.yaml" ]]; then
+        print_warning "external-secret.yaml not found"
         has_config=false
     fi
     if [[ ! -f "application/backend-configmap.yaml" || ! -f "application/frontend-configmap.yaml" ]]; then

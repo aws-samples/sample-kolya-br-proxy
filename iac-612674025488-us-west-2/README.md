@@ -97,6 +97,7 @@ No resources.
 
 | Name | Description |
 |------|-------------|
+| <a name="output_backend_secrets_manager_name"></a> [backend\_secrets\_manager\_name](#output\_backend\_secrets\_manager\_name) | Name of the Secrets Manager secret for backend |
 | <a name="output_cluster_arn"></a> [cluster\_arn](#output\_cluster\_arn) | EKS cluster ARN |
 | <a name="output_cluster_endpoint"></a> [cluster\_endpoint](#output\_cluster\_endpoint) | Endpoint for EKS control plane |
 | <a name="output_cluster_id"></a> [cluster\_id](#output\_cluster\_id) | EKS cluster ID |

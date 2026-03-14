@@ -84,6 +84,12 @@ output "rds_secret_name" {
   value       = module.rds_aurora_postgresql.secret_name
 }
 
+# Secrets Manager Outputs
+output "backend_secrets_manager_name" {
+  description = "Name of the Secrets Manager secret for backend"
+  value       = module.eks_addons.backend_secrets_manager_name
+}
+
 # Karpenter Outputs
 output "karpenter_queue_name" {
   description = "Name of the SQS queue used by Karpenter"

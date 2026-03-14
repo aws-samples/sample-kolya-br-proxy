@@ -116,3 +116,71 @@ resource "aws_eks_pod_identity_association" "backend_bedrock" {
   service_account = "backend"
   role_arn        = aws_iam_role.backend_bedrock.arn
 }
+
+# AWS Secrets Manager secret for backend secrets (managed by External Secrets Operator)
+resource "aws_secretsmanager_secret" "backend_secrets" {
+  name = "${local.resource_prefix}-backend-secrets"
+
+  tags = var.default_tags
+}
+
+resource "aws_secretsmanager_secret_version" "backend_secrets" {
+  secret_id     = aws_secretsmanager_secret.backend_secrets.id
+  secret_string = "{}"
+}
+
+# Pod identity for External Secrets Operator
+data "aws_iam_policy_document" "eso" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession"
+    ]
+  }
+}
+
+resource "aws_iam_role" "eso" {
+  name               = "${local.resource_prefix}-eso"
+  assume_role_policy = data.aws_iam_policy_document.eso.json
+
+  tags = var.default_tags
+}
+
+resource "aws_iam_policy" "eso" {
+  name = "${local.resource_prefix}-eso"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = aws_secretsmanager_secret.backend_secrets.arn
+      }
+    ]
+  })
+
+  tags = var.default_tags
+}
+
+resource "aws_iam_role_policy_attachment" "eso" {
+  policy_arn = aws_iam_policy.eso.arn
+  role       = aws_iam_role.eso.name
+}
+
+resource "aws_eks_pod_identity_association" "eso" {
+  cluster_name    = var.cluster_name
+  namespace       = "kbp"
+  service_account = "external-secrets-sa"
+  role_arn        = aws_iam_role.eso.arn
+}

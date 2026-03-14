@@ -144,16 +144,78 @@ flowchart TD
 
 ## Price Calculation
 
-### Formula
+### Basic Formula
 
 ```
 total_cost = (prompt_tokens × input_price_per_token) + (completion_tokens × output_price_per_token)
 ```
 
+### Prompt Cache Differentiated Pricing
+
+When prompt caching is enabled (`KBR_PROMPT_CACHE_AUTO_INJECT=true`), Bedrock returns three categories of input tokens with different pricing:
+
+| Token Type | Field | Pricing |
+|------------|-------|---------|
+| Regular input | `input_tokens` | 1.0x base input price |
+| Cache write | `cache_creation_input_tokens` | 1.25x base input price (25% premium) |
+| Cache read | `cache_read_input_tokens` | 0.1x base input price (90% discount) |
+
+**Full Formula (with cache):**
+
+```python
+total_cost = (input_tokens × input_price)                          # Regular input
+           + (completion_tokens × output_price)                    # Output
+           + (cache_creation_input_tokens × input_price × 1.25)   # Cache write premium
+           + (cache_read_input_tokens × input_price × 0.1)        # Cache read discount
+```
+
+**Example** — Claude Sonnet (input price = $3.00 / 1M tokens):
+
+```
+Request with 10,000 tokens:
+  - 2,000 regular input tokens:     2,000 × $0.000003  = $0.006
+  - 1,000 cache write tokens:       1,000 × $0.00000375 = $0.00375
+  - 7,000 cache read tokens:        7,000 × $0.0000003  = $0.0021
+  Total input cost: $0.01185  (vs. $0.03 without caching = 60% savings)
+```
+
+### Database Storage
+
+Cache token counts are stored in `usage_records` for detailed cost analysis:
+
+```python
+class UsageRecord(Base):
+    prompt_tokens = Column(Integer)                  # Regular input tokens
+    completion_tokens = Column(Integer)              # Output tokens
+    cache_creation_input_tokens = Column(Integer)    # Cache write tokens
+    cache_read_input_tokens = Column(Integer)        # Cache read tokens
+    cost_usd = Column(Numeric)                       # Total cost (includes cache pricing)
+```
+
+### OpenAI-Compatible Response
+
+Cache details are returned in the `prompt_tokens_details` field (OpenAI compatible):
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 2000,
+    "completion_tokens": 500,
+    "total_tokens": 2500,
+    "prompt_tokens_details": {
+      "cached_tokens": 7000,
+      "cache_creation_tokens": 1000
+    }
+  }
+}
+```
+
 ### Implementation Location
 
-- `app/services/pricing.py`: `ModelPricing.calculate_cost()`
-- `app/api/v1/endpoints/chat.py`: `record_usage()` function call
+- `app/services/pricing.py`: `ModelPricing.calculate_cost()` — applies cache multipliers
+- `app/api/v1/endpoints/chat.py`: `record_usage()` — extracts and passes cache tokens
+- `app/models/usage.py`: `UsageRecord` — stores cache token columns
+- `app/services/translator.py`: `ResponseTranslator` — returns `prompt_tokens_details` in OpenAI format
 
 ### Error Handling
 

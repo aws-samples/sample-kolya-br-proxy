@@ -26,8 +26,6 @@ async def health_check() -> Dict[str, Any]:
     Returns:
         Dict containing health status
     """
-    logger.info("Health check requested")
-
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -88,8 +86,6 @@ async def liveness_check() -> Dict[str, Any]:
     Returns:
         Dict containing liveness status
     """
-    logger.info("Liveness check requested")
-
     return {
         "status": "alive",
         "timestamp": datetime.utcnow().isoformat(),

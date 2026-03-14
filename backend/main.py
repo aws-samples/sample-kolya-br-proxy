@@ -27,6 +27,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class HealthCheckFilter(logging.Filter):
+    """Filter out health check access logs to reduce noise."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return '"GET /health/' not in msg
+
+
+# Apply filter to uvicorn access logger
+logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup and shutdown events."""

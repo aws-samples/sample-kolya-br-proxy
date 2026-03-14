@@ -1,0 +1,17 @@
+architecture: standalone
+auth:
+  enabled: false
+master:
+  persistence:
+    enabled: true
+    storageClass: gp3
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+metrics:
+  enabled: false

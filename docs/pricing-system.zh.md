@@ -131,16 +131,78 @@ flowchart TD
 
 ## 价格计算
 
-### 公式
+### 基础公式
 
 ```
 总成本 = (输入tokens × 输入单价) + (输出tokens × 输出单价)
 ```
 
+### Prompt Cache 差异化计价
+
+开启 Prompt Caching（`KBR_PROMPT_CACHE_AUTO_INJECT=true`）后，Bedrock 返回三类 input token，分别按不同费率计费：
+
+| Token 类型 | 字段 | 计费方式 |
+|-----------|------|---------|
+| 常规 input | `input_tokens` | 1.0x 基础 input 价格 |
+| Cache 写入 | `cache_creation_input_tokens` | 1.25x 基础 input 价格（25% 溢价） |
+| Cache 读取 | `cache_read_input_tokens` | 0.1x 基础 input 价格（90% 折扣） |
+
+**完整公式（含 cache）：**
+
+```python
+总费用 = (input_tokens × input_price)                          # 常规 input
+       + (completion_tokens × output_price)                    # Output
+       + (cache_creation_input_tokens × input_price × 1.25)   # Cache 写入溢价
+       + (cache_read_input_tokens × input_price × 0.1)        # Cache 读取折扣
+```
+
+**示例** — Claude Sonnet（input 价格 = $3.00 / 1M tokens）：
+
+```
+请求包含 10,000 tokens：
+  - 2,000 常规 input tokens：    2,000 × $0.000003   = $0.006
+  - 1,000 cache 写入 tokens：    1,000 × $0.00000375 = $0.00375
+  - 7,000 cache 读取 tokens：    7,000 × $0.0000003  = $0.0021
+  总 input 费用：$0.01185（对比无缓存 $0.03，节省 60%）
+```
+
+### 数据库存储
+
+Cache token 数量存储在 `usage_records` 表中，用于费用明细分析：
+
+```python
+class UsageRecord(Base):
+    prompt_tokens = Column(Integer)                  # 常规 input tokens
+    completion_tokens = Column(Integer)              # Output tokens
+    cache_creation_input_tokens = Column(Integer)    # Cache 写入 tokens
+    cache_read_input_tokens = Column(Integer)        # Cache 读取 tokens
+    cost_usd = Column(Numeric)                       # 总费用（含 cache 差异化计价）
+```
+
+### OpenAI 兼容响应格式
+
+返回给客户端的响应中包含 cache 明细（兼容 OpenAI API 格式）：
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 2000,
+    "completion_tokens": 500,
+    "total_tokens": 2500,
+    "prompt_tokens_details": {
+      "cached_tokens": 7000,
+      "cache_creation_tokens": 1000
+    }
+  }
+}
+```
+
 ### 实现位置
 
-- `app/services/pricing.py`: `ModelPricing.calculate_cost()`
-- `app/api/v1/endpoints/chat.py`: `record_usage()` 函数调用
+- `app/services/pricing.py`: `ModelPricing.calculate_cost()` — 应用 cache 价格乘数
+- `app/api/v1/endpoints/chat.py`: `record_usage()` — 提取并传递 cache token 数
+- `app/models/usage.py`: `UsageRecord` — 存储 cache token 列
+- `app/services/translator.py`: `ResponseTranslator` — 在 OpenAI 格式中返回 `prompt_tokens_details`
 
 ### 错误处理
 

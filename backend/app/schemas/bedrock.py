@@ -62,6 +62,7 @@ class BedrockRequest(BaseModel):
     prompt_variables: Optional[Dict[str, Any]] = None
     additional_model_response_field_paths: Optional[List[str]] = None
     request_metadata: Optional[Dict[str, str]] = None
+    auto_cache: Optional[bool] = None
 
 
 class BedrockContentBlock(BaseModel):
@@ -80,6 +81,8 @@ class BedrockUsage(BaseModel):
 
     input_tokens: Optional[int] = 0
     output_tokens: Optional[int] = 0
+    cache_creation_input_tokens: Optional[int] = 0
+    cache_read_input_tokens: Optional[int] = 0
 
 
 class BedrockResponse(BaseModel):

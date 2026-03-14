@@ -5,6 +5,9 @@ This document details the optimization measures and timeout configurations for h
 ## Table of Contents
 
 - [High Concurrency Handling Strategies](#high-concurrency-handling-strategies)
+  - [Prompt Cache Cost Calculation](#7-prompt-cache-cost-calculation)
+  - [Client Disconnect Detection](#8-client-disconnect-detection-early-stream-termination)
+  - [ALB Load Balancing Algorithm](#9-alb-load-balancing-algorithm)
 - [Timeout Configuration Details](#timeout-configuration-details)
 - [Concurrency Capacity Assessment](#concurrency-capacity-assessment)
 - [Performance Optimization Recommendations](#performance-optimization-recommendations)
@@ -70,7 +73,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 ---
 
-### 2. AWS Bedrock Concurrency Limiting (Semaphore)
+### 2. AWS Bedrock Request Control (Distributed Token Bucket + Semaphore)
 
 #### Configuration Location
 - `backend/app/services/bedrock.py`
@@ -79,46 +82,172 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 #### Configuration Parameters
 
 ```python
-BEDROCK_MAX_CONCURRENT_REQUESTS = 50  # Maximum concurrent requests
+BEDROCK_MAX_CONCURRENT_REQUESTS = 50   # Maximum concurrent requests (semaphore, per Pod)
+BEDROCK_ACCOUNT_RPM = 500             # AWS Bedrock account-level RPM quota
+BEDROCK_EXPECTED_PODS = 3             # Expected Pods (only used in local mode without Redis)
+BEDROCK_RATE_BURST = 10               # Maximum burst size (token bucket capacity)
 ```
 
-#### Implementation
+#### Two-Layer Control: Distributed Token Bucket + Semaphore
+
+This project uses **two complementary mechanisms** to control Bedrock API access:
+
+| Mechanism | Controls | Question It Answers |
+|-----------|----------|-------------------|
+| **Distributed Token Bucket (Redis)** | Request **rate** (req/s) globally across all Pods | "How fast can the entire cluster send new requests?" |
+| **Semaphore** | **Concurrency** (simultaneous) per Pod | "How many requests can run at the same time on this Pod?" |
+
+Both are needed because they solve different problems:
+
+```
+Without token bucket: 50 requests could arrive in 1ms → Bedrock throttled
+Without semaphore:    Unlimited requests queued → Pod memory exhaustion
+```
+
+#### Distributed Token Bucket Algorithm (Redis + Lua)
+
+The token bucket is implemented as a **distributed rate limiter** using Redis and an atomic Lua script, providing global rate limiting across all Pods.
+
+**Core Concept:**
+
+```
+A single token bucket shared across all Pods via Redis:
+- Tokens are added at a fixed rate (BEDROCK_ACCOUNT_RPM / 60 per second in Redis mode)
+- The bucket has a maximum capacity (BEDROCK_RATE_BURST)
+- Each request from any Pod must take 1 token from the bucket
+- If the bucket is empty, the request waits
+- All state is stored in Redis (atomic via Lua script)
+```
+
+**Implementation (Redis Lua script -- atomic operation):**
+
+```lua
+-- Token bucket state stored in Redis key
+local tokens = tonumber(redis.call('get', KEYS[1]) or capacity)
+local last_refill = tonumber(redis.call('get', KEYS[2]) or now)
+local elapsed = now - last_refill
+tokens = math.min(capacity, tokens + elapsed * rate)
+if tokens >= 1.0 then
+    tokens = tokens - 1.0
+    redis.call('set', KEYS[1], tokens)
+    redis.call('set', KEYS[2], now)
+    return 1  -- acquired
+else
+    return 0  -- wait
+end
+```
+
+**Graceful Degradation (LocalTokenBucket fallback):**
 
 ```python
-# Use asyncio.Semaphore to control concurrency
-self._semaphore = asyncio.Semaphore(50)
+class LocalTokenBucket:
+    """Per-Pod fallback when Redis is unavailable."""
+    def __init__(self, rate: float, capacity: int):
+        self._rate = rate
+        self._capacity = capacity
+        self._tokens = capacity
+        self._last_refill = time.monotonic()
 
-async def invoke(self, model_name: str, request: BedrockRequest):
-    async with self._semaphore:  # Acquire semaphore permit
+    async def acquire(self):
+        while True:
+            self._refill()
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            wait = (1.0 - self._tokens) / self._rate
+            await asyncio.sleep(wait)
+```
+
+When Redis is down, each Pod falls back to `LocalTokenBucket` -- per-Pod rate limiting continues (not skip). This means the system degrades gracefully: rate limiting is still enforced, just not globally coordinated.
+
+**Timeline Example (Redis mode: rate=8.33/s from 500 RPM, burst=10):**
+
+```
+0.0s  Bucket: [██████████] 10 tokens
+      ← 10 requests arrive simultaneously, all pass immediately
+0.0s  Bucket: [          ] 0 tokens
+      ← 11th request waits...
+0.12s Bucket: [█         ] 1 token refilled (8.33 tokens/s × 0.12s ≈ 1)
+      ← 11th request passes
+0.24s Bucket: [█         ] 1 token
+      ← next request passes
+...   Steady state: ~8.33 requests per second (= 500 RPM)
+1.2s  No requests for 1.2 seconds
+      Bucket: [██████████] 10 tokens (refilled to capacity)
+      ← Ready for another burst
+```
+
+**Why Token Bucket Instead of Fixed Window or Sliding Window:**
+
+| Algorithm | Burst Handling | Boundary Issue | Complexity |
+|-----------|---------------|----------------|------------|
+| Fixed Window | Poor (reset at window boundary allows 2x burst) | Yes | Low |
+| Sliding Window | Good | No | Medium |
+| **Token Bucket** | **Best (natural burst + smooth rate)** | **No** | **Low** |
+
+Token bucket naturally handles bursty traffic (common in AI proxy workloads) while maintaining a strict average rate.
+
+#### Request Lifecycle
+
+```
+Request arrives
+  ↓
+TokenBucket.acquire()    ← Wait for rate limit token (controls req/s)
+  ↓
+Semaphore.acquire()      ← Wait for concurrency slot (controls parallelism)
+  ↓
+Bedrock API call
+  ↓
+Semaphore.release()      ← Free concurrency slot (on stream end)
+```
+
+```python
+async def invoke(self, model_name, request):
+    await self._rate_limiter.acquire()   # Token bucket: rate control
+    async with self._semaphore:          # Semaphore: concurrency control
         return await self._invoke_inner(model_name, request)
-```
 
-#### How It Works
-
-```
-Concurrent requests 1-50  → Execute immediately
-Concurrent requests 51+   → Wait for previous requests to complete
-```
-
-#### Why Semaphore Is Needed
-
-1. **AWS Bedrock Has Quota Limits**
-   - Each account/region has concurrent request limits
-   - Exceeding limits results in throttling (429 errors)
-
-2. **Protect Downstream Services**
-   - Prevent burst traffic from overwhelming Bedrock
-   - Provide smooth backpressure
-
-3. **Special Handling for Streaming Responses**
-
-```python
-async def invoke_stream(self, model_name: str, request: BedrockRequest):
-    async with self._semaphore:  # Hold semaphore for entire stream duration
+async def invoke_stream(self, model_name, request):
+    await self._rate_limiter.acquire()   # Token bucket: rate control
+    async with self._semaphore:          # Semaphore: held for entire stream
         async for event in self._invoke_stream_inner(model_name, request):
             yield event
-    # Release semaphore after stream ends
 ```
+
+#### Multi-Pod Rate Limiting Strategy
+
+With the **distributed Redis token bucket**, all Pods share a single global rate limit. There is no need to divide the quota by the number of Pods -- Redis ensures the global rate is enforced atomically.
+
+```
+                    Bedrock Quota: 500 RPM (8.33 req/s)
+                    ┌──────────────────────────────────┐
+                    │                                    │
+  Pod 1 ─────┐     │                                    │
+  Pod 2 ─────┤─[Redis Token Bucket: 8.33 req/s]──▶     │
+  Pod 3 ─────┘     │        AWS Bedrock API             │
+  ...              │                                    │
+  Pod N ─────┘     │  Global rate: 8.33 req/s = 500 RPM│
+                    └──────────────────────────────────┘
+```
+
+**Advantages of distributed rate limiting:**
+
+- No need to estimate expected Pod count -- the global rate is always correct regardless of how many Pods are running
+- Scaling up/down Pods does not affect the overall rate limit
+- During fallback (Redis down), each Pod uses `LocalTokenBucket` with a conservative per-Pod rate calculated as `Account RPM / 60 / expected Pods`
+- Karpenter provisions Nodes (infrastructure), HPA controls Pod count -- maxReplicas is the hard cap
+
+#### Adaptive Retry as Safety Net
+
+Even with per-Pod rate limiting, the botocore `adaptive` retry mode provides a final safety layer:
+
+```python
+Config(
+    retries={"max_attempts": 3, "mode": "adaptive"},
+)
+```
+
+If Bedrock still returns 429 (throttling), the SDK automatically retries with exponential backoff. This handles edge cases where multiple Pods burst simultaneously.
 
 ---
 
@@ -230,6 +359,289 @@ async with async_session_maker() as session:
 
 ---
 
+### 6. API Token Hash Lookup Optimization
+
+#### Configuration Location
+- `backend/app/core/security.py`
+- `backend/app/services/token.py`
+- `backend/app/models/token.py`
+
+#### Implementation Principle
+
+Uses SHA256 hashing to achieve O(1) database index lookup, replacing O(n) linear scanning.
+
+```python
+# Generate token hash (security.py)
+def hash_token(token: str) -> str:
+    """Hash token using SHA256"""
+    return hashlib.sha256(token.encode()).hexdigest()
+```
+
+#### Workflow
+
+**1. Token Creation**
+
+```python
+# User creates API Token
+plain_token = generate_api_token()  # Generates: kbr_abc123def456...
+
+# Calculate hash for database storage
+token_hash = hash_token(plain_token)  # SHA256 hash
+
+# Database storage
+token = APIToken(
+    token_hash=token_hash,           # For fast lookup
+    encrypted_token=encrypt_token(plain_token),  # For recovery
+)
+```
+
+**2. Token Validation**
+
+```python
+# Client sends request
+Authorization: Bearer kbr_abc123def456...
+
+# Backend validation (optimized)
+token_hash = hash_token(plain_token)  # Calculate hash
+
+# Query directly by hash (using database index)
+result = await db.execute(
+    select(APIToken).where(
+        APIToken.token_hash == token_hash,  # Index query, O(1)
+        APIToken.is_active.is_(True)
+    )
+)
+```
+
+#### Performance Comparison
+
+| Method | Query Type | Time Complexity | Actual Time | Notes |
+|--------|-----------|----------------|-------------|-------|
+| **Before** | Iterate all tokens, decrypt and compare | O(n) | ~10 seconds | 20,000 tokens |
+| **After** | Hash index direct query | O(1) | ~0.5 milliseconds | Using database index |
+| **Improvement** | - | - | **20,000x faster** | - |
+
+#### Performance Test Results
+
+```python
+# Test scenario: Database contains 20,000 API Tokens
+
+# Before optimization (linear scan)
+for token in all_tokens:  # 20,000 iterations
+    if decrypt_token(token.encrypted_token) == plain_token:
+        return token
+# Time: ~10 seconds (0.5ms per decryption × 20,000)
+
+# After optimization (hash index)
+token_hash = hash_token(plain_token)  # 0.01ms
+token = db.query(APIToken).filter_by(token_hash=token_hash).first()  # 0.5ms
+# Time: ~0.5 milliseconds (index query)
+```
+
+#### Database Index
+
+```python
+# models/token.py
+class APIToken(Base):
+    __tablename__ = "api_tokens"
+
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    #                                              ^^^^^ Key: Create index
+```
+
+**Index Benefits:**
+- ✅ Reduces query time from O(n) to O(1)
+- ✅ Database automatically maintains B-Tree index structure
+- ✅ Supports fast exact match queries
+
+#### Security Advantages
+
+**1. Database Breach Protection**
+
+```python
+# Assume database is compromised by attacker
+# Attacker sees:
+{
+    "token_hash": "a3f5b8c9d2e1f4a7b6c5d8e9f1a2b3c4...",  # SHA256 hash
+    "encrypted_token": "gAAAAABf3x..."                    # Fernet encryption
+}
+
+# Attacker cannot:
+# ❌ Reverse token_hash to original token (SHA256 is one-way)
+# ❌ Decrypt encrypted_token (requires KBR_JWT_SECRET_KEY)
+# ❌ Use token_hash to call API (API requires original token)
+```
+
+**2. No Key Management Required**
+
+```python
+# Hash lookup: No key needed
+token_hash = hashlib.sha256(token.encode()).hexdigest()  # Pure algorithm
+
+# Compare: Encryption requires key
+_fernet = Fernet(_get_encryption_key())  # Requires KBR_JWT_SECRET_KEY
+encrypted = _fernet.encrypt(token.encode())
+```
+
+**Advantages:**
+- ✅ Hashing is deterministic (same input = same output)
+- ✅ No key storage or management needed
+- ✅ No key leakage risk
+- ✅ Suitable for database index queries
+
+#### Dual Protection Mechanism
+
+This project uses **hash + encryption** dual protection:
+
+```python
+# 1. Hash (for lookup)
+token_hash = hash_token(plain_token)  # SHA256, no key
+# Purpose: Database index query, O(1) performance
+# Security: One-way hash, cannot reverse to original
+
+# 2. Encryption (for storage)
+encrypted_token = encrypt_token(plain_token)  # Fernet, requires key
+# Purpose: Recoverable original token (if need to display again)
+# Security: Symmetric encryption, requires KBR_JWT_SECRET_KEY to decrypt
+```
+
+#### Real-World Use Cases
+
+**Scenario 1: API Request Validation (High Frequency)**
+
+```python
+# Every API request needs token validation
+# Using hash lookup, completes in 0.5ms
+
+@router.post("/v1/chat/completions")
+async def chat(token: str = Depends(get_api_token)):
+    # Token already validated via hash lookup (fast)
+    return await process_chat(token)
+```
+
+**Scenario 2: Token Management UI (Low Frequency)**
+
+```python
+# User views their token list
+# Can choose to display full token (decrypt)
+
+@router.get("/tokens/{token_id}/reveal")
+async def reveal_token(token_id: UUID):
+    token = await token_service.get_token_by_id(token_id)
+    plain_token = decrypt_token(token.encrypted_token)  # Decrypt to recover
+    return {"token": plain_token}
+```
+
+#### Configuration Requirements
+
+```bash
+# Environment variable (for encryption storage, doesn't affect hash lookup)
+KBR_JWT_SECRET_KEY=your-secret-key-here
+
+# Database migration (ensure index exists)
+alembic upgrade head
+```
+
+#### Monitoring Metrics
+
+```python
+# Record token validation performance
+import time
+
+start = time.time()
+token = await token_service.validate_token(plain_token)
+duration = time.time() - start
+
+if duration > 0.01:  # More than 10ms
+    logger.warning("Slow token validation", extra={
+        "duration": duration,
+        "token_id": token.id if token else None
+    })
+```
+
+---
+
+### 7. Prompt Cache Cost Calculation
+
+Prompt cache tokens (cache write and cache read) are priced differently from regular input tokens. For detailed formula, database storage, and OpenAI-compatible response format, see [Dynamic Pricing System — Price Calculation](./pricing-system.md#price-calculation).
+
+---
+
+### 8. Client Disconnect Detection (Early Stream Termination)
+
+#### Problem
+
+When a client disconnects mid-stream (e.g., user presses ESC in opencode), without detection:
+- Bedrock continues generating tokens (wasting money)
+- Semaphore remains held (blocking other requests)
+- Pod resources occupied until stream completes naturally
+
+#### Solution
+
+The streaming generator checks `request.is_disconnected()` every ~1 second. On disconnect, it immediately breaks the loop, triggering async generator cleanup:
+
+```python
+async for event in bedrock_client.invoke_stream(model, bedrock_request):
+    # Throttled disconnect check (~1 second interval)
+    if http_request and current_time - last_heartbeat > 1.0:
+        if await http_request.is_disconnected():
+            break  # Triggers cleanup chain
+
+    yield f"data: {chunk}\n\n"
+```
+
+#### Cleanup Chain
+
+```
+chat.py: break (client disconnected)
+  ↓ Python async generator protocol: .aclose() called on inner generator
+bedrock.py: invoke_stream() exits
+  ↓ async with self._semaphore: __aexit__ → semaphore released ✅
+  ↓ async with self.session.client(...): __aexit__ → HTTP connection closed ✅
+Bedrock: receives TCP FIN/RST → stops generation ✅
+```
+
+#### What Happens After Disconnect
+
+- Tokens already consumed are **still recorded** to the database (costs should not be lost)
+- Usage chunk and done marker are **not sent** (client is gone)
+- Log entry includes `client_disconnected: true` for monitoring
+
+#### Why Not Check Every Chunk
+
+`is_disconnected()` is an async call that checks the ASGI receive channel. Checking every chunk would add unnecessary overhead. The ~1 second throttle interval balances responsiveness with performance.
+
+---
+
+### 9. ALB Load Balancing Algorithm
+
+#### Configuration
+
+```yaml
+alb.ingress.kubernetes.io/target-group-attributes: >
+  deregistration_delay.timeout_seconds=30,
+  load_balancing.algorithm.type=round_robin
+```
+
+#### Why `round_robin` With a Global Token Bucket
+
+With the distributed Redis token bucket providing global rate limiting, `round_robin` is the best fit:
+
+- The global token bucket already controls the request rate across all Pods
+- Each Pod receives the same rate-limited workload, so processing time per request is similar
+- Round-robin ensures even distribution, preventing hot spots
+- `least_outstanding_requests` would be counterproductive here: streaming responses keep connections open for seconds, making Pods _appear_ busy when they're just waiting for Bedrock output — new requests would pile up on Pods that happen to have fewer streams
+
+```
+Global Token Bucket (Redis):    Round Robin:
+All Pods share one rate limit → Pod 1: ████ (4 streams) ← next request
+8.33 req/s (500 RPM)            Pod 2: ████ (4 streams)
+                                 Pod 3: ████ (4 streams)
+                                        (evenly distributed)
+```
+
+---
+
 ## Complete Concurrency Handling Architecture
 
 ```
@@ -265,11 +677,12 @@ async with async_session_maker() as session:
                             ↓
         ┌───────────────────┴───────────────────┐
         ↓                                       ↓
-┌──────────────────┐                  ┌──────────────────┐
-│  PostgreSQL      │                  │  AWS Bedrock     │
-│  Pool: 10+20     │                  │  Semaphore: 50   │
-│  (30 concurrent) │                  │  (50 concurrent) │
-└──────────────────┘                  └──────────────────┘
+┌──────────────────┐    ┌───────────────┐    ┌──────────────────┐
+│  PostgreSQL      │    │  Redis        │    │  AWS Bedrock       │
+│  Pool: 10+20     │    │  Distributed  │    │  Distributed       │
+│  (30 concurrent) │    │  Token Bucket │    │  TokenBucket(Redis)│
+└──────────────────┘    │  (global)     │    │  Semaphore: 50     │
+                        └───────────────┘    └────────────────────┘
 ```
 
 ---
@@ -307,10 +720,10 @@ async with async_session_maker() as session:
 
 | Layer | Configuration | Timeout | Description |
 |-------|--------------|---------|-------------|
-| **Bedrock Connect** | `connect_timeout` | 60 seconds | Connection establishment timeout |
-| **Bedrock Read** | `read_timeout` | **1800 seconds (30 min)** | Support long AI tasks |
+| **Bedrock Connect** | `connect_timeout` | 10 seconds | Connection establishment timeout |
+| **Bedrock Read** | `read_timeout` | **300 seconds (5 min)** | Per-chunk read timeout (covers thinking model pauses and long prefill) |
 | **Uvicorn Keep-Alive** | `timeout_keep_alive` | 120 seconds | Idle connection timeout (doesn't affect requests) |
-| **ALB Idle (API)** | `idle_timeout` | **600 seconds (10 min)** | May become bottleneck |
+| **ALB Idle (API)** | `idle_timeout` | **600 seconds (10 min)** | Outer fallback; must exceed read_timeout so Bedrock errors surface first |
 | **ALB Idle (Frontend)** | `idle_timeout` | 300 seconds (5 min) | Frontend static resources |
 | **Streaming Heartbeat** | `STREAM_HEARTBEAT_INTERVAL` | 15 seconds | Keep connection alive |
 
@@ -325,8 +738,8 @@ async with async_session_maker() as session:
 Config(
     region_name=settings.AWS_REGION,
     retries={"max_attempts": 3, "mode": "adaptive"},
-    connect_timeout=60,    # Connection timeout: 60 seconds
-    read_timeout=1800,     # Read timeout: 1800 seconds = 30 minutes
+    connect_timeout=10,    # Connection timeout: 10 seconds
+    read_timeout=300,      # Read timeout: 5 min, covers thinking model pauses
     max_pool_connections=settings.BEDROCK_MAX_CONCURRENT_REQUESTS,
     tcp_keepalive=True,
 )
@@ -334,9 +747,9 @@ Config(
 
 #### Description
 
-- **Connection timeout (60 seconds)**: Maximum time to establish TCP connection
-- **Read timeout (30 minutes)**: Maximum time to wait for response data
-- ✅ 30 minutes is sufficient for very long AI generation tasks
+- **Connection timeout (10 seconds)**: Maximum time to establish TCP connection
+- **Read timeout (300 seconds)**: Maximum time to wait between consecutive data chunks on the socket. Applies to both first byte and subsequent streaming chunks. Thinking models (e.g. Claude with extended thinking) may pause for minutes during reasoning before producing output
+- ✅ 300 seconds covers thinking model pauses, long prefill latency, and Bedrock queue wait times
 
 ---
 
@@ -404,7 +817,8 @@ alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds
 
 - ALB idle timeout: If connection has no data transfer within specified time, ALB disconnects
 - **Important for streaming responses!**
-- ⚠️ 10 minutes < 30 minutes (Bedrock timeout), may become bottleneck
+- ✅ ALB idle timeout (600s) > Bedrock read timeout (300s), ensuring Bedrock errors surface first with meaningful messages instead of a generic 504
+- For streaming, heartbeats every 15s keep ALB alive regardless of idle timeout
 
 #### AWS ALB Limits
 
@@ -453,16 +867,16 @@ async def stream_chat_completion(...):
 30s   - Send heartbeat
 45s   - Send heartbeat
 ...
-600s  - Send heartbeat (ALB won't disconnect, data is being transferred)
+120s  - Send heartbeat (ALB won't disconnect, data is being transferred)
 ...
-1800s - Task completes (maximum 30 minutes)
+End   - Task completes (no total duration limit for streaming)
 ```
 
 #### ALB Decision Logic
 
 - As long as there is **any data transfer** (including heartbeats), it's not considered idle
-- Heartbeat sent every 15 seconds, much less than ALB's 600-second timeout
-- ✅ Even if task runs for 30 minutes, connection won't be dropped
+- Heartbeat sent every 15 seconds, well within ALB's 600-second timeout
+- ✅ Even if task runs for a long time, connection won't be dropped
 
 ---
 
@@ -489,7 +903,7 @@ POST /v1/chat/completions
 # 300s    - Complete
 ```
 
-**Conclusion:** ✅ Streaming response can run for 30 minutes (heartbeat keeps connection alive)
+**Conclusion:** ✅ Streaming response can run indefinitely (heartbeat keeps connection alive)
 
 ---
 
@@ -517,14 +931,15 @@ POST /v1/chat/completions
 ### Scenario 3: Non-Streaming Response (Very Long Task)
 
 ```python
-# Assume a task takes 15 minutes with no intermediate output
+# Assume a task takes 3 minutes with no intermediate output
 # 0s      - Request arrives
-# 0-900s  - Bedrock processing (no data transfer)
-# 600s    - ALB timeout, disconnects ❌
-# 900s    - Bedrock returns result (but connection already closed)
+# 0-180s  - Bedrock processing (no data transfer)
+# 300s    - Bedrock read_timeout triggers, backend returns meaningful error ❌
+# (If read_timeout didn't trigger)
+# 600s    - ALB idle timeout, disconnects as final fallback ❌
 ```
 
-**Conclusion:** ❌ More than 10 minutes without data transfer will be disconnected by ALB
+**Conclusion:** ❌ Non-streaming tasks exceeding 300 seconds will be terminated by read_timeout. Use streaming for longer tasks.
 
 ---
 
@@ -533,13 +948,13 @@ POST /v1/chat/completions
 ```
 Client
   ↓
-AWS ALB (10-minute idle timeout) ⚠️ May become bottleneck
+AWS ALB (10-minute idle timeout) ✅ Outer fallback, exceeds read_timeout
   ↓
 Uvicorn (120-second keep-alive, doesn't affect requests)
   ↓
 FastAPI Application (no timeout limit)
   ↓
-Bedrock Client (30-minute read timeout) ✅
+Bedrock Client (300-second read timeout) ✅ Covers thinking model pauses
   ↓
 AWS Bedrock API
 ```
@@ -550,27 +965,7 @@ AWS Bedrock API
 
 ### Short-Term Optimization (Immediate Implementation)
 
-#### 1. Increase ALB Timeout to 30 Minutes
-
-Modify `k8s/application/ingress-api.yaml`:
-
-```yaml
-# Increase from 10 minutes to 30 minutes
-alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=1800
-```
-
-**Advantages:**
-- ✅ Simple and straightforward
-- ✅ Support very long non-streaming tasks
-- ✅ Consistent with Bedrock timeout (30 minutes)
-
-**Disadvantages:**
-- ⚠️ Occupies ALB connections longer
-- ⚠️ May affect connection pool efficiency
-
----
-
-#### 2. Recommend Using Streaming Responses
+#### 1. Recommend Using Streaming Responses
 
 Clearly state in API documentation:
 
@@ -580,9 +975,10 @@ async def create_chat_completion(...):
     """
     Create a chat completion.
 
-    **Timeout Limits:**
-    - Streaming responses: Up to 30 minutes (with heartbeat)
-    - Non-streaming responses: Up to 10 minutes (ALB timeout)
+    **Timeout Chain:**
+    - Bedrock connect: 10 seconds (TCP connection)
+    - Bedrock read: 300 seconds (per-chunk timeout, covers thinking pauses)
+    - ALB idle: 600 seconds (outer fallback; heartbeat keeps alive during streaming)
 
     **Recommendation:** Use streaming for long-running tasks.
     """
@@ -597,7 +993,7 @@ async def create_chat_completion(...):
 Add timeout monitoring and alerts:
 
 ```python
-if duration > 600:  # More than 10 minutes
+if duration > 60:  # More than 60 seconds
     logger.warning("Long-running task detected", extra={
         "duration": duration,
         "model": model,
@@ -685,8 +1081,11 @@ async with read_db() as session:
 KBR_DATABASE_POOL_SIZE=10
 KBR_DATABASE_MAX_OVERFLOW=20
 
-# Bedrock concurrency limit
+# Bedrock request control
 KBR_BEDROCK_MAX_CONCURRENT_REQUESTS=50
+KBR_BEDROCK_ACCOUNT_RPM=500
+KBR_BEDROCK_EXPECTED_PODS=3
+KBR_BEDROCK_RATE_BURST=10
 
 # Uvicorn server
 KBR_UVICORN_TIMEOUT_KEEP_ALIVE=120
@@ -749,8 +1148,8 @@ resources:
    - Pod count changes
 
 4. **Request Timeouts**
-   - Requests exceeding 10 minutes
-   - ALB timeout errors
+   - Requests exceeding 300 seconds (read timeout)
+   - ALB timeout errors (600 seconds fallback)
    - Average response time
 
 ---
@@ -761,12 +1160,12 @@ resources:
 
 #### 1. 504 Gateway Timeout
 
-**Cause:** ALB idle timeout (10 minutes)
+**Cause:** Bedrock read timeout (300 seconds) or ALB idle timeout (600 seconds)
 
 **Solutions:**
 - Use streaming responses (recommended)
-- Increase ALB timeout to 30 minutes
-- Optimize task execution time
+- Check if Bedrock service is healthy
+- Verify network connectivity to Bedrock endpoint
 
 #### 2. Database Connection Exhaustion
 
@@ -794,17 +1193,18 @@ This project implements high-concurrency handling through **multi-layer concurre
 
 1. ✅ **Application Layer**: Uvicorn limits concurrent connections (100/worker)
 2. ✅ **Database Layer**: Connection pool management (10+20 connections)
-3. ✅ **External Service Layer**: Semaphore limits Bedrock concurrency (50)
+3. ✅ **External Service Layer**: Distributed Redis token bucket (global rate) + Semaphore (50 concurrent) for Bedrock, with LocalTokenBucket fallback
 4. ✅ **Infrastructure Layer**: Kubernetes HPA auto-scaling (1-10 Pods)
-5. ✅ **Load Balancing Layer**: AWS ALB distributes traffic
+5. ✅ **Load Balancing Layer**: AWS ALB with round-robin algorithm (even distribution with global token bucket)
 6. ✅ **Timeout Protection**: Heartbeat mechanism maintains long connections
-
-This is a **standard cloud-native high-concurrency architecture** that can support thousands of concurrent requests.
+7. ✅ **Cost Optimization**: Prompt cache differentiated pricing (see [Pricing System](./pricing-system.md#prompt-cache-differentiated-pricing))
+8. ✅ **Resource Protection**: Client disconnect detection stops Bedrock stream early
 
 ---
 
 ## Related Documentation
 
+- [Dynamic Pricing System](./pricing-system.md)
 - [Security Configuration](./security.md)
 - [Deployment Guide](../README.md#deployment)
 - [API Documentation](../README.md#api-documentation)

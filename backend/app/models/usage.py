@@ -30,6 +30,8 @@ class UsageRecord(Base):
     prompt_tokens = Column(Integer, default=0, nullable=False)
     completion_tokens = Column(Integer, default=0, nullable=False)
     total_tokens = Column(Integer, default=0, nullable=False)
+    cache_creation_input_tokens = Column(Integer, default=0, nullable=False)
+    cache_read_input_tokens = Column(Integer, default=0, nullable=False)
 
     # Cost information
     cost_usd = Column(Numeric(10, 4), default=Decimal("0.0000"), nullable=False)

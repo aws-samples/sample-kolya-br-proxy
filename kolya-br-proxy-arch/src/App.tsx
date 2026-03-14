@@ -205,7 +205,8 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
             路由 <code>/v1/*</code> → backend:8000<br/>
             路由 <code>/admin/*</code> → backend:8000<br/>
             路由 <code>/health</code> → backend:8000<br/>
-            TLS 由 ACM 证书终止
+            TLS 由 ACM 证书终止<br/>
+            ALB: <code>round_robin</code> 算法
           </Card>
           <Card color={COLORS.cyan} title="ingress-frontend.yaml">
             路由 <code>/*</code> → frontend:80<br/>
@@ -282,18 +283,21 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
             AuthService — API token 验证<br/>
             CognitoOAuth / MicrosoftOAuth<br/>
             PricingUpdater — AWS 定价同步<br/>
+            ModelPricing — Cache 差异化计价<br/>
             AuditLog · UsageStats · TokenCache
           </Card>
           <Card color={COLORS.purple} title="数据模型 (SQLAlchemy)">
             User · Token · RefreshToken<br/>
-            Usage · AuditLog<br/>
-            ModelPricing · SystemConfig · OAuthState
+            Usage（含 cache_creation / cache_read tokens）<br/>
+            AuditLog · ModelPricing · SystemConfig · OAuthState
           </Card>
-          <Card color={COLORS.purple} title="后台任务">
+          <Card color={COLORS.purple} title="后台任务 & 流控">
             APScheduler 定时任务<br/>
             每日同步 AWS Pricing API<br/>
-            更新 ModelPricing 表<br/>
-            Alembic 管理 DB schema 迁移
+            分布式 Redis Token Bucket 限流（全局速率）<br/>
+            Redis 不可用时回退 LocalTokenBucket（按 Pod）<br/>
+            客户端断连检测 — 提前终止 Bedrock 流<br/>
+            Alembic 管理 DB schema 迁移（initContainer）
           </Card>
         </div>
 
@@ -397,7 +401,13 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
             Backend Pod 通过 Pod Identity<br/>
             获取 IAM Role 凭证<br/>
             无需硬编码 AWS_ACCESS_KEY_ID<br/>
-            最小权限访问 Bedrock / RDS
+            最小权限访问 Bedrock / RDS / Secrets Manager
+          </Card>
+          <Card color={COLORS.amber} title="ESO + Secrets Manager">
+            External Secrets Operator 同步密钥<br/>
+            AWS Secrets Manager → K8s Secrets<br/>
+            refreshInterval: 1h 自动刷新<br/>
+            deploy-all.sh 推送密钥到 Secrets Manager
           </Card>
           <Card color={COLORS.amber} title="镜像构建">
             build-and-push.sh → ECR<br/>
@@ -417,12 +427,13 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
             Anthropic Claude — <LinkSpan onClick={() => navigateTo("translation", "phase2a")} color={COLORS.cyan}>InvokeModel API</LinkSpan><br/>
             Nova / DeepSeek / Mistral / Llama — <LinkSpan onClick={() => navigateTo("translation", "phase2b")} color={COLORS.cyan}>Converse API</LinkSpan><br/>
             IAM Role（Pod Identity）访问<br/>
-            Semaphore 限制并发（默认 50）
+            Semaphore 并发限制（50）+ 分布式 Redis Token Bucket 限流<br/>
+            Prompt Cache 支持（写入 1.25x / 读取 0.1x）
           </Card>
           <Card color={COLORS.red} title="Aurora PostgreSQL">
             用户、Token、RefreshToken<br/>
-            Usage 用量记录、AuditLog 审计<br/>
-            ModelPricing 定价表、SystemConfig<br/>
+            Usage 用量记录（含 cache token 明细）<br/>
+            AuditLog 审计、ModelPricing 定价表<br/>
             AsyncPG 异步驱动，连接池 10+20
           </Card>
           <Card color={COLORS.red} title="Cognito">
@@ -441,6 +452,18 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
             Docker 镜像仓库<br/>
             Backend + Frontend 镜像<br/>
             build-and-push.sh 自动构建推送
+          </Card>
+          <Card color={COLORS.red} title="Redis Standalone">
+            kbp 命名空间内独立部署<br/>
+            分布式 Token Bucket 限流（Lua 原子脚本）<br/>
+            全局速率控制，所有 Pod 共享<br/>
+            不可用时回退 LocalTokenBucket（按 Pod）
+          </Card>
+          <Card color={COLORS.red} title="Secrets Manager">
+            所有密钥的单一事实来源<br/>
+            ESO 通过 Pod Identity 认证访问<br/>
+            refreshInterval: 1h 自动同步<br/>
+            deploy-all.sh 推送密钥
           </Card>
           <Card color={COLORS.red} title="Global Accelerator">
             Anycast IP 全球接入<br/>
@@ -509,7 +532,7 @@ function ArchitecturePage({ navigateTo }: { navigateTo: (page: PageKey, phase?: 
         <Arrow label="" />
 
         <Box layer="aws" title="AWS Services"
-          items={["Bedrock (Multi-Model)", "Aurora PostgreSQL", "Cognito", "ECR"]}
+          items={["Bedrock (Multi-Model)", "Aurora PostgreSQL", "Redis", "Secrets Manager", "Cognito", "ECR"]}
           active={active === "aws"} onClick={() => toggle("aws")} />
 
         {/* Legend */}
@@ -557,9 +580,9 @@ function ArchitecturePage({ navigateTo }: { navigateTo: (page: PageKey, phase?: 
               [COLORS.orange,  "CSRF",   "SecurityMiddleware: Authorization 或 X-Requested-With 有其一即通过（仅绕过 CSRF 层）", null],
               [COLORS.purple,  "Auth",   "AuthService: Bearer token 必须有效，X-Requested-With 无法替代 → 无 token 则 401", null],
               [COLORS.purple,  "Translate", "Translator 将 OpenAI schema 转换为 BedrockRequest；Anthropic 模型走 InvokeModel，其他走 Converse API", "phase1" as TranslationPhase],
-              [COLORS.red,     "Bedrock", "BedrockClient 调用 AWS Bedrock 模型（Semaphore 限流，自动路由 API）", "phase2a" as TranslationPhase],
-              [COLORS.purple,  "Stream", "SSE 流式响应，Translator 将 Bedrock 格式转换回 OpenAI 格式", "stream-anthropic" as TranslationPhase],
-              [COLORS.purple,  "Audit",  "UsageStats + AuditLog 写入 Aurora PostgreSQL", null],
+              [COLORS.red,     "Bedrock", "BedrockClient 调用 AWS Bedrock 模型（分布式 Redis Token Bucket + Semaphore 限流）", "phase2a" as TranslationPhase],
+              [COLORS.purple,  "Stream", "SSE 流式响应（含断连检测），Translator 将 Bedrock 格式转换回 OpenAI 格式", "stream-anthropic" as TranslationPhase],
+              [COLORS.purple,  "Audit",  "UsageStats（含 cache tokens）+ AuditLog 写入 Aurora PostgreSQL", null],
               [COLORS.accent,  "Client", "客户端收到流式响应", null],
             ].map(([color, tag, text, linkPhase], i) => (
               <div key={i} style={{ display: "flex", gap: 8, marginBottom: 7, alignItems: "flex-start" }}>

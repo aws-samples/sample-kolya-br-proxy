@@ -61,6 +61,32 @@ class Settings(BaseSettings):
         default=50,
         description="Maximum concurrent requests to AWS Bedrock (controls semaphore limit)",
     )
+    BEDROCK_ACCOUNT_RPM: int = Field(
+        default=500,
+        description="AWS Bedrock account-level RPM quota. Used to auto-compute rate limit. "
+        "Check your Service Quotas in the AWS console for the actual value.",
+    )
+    BEDROCK_EXPECTED_PODS: int = Field(
+        default=3,
+        description="Expected number of backend Pods (only used in local mode without Redis). "
+        "In Redis mode the global rate is account_rpm/60; in local mode each Pod gets account_rpm/60/expected_pods.",
+    )
+    BEDROCK_RATE_BURST: int = Field(
+        default=10,
+        description="Token bucket: maximum burst size. In Redis mode this is the global burst; "
+        "in local mode it is per-Pod burst.",
+    )
+    PROMPT_CACHE_AUTO_INJECT: bool = Field(
+        default=True,
+        description="Default behavior for auto-injecting cache_control breakpoints (can be overridden per-request via bedrock_auto_cache)",
+    )
+
+    # Redis configuration (for distributed rate limiting)
+    REDIS_URL: Optional[str] = Field(
+        default=None,
+        description="Redis URL for distributed rate limiting. When set, rate limiting uses Redis "
+        "for global coordination across Pods. Falls back to per-Pod memory when unavailable.",
+    )
 
     # JWT settings
     JWT_SECRET_KEY: str = Field(description="JWT secret key for token signing")

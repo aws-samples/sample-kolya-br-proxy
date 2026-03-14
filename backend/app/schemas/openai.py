@@ -60,6 +60,7 @@ class ChatCompletionRequest(BaseModel):
     bedrock_prompt_variables: Optional[Dict[str, Any]] = None
     bedrock_additional_model_response_field_paths: Optional[List[str]] = None
     bedrock_request_metadata: Optional[Dict[str, str]] = None
+    bedrock_auto_cache: Optional[bool] = None  # None = use server default
 
 
 class ChatCompletionChoice(BaseModel):
@@ -70,12 +71,20 @@ class ChatCompletionChoice(BaseModel):
     finish_reason: Optional[str] = None
 
 
+class PromptTokensDetails(BaseModel):
+    """Breakdown of prompt token usage (OpenAI compatible)."""
+
+    cached_tokens: int = 0
+    cache_creation_tokens: int = 0
+
+
 class UsageInfo(BaseModel):
     """Token usage information."""
 
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    prompt_tokens_details: Optional[PromptTokensDetails] = None
 
 
 class ChatCompletionResponse(BaseModel):

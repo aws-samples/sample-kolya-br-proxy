@@ -12,7 +12,7 @@ metadata:
   labels:
     app: backend
 spec:
-  replicas: 2  # 高可用配置，提供负载均衡和故障转移
+  replicas: 1
   selector:
     matchLabels:
       app: backend
@@ -24,6 +24,20 @@ spec:
       serviceAccountName: backend
       nodeSelector:
         karpenter.sh/nodepool: common-nodepool
+      initContainers:
+      - name: db-migrate
+        image: 612674025488.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-backend:latest
+        command: ["uv", "run", "python", "scripts/migrate.py"]
+        workingDir: /app/backend
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        env:
+        - name: KBR_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: database-url
       containers:
       - name: backend
         image: 612674025488.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-backend:latest
@@ -100,6 +114,6 @@ spec:
             path: /health/
             port: 8000
           initialDelaySeconds: 30
-          periodSeconds: 5
+          periodSeconds: 10
           timeoutSeconds: 3
           failureThreshold: 2

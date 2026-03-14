@@ -369,8 +369,8 @@ deploy_app() {
     cd "$APP_DIR"
 
     # 检查配置文件
-    if [ ! -f "secrets.yaml" ]; then
-        print_error "secrets.yaml 不存在"
+    if [ ! -f "external-secret.yaml" ]; then
+        print_error "external-secret.yaml 不存在"
         echo ""
         echo "请先运行: ./deploy.sh init"
         exit 1
@@ -460,8 +460,9 @@ deploy_app() {
     # 创建或更新命名空间
     kubectl apply -f namespace.yaml
 
-    print_info "步骤 2/8: 部署 Secrets..."
-    kubectl apply -f secrets.yaml
+    print_info "步骤 2/8: 部署 Secrets (External Secrets Operator)..."
+    kubectl apply -f secret-store.yaml
+    kubectl apply -f external-secret.yaml
 
     print_info "步骤 3/8: 部署 ConfigMaps..."
     kubectl apply -f backend-configmap.yaml
@@ -529,8 +530,9 @@ update_config() {
 
     case $choice in
         1)
-            print_info "更新 Secrets..."
-            kubectl apply -f secrets.yaml
+            print_info "更新 Secrets (External Secrets Operator)..."
+            kubectl apply -f secret-store.yaml
+            kubectl apply -f external-secret.yaml
             kubectl rollout restart deployment/backend -n ${NAMESPACE}
             kubectl rollout restart deployment/frontend -n ${NAMESPACE}
             ;;
@@ -549,7 +551,8 @@ update_config() {
             ;;
         4)
             print_info "更新所有配置..."
-            kubectl apply -f secrets.yaml
+            kubectl apply -f secret-store.yaml
+            kubectl apply -f external-secret.yaml
             kubectl apply -f backend-configmap.yaml
             kubectl apply -f frontend-configmap.yaml
             ./generate-ingress.sh
@@ -650,7 +653,8 @@ delete_app() {
     kubectl delete -f backend-deployment.yaml --ignore-not-found=true
     kubectl delete -f frontend-configmap.yaml --ignore-not-found=true
     kubectl delete -f backend-configmap.yaml --ignore-not-found=true
-    kubectl delete -f secrets.yaml --ignore-not-found=true
+    kubectl delete -f external-secret.yaml --ignore-not-found=true
+    kubectl delete -f secret-store.yaml --ignore-not-found=true
 
     print_info "等待资源清理..."
     sleep 5

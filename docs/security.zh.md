@@ -356,7 +356,7 @@ WAF WebACL 包含 5 条规则，按优先级顺序评估：
 |--------|-------|------|------------|------|
 | 1 | `rate-limit-auth` | 限速（路径范围） | 单 IP 20 次 / 5 分钟，作用于 `/admin/auth/*` | 防止 OAuth 暴力破解 |
 | 2 | `rate-limit-chat` | 限速（路径范围） | 单 IP 300 次 / 5 分钟，作用于 `/v1/chat/completions` | 防止 API 滥用 |
-| 3 | `aws-managed-common` | AWS 托管规则组 | AWSManagedRulesCommonRuleSet | SQLi、XSS 等通用攻击防护 |
+| 3 | `aws-managed-common` | AWS 托管规则组 | AWSManagedRulesCommonRuleSet（部分规则降级为 Count） | SQLi、XSS 等通用攻击防护 |
 | 4 | `aws-managed-known-bad-inputs` | AWS 托管规则组 | AWSManagedRulesKnownBadInputsRuleSet | 已知恶意载荷（Log4j 等） |
 | 5 | `rate-limit-global` | 限速（全局） | 单 IP 2000 次 / 5 分钟 | 全局滥用防护 |
 
@@ -367,6 +367,20 @@ WAF WebACL 包含 5 条规则，按优先级顺序评估：
 - AWS 托管规则捕获已知攻击模式（SQLi、XSS、Log4j 等），与速率无关
 - 全局限速作为兜底，拦截超过总体阈值的任何 IP
 - 默认动作为 **Allow** —— 只有匹配规则条件的请求才会被拦截
+
+#### Rule 3 规则排除（`rule_action_override` → Count）
+
+`AWSManagedRulesCommonRuleSet` 中的部分规则会误杀 LLM API 的正常流量。以下规则已通过 `rule_action_override` 降级为 **Count**（仅记录，不拦截）：
+
+| 被排除的规则 | 误杀场景 | 降级理由 |
+|-------------|---------|---------|
+| `SizeRestrictions_BODY` | Agent 循环请求体（system prompt + tools 列表 + 多轮对话历史）超过 8KB 限制 | LLM 请求体天然较大，8KB 阈值对此类 API 不适用 |
+| `CrossSiteScripting_BODY` | 用户消息中的代码片段包含 `<script>` 等标签，触发 XSS 误报 | 聊天内容中包含代码是正常场景，且 API 不直接渲染 HTML |
+| `NoUserAgent_HEADER` | 部分 SDK 客户端（OpenCode 等）不发送 `User-Agent` 头 | API 客户端不一定发送 User-Agent，且已有 Bearer Token 认证 |
+
+**安全保障：** `/v1/chat/completions` 路径已受 Bearer Token 认证 + IP 速率限制（300 次/5 分钟）保护。降级这些规则不会降低实际安全性，但避免了对正常 LLM 流量的误拦截。
+
+**排除的规则仍以 Count 模式运行**，可在 CloudWatch 指标中监控触发频率。如果发现异常模式，可随时恢复为 Block。
 
 ### 限流阈值设计依据
 
@@ -462,6 +476,49 @@ API 客户端请求（无 Origin 头）→ ALB + WAF → SecurityMiddleware → 
 | Referer 验证 | 关闭 | 关闭 | 可选启用 |
 | 安全响应头 | 启用 | 启用 | 启用 |
 | Swagger UI | 启用（DEBUG） | 启用（DEBUG） | 关闭 |
+
+---
+
+## 密钥管理
+
+### 架构
+
+密钥通过 **AWS Secrets Manager** 管理，由 **External Secrets Operator（ESO）** 自动同步到 Kubernetes。这取代了本地 `secrets.yaml` 文件，确保密钥不会存在于版本控制中。
+
+### 工作原理
+
+```
+deploy-all.sh
+  ├── aws secretsmanager put-secret-value  →  AWS Secrets Manager
+  │                                              （单一事实来源）
+  │
+  └── kubectl apply ExternalSecret CRDs
+        ↓
+      External Secrets Operator（ESO）
+        ├── 通过 Pod Identity 认证（无需静态 AWS 凭证）
+        ├── 从 AWS Secrets Manager 读取密钥
+        ├── 创建/更新 Kubernetes Secrets（refreshInterval: 1h）
+        └── 后端 Pod 通过 envFrom / env 引用消费密钥
+```
+
+### 安全特性
+
+| 特性 | 实现方式 |
+|------|---------|
+| **密钥不入 Git** | 密钥存储在 AWS Secrets Manager 中，不在 `secrets.yaml` 或 Helm values 中 |
+| **自动同步** | ESO 每 1 小时刷新一次（`refreshInterval: 1h`），自动拾取密钥轮换 |
+| **基于 IAM 的访问** | ESO 通过 EKS Pod Identity 认证 — 无需静态 `AWS_ACCESS_KEY_ID` |
+| **部署推送** | `deploy-all.sh` 通过 `aws secretsmanager put-secret-value` 推送密钥 |
+| **最小权限** | ESO IAM 角色仅对特定密钥 ARN 拥有 `secretsmanager:GetSecretValue` 权限 |
+
+### 管理的密钥
+
+| 密钥 | 内容 |
+|------|------|
+| 数据库凭证 | `DATABASE_URL`（Aurora PostgreSQL 连接字符串） |
+| JWT 签名密钥 | `KBR_JWT_SECRET_KEY`（Fernet 加密 + JWT 签名） |
+| OAuth 客户端密钥 | Cognito 和 Microsoft OAuth 客户端密钥 |
+| Token 加密密钥 | 用于 API Token 的 Fernet 加密/解密 |
 
 ---
 

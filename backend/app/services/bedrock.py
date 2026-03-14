@@ -32,6 +32,169 @@ from app.schemas.bedrock import (
 logger = logging.getLogger(__name__)
 
 
+class LocalTokenBucket:
+    """Per-pod in-memory token bucket rate limiter.
+
+    Used as the primary rate limiter when Redis is not configured,
+    or as fallback when Redis is unavailable.
+    """
+
+    def __init__(self, rate: float, capacity: int):
+        self._rate = rate
+        self._capacity = capacity
+        self._tokens = float(capacity)
+        self._last_refill = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> None:
+        """Wait until a token is available, then consume one."""
+        while True:
+            async with self._lock:
+                self._refill()
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait = (1.0 - self._tokens) / self._rate
+            await asyncio.sleep(wait)
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+        self._last_refill = now
+
+
+class RedisTokenBucket:
+    """Distributed token bucket using Redis + Lua script.
+
+    Provides globally coordinated rate limiting across all Pods.
+    """
+
+    LUA_SCRIPT = """
+    local key = KEYS[1]
+    local rate = tonumber(ARGV[1])
+    local capacity = tonumber(ARGV[2])
+    local now = tonumber(ARGV[3])
+
+    local data = redis.call('HMGET', key, 'tokens', 'last_refill')
+    local tokens = tonumber(data[1]) or capacity
+    local last_refill = tonumber(data[2]) or now
+
+    -- Refill tokens based on elapsed time
+    local elapsed = now - last_refill
+    tokens = math.min(capacity, tokens + elapsed * rate)
+
+    if tokens >= 1 then
+        tokens = tokens - 1
+        redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+        redis.call('EXPIRE', key, 300)
+        return 1
+    else
+        redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+        redis.call('EXPIRE', key, 300)
+        return 0
+    end
+    """
+
+    def __init__(self, rate: float, capacity: int, key: str = "kbp:rate_limit:bedrock"):
+        self._rate = rate
+        self._capacity = capacity
+        self._key = key
+        self._script_sha: Optional[str] = None
+
+    async def acquire(self) -> bool:
+        """Try to acquire a token from Redis.
+
+        Returns True if token acquired, False if bucket empty.
+        Raises exception if Redis is unavailable.
+        """
+        from app.core.redis import get_redis
+
+        redis_client = await get_redis()
+        if redis_client is None:
+            raise ConnectionError("Redis not available")
+
+        now = time.time()
+
+        if self._script_sha is None:
+            self._script_sha = await redis_client.script_load(self.LUA_SCRIPT)
+
+        result = await redis_client.evalsha(
+            self._script_sha,
+            1,
+            self._key,
+            str(self._rate),
+            str(self._capacity),
+            str(now),
+        )
+        return result == 1
+
+
+class TokenBucket:
+    """Facade that uses Redis for distributed rate limiting with local fallback.
+
+    When Redis is configured and available, uses RedisTokenBucket for
+    globally coordinated rate limiting. Falls back to LocalTokenBucket
+    (per-pod) when Redis is unavailable — never skips rate limiting.
+
+    Rate computation:
+      - Redis mode (global):  rate = account_rpm / 60
+      - Local mode (per-pod): rate = account_rpm / 60 / expected_pods
+    """
+
+    def __init__(self, account_rpm: int, expected_pods: int, burst: int):
+        self._redis_failures = 0
+        self._max_redis_failures = 3
+
+        global_rate = account_rpm / 60.0
+        local_rate = global_rate / max(expected_pods, 1)
+
+        settings = get_settings()
+        self._redis: Optional[RedisTokenBucket] = None
+
+        if settings.REDIS_URL:
+            self._rate = global_rate
+            self._redis = RedisTokenBucket(global_rate, burst)
+            self._local = LocalTokenBucket(local_rate, burst)
+            logger.info(
+                f"Rate limiter: Redis distributed mode — "
+                f"global {global_rate:.2f} req/s ({account_rpm} RPM), burst={burst}, "
+                f"local fallback {local_rate:.2f} req/s (/{expected_pods} pods)"
+            )
+        else:
+            self._rate = local_rate
+            self._local = LocalTokenBucket(local_rate, burst)
+            logger.info(
+                f"Rate limiter: local per-pod mode — "
+                f"{local_rate:.2f} req/s ({account_rpm} RPM / {expected_pods} pods), burst={burst}"
+            )
+
+    async def acquire(self) -> None:
+        """Wait until a token is available, then consume one.
+
+        Tries Redis first, falls back to local on failure.
+        """
+        if self._redis is not None and self._redis_failures < self._max_redis_failures:
+            try:
+                while True:
+                    acquired = await self._redis.acquire()
+                    if acquired:
+                        self._redis_failures = 0
+                        return
+                    await asyncio.sleep((1.0 / self._rate) * 0.5)
+            except Exception as e:
+                self._redis_failures += 1
+                if self._redis_failures >= self._max_redis_failures:
+                    logger.warning(
+                        f"Redis rate limiter failed {self._redis_failures} times, "
+                        f"falling back to local: {e}"
+                    )
+                else:
+                    logger.debug(f"Redis rate limiter error, using local fallback: {e}")
+
+        await self._local.acquire()
+
+
 class BedrockClient:
     """AWS Bedrock client using async aioboto3."""
 
@@ -47,8 +210,8 @@ class BedrockClient:
         self.config = Config(
             region_name=settings.AWS_REGION,
             retries={"max_attempts": 3, "mode": "adaptive"},
-            connect_timeout=60,  # 60 seconds for connection
-            read_timeout=1800,  # 30 minutes for long-running tasks
+            connect_timeout=10,  # 10 seconds for connection
+            read_timeout=300,  # 5 minutes: covers thinking model pauses and long prefill latency
             max_pool_connections=settings.BEDROCK_MAX_CONCURRENT_REQUESTS,
             tcp_keepalive=True,  # Enable TCP keepalive
         )
@@ -56,6 +219,17 @@ class BedrockClient:
         # Semaphore to limit concurrent Bedrock requests and provide
         # backpressure instead of queuing against the connection pool
         self._semaphore = asyncio.Semaphore(settings.BEDROCK_MAX_CONCURRENT_REQUESTS)
+
+        # Token bucket for rate limiting (controls requests per second)
+        # Semaphore limits concurrency; token bucket limits rate
+        # Rate auto-computed from account RPM:
+        #   Redis mode  → global rate = account_rpm / 60
+        #   Local mode  → per-pod rate = account_rpm / 60 / expected_pods
+        self._rate_limiter = TokenBucket(
+            account_rpm=settings.BEDROCK_ACCOUNT_RPM,
+            expected_pods=settings.BEDROCK_EXPECTED_PODS,
+            burst=settings.BEDROCK_RATE_BURST,
+        )
 
         # Set AWS profile if configured
         if settings.AWS_PROFILE:
@@ -78,6 +252,9 @@ class BedrockClient:
             cls._instance = cls()
             logger.info("BedrockClient singleton initialized")
         return cls._instance
+
+    CACHE_CONTROL_MARKER = {"type": "ephemeral"}
+    MIN_CACHEABLE_CHARS = 4096  # ~1024 tokens (chars/4 rough estimate)
 
     # Models that require cross-region inference profile
     # These models don't support direct on-demand invocation
@@ -163,6 +340,116 @@ class BedrockClient:
         return model_name
 
     @staticmethod
+    def _body_has_cache_control(body: dict) -> bool:
+        """Check if the body already contains any cache_control markers.
+
+        If the client (or prompt_caching pass-through) has already set
+        cache_control on system, tools, or message content blocks, we skip
+        auto-injection to avoid conflicts.
+        """
+        # Check system (array format)
+        system = body.get("system")
+        if isinstance(system, list):
+            for block in system:
+                if isinstance(block, dict) and "cache_control" in block:
+                    return True
+
+        # Check tools
+        for tool in body.get("tools", []):
+            if isinstance(tool, dict) and "cache_control" in tool:
+                return True
+
+        # Check message content blocks
+        for msg in body.get("messages", []):
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and "cache_control" in block:
+                        return True
+
+        return False
+
+    @staticmethod
+    def _inject_prompt_cache_breakpoints(body: dict) -> None:
+        """Inject up to 3 cache_control breakpoints into the request body.
+
+        Breakpoints (in order):
+        1. System prompt — last block (string → converted to array first)
+        2. Last tool definition
+        3. Second-to-last user message (last content block)
+
+        Each injection is guarded by a minimum character threshold to avoid
+        caching very short content (which incurs 25% write premium with 0%
+        hit rate).
+        """
+        marker = BedrockClient.CACHE_CONTROL_MARKER
+        threshold = BedrockClient.MIN_CACHEABLE_CHARS
+        injected: list[str] = []
+
+        # --- Breakpoint 1: System prompt ---
+        system = body.get("system")
+        if system is not None:
+            if isinstance(system, str):
+                if len(system) >= threshold:
+                    body["system"] = [
+                        {"type": "text", "text": system, "cache_control": marker}
+                    ]
+                    injected.append("system")
+            elif isinstance(system, list) and system:
+                # Estimate total chars across all text blocks
+                total = sum(
+                    len(b.get("text", "")) for b in system if isinstance(b, dict)
+                )
+                if total >= threshold:
+                    system[-1]["cache_control"] = marker
+                    injected.append("system")
+
+        # --- Breakpoint 2: Last tool definition ---
+        tools = body.get("tools")
+        if tools:
+            total_chars = 0
+            for t in tools:
+                if isinstance(t, dict):
+                    total_chars += len(t.get("name", ""))
+                    total_chars += len(t.get("description", ""))
+                    total_chars += len(str(t.get("input_schema", {})))
+            if total_chars >= threshold:
+                tools[-1]["cache_control"] = marker
+                injected.append("tools[-1]")
+
+        # --- Breakpoint 3: Second-to-last user message ---
+        messages = body.get("messages", [])
+        user_indices = [
+            i
+            for i, m in enumerate(messages)
+            if isinstance(m, dict) and m.get("role") == "user"
+        ]
+        if len(user_indices) >= 2:
+            target_idx = user_indices[-2]
+            target_msg = messages[target_idx]
+            content = target_msg.get("content")
+
+            if isinstance(content, str):
+                if len(content) >= threshold:
+                    target_msg["content"] = [
+                        {"type": "text", "text": content, "cache_control": marker}
+                    ]
+                    injected.append("messages[user-2]")
+            elif isinstance(content, list) and content:
+                total = sum(
+                    len(b.get("text", "") if isinstance(b, dict) else str(b))
+                    for b in content
+                )
+                if total >= threshold:
+                    last_block = content[-1]
+                    if isinstance(last_block, dict):
+                        last_block["cache_control"] = marker
+                        injected.append("messages[user-2]")
+
+        if injected:
+            logger.info(f"Auto-injected prompt cache breakpoints: {injected}")
+
+    @staticmethod
     def _build_anthropic_body(request: BedrockRequest) -> dict:
         """
         Build an Anthropic Messages API request body from a BedrockRequest.
@@ -221,6 +508,22 @@ class BedrockClient:
         # --- prompt caching ---
         if request.prompt_caching:
             body.update(request.prompt_caching)
+
+        # --- auto-inject prompt cache breakpoints ---
+        should_inject = request.auto_cache  # per-request override
+        if should_inject is None:
+            should_inject = get_settings().PROMPT_CACHE_AUTO_INJECT  # server default
+        has_cache = (
+            BedrockClient._body_has_cache_control(body) if should_inject else False
+        )
+        logger.debug(
+            f"Prompt cache check: auto_cache={request.auto_cache}, "
+            f"server_default={get_settings().PROMPT_CACHE_AUTO_INJECT}, "
+            f"should_inject={should_inject}, has_cache_control={has_cache}, "
+            f"system_len={len(body.get('system', '') or '')}"
+        )
+        if should_inject and not has_cache:
+            BedrockClient._inject_prompt_cache_breakpoints(body)
 
         # --- effort parameter: requires beta flag + output_config wrapper ---
         # Users may pass "effort" as a top-level field (via additional_model_request_fields).
@@ -596,6 +899,7 @@ class BedrockClient:
         Raises:
             Exception: If all retries fail
         """
+        await self._rate_limiter.acquire()
         async with self._semaphore:
             return await self._invoke_inner(model_name, request)
 
@@ -673,6 +977,12 @@ class BedrockClient:
                         usage = BedrockUsage(
                             input_tokens=usage_data.get("input_tokens", 0),
                             output_tokens=usage_data.get("output_tokens", 0),
+                            cache_creation_input_tokens=usage_data.get(
+                                "cache_creation_input_tokens", 0
+                            ),
+                            cache_read_input_tokens=usage_data.get(
+                                "cache_read_input_tokens", 0
+                            ),
                         )
 
                         bedrock_response = BedrockResponse(
@@ -685,17 +995,18 @@ class BedrockClient:
                             usage=usage,
                         )
 
+                    cache_info = ""
+                    if bedrock_response.usage.cache_creation_input_tokens:
+                        cache_info += f", cache_write={bedrock_response.usage.cache_creation_input_tokens}"
+                    if bedrock_response.usage.cache_read_input_tokens:
+                        cache_info += f", cache_read={bedrock_response.usage.cache_read_input_tokens}"
                     logger.info(
-                        "Bedrock invocation successful",
-                        extra={
-                            "model": model_name,
-                            "model_id": model_id,
-                            "api": "converse" if use_converse else "invoke_model",
-                            "attempt": attempt + 1,
-                            "duration_seconds": round(duration, 3),
-                            "input_tokens": bedrock_response.usage.input_tokens,
-                            "output_tokens": bedrock_response.usage.output_tokens,
-                        },
+                        f"Bedrock invocation successful: model={model_name}, "
+                        f"api={'converse' if use_converse else 'invoke_model'}, "
+                        f"attempt={attempt + 1}, duration={round(duration, 3)}s, "
+                        f"input={bedrock_response.usage.input_tokens}, "
+                        f"output={bedrock_response.usage.output_tokens}"
+                        f"{cache_info}"
                     )
 
                     return bedrock_response
@@ -755,7 +1066,8 @@ class BedrockClient:
         like thinking / effort are supported without extra mapping.
 
         Retry logic only applies to errors BEFORE streaming starts.
-        The semaphore is held for the entire duration of the stream.
+        The token bucket controls request rate; the semaphore is held for
+        the entire duration of the stream.
 
         Args:
             model_name: Model name
@@ -764,6 +1076,7 @@ class BedrockClient:
         Yields:
             BedrockStreamEvent instances
         """
+        await self._rate_limiter.acquire()
         async with self._semaphore:
             async for event in self._invoke_stream_inner(model_name, request):
                 yield event
@@ -950,6 +1263,12 @@ class BedrockClient:
                 usage=BedrockUsage(
                     input_tokens=usage_data.get("input_tokens", 0),
                     output_tokens=0,
+                    cache_creation_input_tokens=usage_data.get(
+                        "cache_creation_input_tokens", 0
+                    ),
+                    cache_read_input_tokens=usage_data.get(
+                        "cache_read_input_tokens", 0
+                    ),
                 ),
             )
 
@@ -1020,6 +1339,12 @@ class BedrockClient:
                 usage=BedrockUsage(
                     input_tokens=0,
                     output_tokens=usage_data.get("output_tokens", 0),
+                    cache_creation_input_tokens=usage_data.get(
+                        "cache_creation_input_tokens", 0
+                    ),
+                    cache_read_input_tokens=usage_data.get(
+                        "cache_read_input_tokens", 0
+                    ),
                 ),
             )
 

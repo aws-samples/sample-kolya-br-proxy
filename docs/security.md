@@ -356,7 +356,7 @@ The WAF WebACL contains five rules, evaluated in priority order:
 |----------|------|------|--------------------|---------|
 | 1 | `rate-limit-auth` | Rate-based (scoped) | 20 req / 5 min per IP on `/admin/auth/*` | Prevent OAuth brute force |
 | 2 | `rate-limit-chat` | Rate-based (scoped) | 300 req / 5 min per IP on `/v1/chat/completions` | Prevent API abuse |
-| 3 | `aws-managed-common` | AWS Managed Rule Group | AWSManagedRulesCommonRuleSet | SQLi, XSS, and other common exploits |
+| 3 | `aws-managed-common` | AWS Managed Rule Group | AWSManagedRulesCommonRuleSet (some rules overridden to Count) | SQLi, XSS, and other common exploits |
 | 4 | `aws-managed-known-bad-inputs` | AWS Managed Rule Group | AWSManagedRulesKnownBadInputsRuleSet | Known malicious payloads (Log4j, etc.) |
 | 5 | `rate-limit-global` | Rate-based (global) | 2000 req / 5 min per IP | Global abuse prevention |
 
@@ -367,6 +367,20 @@ The WAF WebACL contains five rules, evaluated in priority order:
 - AWS Managed Rules catch known attack patterns (SQLi, XSS, Log4j, etc.) regardless of rate
 - The global rate limit acts as a catch-all for any IP exceeding overall thresholds
 - Default action is **Allow** — only requests matching a rule's condition are blocked
+
+#### Rule 3 Exclusions (`rule_action_override` → Count)
+
+Certain rules in `AWSManagedRulesCommonRuleSet` produce false positives on legitimate LLM API traffic. The following rules are overridden to **Count** (log only, no block) via `rule_action_override`:
+
+| Excluded Rule | False Positive Scenario | Rationale |
+|--------------|------------------------|-----------|
+| `SizeRestrictions_BODY` | Agent loop request bodies (system prompt + tool definitions + multi-turn conversation history) exceed the 8KB limit | LLM request bodies are inherently large; the 8KB threshold is unsuitable for this API |
+| `CrossSiteScripting_BODY` | Code snippets in user messages contain `<script>` tags, triggering XSS false positives | Chat content containing code is a normal use case, and the API does not render HTML |
+| `NoUserAgent_HEADER` | Some SDK clients (OpenCode, etc.) do not send a `User-Agent` header | API clients may not send User-Agent; requests are already authenticated via Bearer Token |
+
+**Security assurance:** The `/v1/chat/completions` path is protected by Bearer Token authentication + IP rate limiting (300 req / 5 min). Downgrading these rules does not reduce actual security but prevents false-positive blocking of normal LLM traffic.
+
+**Excluded rules still operate in Count mode**, so their trigger frequency can be monitored in CloudWatch metrics. If anomalous patterns are detected, they can be restored to Block at any time.
 
 ### Rate Limit Design Rationale
 
@@ -462,6 +476,49 @@ API Client Request (no Origin header) → ALB + WAF → SecurityMiddleware → R
 | Referer validation | Disabled | Disabled | Optionally enabled |
 | Security response headers | Enabled | Enabled | Enabled |
 | Swagger UI | Enabled (DEBUG) | Enabled (DEBUG) | Disabled |
+
+---
+
+## Secrets Management
+
+### Architecture
+
+Secrets are managed through **AWS Secrets Manager** with **External Secrets Operator (ESO)** syncing them into Kubernetes. This replaces local `secrets.yaml` files and ensures secrets never exist in version control.
+
+### How It Works
+
+```
+deploy-all.sh
+  ├── aws secretsmanager put-secret-value  →  AWS Secrets Manager
+  │                                              (single source of truth)
+  │
+  └── kubectl apply ExternalSecret CRDs
+        ↓
+      External Secrets Operator (ESO)
+        ├── Authenticates via Pod Identity (no static AWS creds)
+        ├── Reads secrets from AWS Secrets Manager
+        ├── Creates/updates Kubernetes Secrets (refreshInterval: 1h)
+        └── Backend Pods consume secrets via envFrom / env references
+```
+
+### Security Properties
+
+| Property | Implementation |
+|----------|---------------|
+| **No secrets in Git** | Secrets stored in AWS Secrets Manager, not in `secrets.yaml` or Helm values |
+| **Automatic sync** | ESO refreshes every 1 hour (`refreshInterval: 1h`), picking up rotations automatically |
+| **IAM-based access** | ESO authenticates via EKS Pod Identity -- no static `AWS_ACCESS_KEY_ID` needed |
+| **Deployment push** | `deploy-all.sh` pushes secrets via `aws secretsmanager put-secret-value` |
+| **Least privilege** | ESO IAM role only has `secretsmanager:GetSecretValue` for specific secret ARNs |
+
+### Managed Secrets
+
+| Secret | Contents |
+|--------|----------|
+| Database credentials | `DATABASE_URL` (Aurora PostgreSQL connection string) |
+| JWT signing key | `KBR_JWT_SECRET_KEY` (Fernet encryption + JWT signing) |
+| OAuth client secrets | Cognito and Microsoft OAuth client secrets |
+| Token encryption key | Used for API token Fernet encryption/decryption |
 
 ---
 

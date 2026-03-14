@@ -1,10 +1,20 @@
 #!/bin/bash
 set -e
 
-# Generate Helm values from Terraform outputs
+# Generate Helm values from Terraform outputs or environment variables
 # This script reads Terraform outputs and generates the Helm values files
 #
-# Usage: ./generate-values.sh [path-to-terraform-directory]
+# Environment variables take precedence over Terraform outputs.
+# This allows deploy-to-existing.sh to export values before calling this script,
+# while deploy-all.sh continues to work unchanged (env vars empty → fallback to terraform).
+#
+# Usage:
+#   ./generate-values.sh [path-to-terraform-directory]
+#
+# Supported environment variables:
+#   CLUSTER_NAME, CLUSTER_ENDPOINT, VPC_ID, AWS_REGION
+#   KARPENTER_SERVICE_ACCOUNT, KARPENTER_QUEUE_NAME
+#   SKIP_KARPENTER=true  (skip generating karpenter-values.yaml)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${1:-$SCRIPT_DIR/../../../iac-612674025488-us-west-2}"
@@ -19,27 +29,71 @@ function info() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
 
+function warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
 function error() {
     echo -e "${RED}[ERROR]${NC} $1"
     exit 1
 }
 
-if [ ! -d "$TF_DIR" ]; then
-    error "Terraform directory not found: $TF_DIR"
+# Helper: get value from env var, fallback to terraform output
+# Usage: tf_or_env "ENV_VAR_NAME" "terraform_output_key" [required=true]
+tf_or_env() {
+    local env_val="${!1}"
+    local tf_key="$2"
+    local required="${3:-true}"
+
+    if [[ -n "$env_val" ]]; then
+        echo "$env_val"
+        return 0
+    fi
+
+    if [[ "$TF_AVAILABLE" == "true" ]]; then
+        local tf_val
+        tf_val=$(terraform output -raw "$tf_key" 2>/dev/null) || true
+        if [[ -n "$tf_val" ]]; then
+            echo "$tf_val"
+            return 0
+        fi
+    fi
+
+    if [[ "$required" == "true" ]]; then
+        error "Missing required parameter: set $1 env var or provide via Terraform output '$tf_key'"
+    fi
+    echo ""
+}
+
+# Determine if Terraform is available
+TF_AVAILABLE=false
+if [[ -d "$TF_DIR" ]]; then
+    cd "$TF_DIR"
+    if terraform output -raw cluster_name &>/dev/null; then
+        TF_AVAILABLE=true
+        info "Reading Terraform outputs from: $TF_DIR"
+    fi
 fi
 
-info "Reading Terraform outputs from: $TF_DIR"
+if [[ "$TF_AVAILABLE" == "false" && -z "$CLUSTER_NAME" ]]; then
+    error "No Terraform directory found and CLUSTER_NAME env var not set. Provide parameters via environment variables or a valid Terraform directory."
+fi
 
-cd "$TF_DIR"
+# Get parameters (env var → terraform output)
+CLUSTER_NAME=$(tf_or_env "CLUSTER_NAME" "cluster_name" "true")
+VPC_ID=$(tf_or_env "VPC_ID" "vpc_id" "true")
+AWS_REGION=$(tf_or_env "AWS_REGION" "region" "false")
+AWS_REGION="${AWS_REGION:-us-west-2}"
+CLUSTER_ENDPOINT=$(tf_or_env "CLUSTER_ENDPOINT" "cluster_endpoint" "false")
+KARPENTER_SERVICE_ACCOUNT=$(tf_or_env "KARPENTER_SERVICE_ACCOUNT" "karpenter_service_account" "false")
+KARPENTER_QUEUE_NAME=$(tf_or_env "KARPENTER_QUEUE_NAME" "karpenter_queue_name" "false")
 
-# Get Terraform outputs
-CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null) || error "Failed to get cluster_name"
-CLUSTER_ENDPOINT=$(terraform output -raw cluster_endpoint 2>/dev/null) || error "Failed to get cluster_endpoint"
-VPC_ID=$(terraform output -raw vpc_id 2>/dev/null) || error "Failed to get vpc_id"
-AWS_REGION=$(terraform output -raw region 2>/dev/null || echo "us-west-2")
-KARPENTER_SERVICE_ACCOUNT=$(terraform output -raw karpenter_service_account 2>/dev/null) || error "Failed to get karpenter_service_account"
-KARPENTER_QUEUE_NAME=$(terraform output -raw karpenter_queue_name 2>/dev/null) || error "Failed to get karpenter_queue_name"
+info "Parameters:"
+info "  CLUSTER_NAME=$CLUSTER_NAME"
+info "  VPC_ID=$VPC_ID"
+info "  AWS_REGION=$AWS_REGION"
 
+# Generate ALBC values
 info "Generating AWS Load Balancer Controller values..."
 cat > "$SCRIPT_DIR/aws-load-balancer-controller-values.yaml" <<EOF
 # AWS Load Balancer Controller Helm Values
@@ -55,8 +109,14 @@ serviceAccount:
   # The IAM role is created in modules/eks-addons
 EOF
 
-info "Generating Karpenter values..."
-cat > "$SCRIPT_DIR/karpenter-values.yaml" <<EOF
+# Generate Karpenter values (skip if SKIP_KARPENTER=true or missing required params)
+if [[ "${SKIP_KARPENTER}" == "true" ]]; then
+    warn "Skipping Karpenter values generation (SKIP_KARPENTER=true)"
+elif [[ -z "$CLUSTER_ENDPOINT" || -z "$KARPENTER_SERVICE_ACCOUNT" || -z "$KARPENTER_QUEUE_NAME" ]]; then
+    warn "Skipping Karpenter values generation (missing CLUSTER_ENDPOINT, KARPENTER_SERVICE_ACCOUNT, or KARPENTER_QUEUE_NAME)"
+else
+    info "Generating Karpenter values..."
+    cat > "$SCRIPT_DIR/karpenter-values.yaml" <<EOF
 # Karpenter Helm Values
 # Generated automatically from Terraform outputs
 
@@ -68,10 +128,13 @@ settings:
   clusterEndpoint: ${CLUSTER_ENDPOINT}
   interruptionQueue: ${KARPENTER_QUEUE_NAME}
 EOF
+fi
 
 info "Values files generated successfully!"
 info "  - aws-load-balancer-controller-values.yaml"
-info "  - karpenter-values.yaml"
+if [[ "${SKIP_KARPENTER}" != "true" && -n "$CLUSTER_ENDPOINT" && -n "$KARPENTER_SERVICE_ACCOUNT" && -n "$KARPENTER_QUEUE_NAME" ]]; then
+    info "  - karpenter-values.yaml"
+fi
 info "  - metrics-server-values.yaml (static, no changes needed)"
 info ""
 info "Next step: Run ./install.sh to install the Helm charts"

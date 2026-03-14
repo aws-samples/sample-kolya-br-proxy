@@ -28,6 +28,8 @@ class ModelPricing:
         prompt_tokens: int,
         completion_tokens: int,
         region: str = None,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
     ) -> Decimal:
         """
         Calculate the cost for a model usage.
@@ -35,9 +37,11 @@ class ModelPricing:
         Args:
             model: Model name (e.g. "meta.llama3-3-70b-instruct-v1:0"
                    or "global.amazon.nova-pro-v1:0" for cross-region)
-            prompt_tokens: Number of input tokens
+            prompt_tokens: Number of input tokens (excludes cache tokens)
             completion_tokens: Number of output tokens
             region: AWS region (defaults to configured AWS_REGION)
+            cache_creation_input_tokens: Tokens written to cache (1.25x input price)
+            cache_read_input_tokens: Tokens read from cache (0.1x input price)
 
         Returns:
             Cost in USD as Decimal
@@ -61,7 +65,18 @@ class ModelPricing:
                 input_price_per_token, output_price_per_token = pricing
                 input_cost = Decimal(prompt_tokens) * input_price_per_token
                 output_cost = Decimal(completion_tokens) * output_price_per_token
-                return input_cost + output_cost
+                # Cache tokens use differentiated pricing
+                cache_write_cost = (
+                    Decimal(cache_creation_input_tokens)
+                    * input_price_per_token
+                    * Decimal("1.25")
+                )
+                cache_read_cost = (
+                    Decimal(cache_read_input_tokens)
+                    * input_price_per_token
+                    * Decimal("0.1")
+                )
+                return input_cost + output_cost + cache_write_cost + cache_read_cost
 
         # If no database or pricing not found, raise error
         logger.error(f"No pricing found for model: {model}, region: {region}")

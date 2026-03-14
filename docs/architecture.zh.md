@@ -19,7 +19,7 @@ Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 访问 AWS B
 
 ## 1. 系统架构概览
 
-系统采用经典三层架构：Nginx 托管的 Vue 3 前端、运行在 Uvicorn 上的 FastAPI 后端，以及作为上游 LLM 提供者的 AWS Bedrock。所有组件运行在 AWS EKS 集群内，使用 PostgreSQL 进行持久化存储，并可选使用 Redis 进行令牌缓存。
+系统采用经典三层架构：Nginx 托管的 Vue 3 前端、运行在 Uvicorn 上的 FastAPI 后端，以及作为上游 LLM 提供者的 AWS Bedrock。所有组件运行在 AWS EKS 集群内，使用 PostgreSQL 进行持久化存储、Redis 进行分布式限流，并通过 External Secrets Operator（ESO）管理密钥。
 
 ```mermaid
 graph LR
@@ -44,7 +44,7 @@ graph LR
 
     subgraph Data_Stores ["Data Stores"]
         PG["Aurora PostgreSQL"]
-        Redis["Redis<br/>(optional cache)"]
+        Redis["Redis Standalone<br/>(分布式限流)"]
     end
 
     subgraph AWS_Services ["AWS Services"]
@@ -59,7 +59,7 @@ graph LR
     Uvicorn --> FastAPI
     FastAPI -->|"InvokeModel /<br/>Converse API"| Bedrock
     FastAPI -->|"SQLAlchemy async"| PG
-    FastAPI -.->|"Token cache"| Redis
+    FastAPI -.->|"分布式限流"| Redis
 ```
 
 ### 关键设计决策
@@ -231,6 +231,8 @@ erDiagram
         int prompt_tokens
         int completion_tokens
         int total_tokens
+        int cache_creation_input_tokens "Cache 写入 tokens"
+        int cache_read_input_tokens "Cache 读取 tokens"
         decimal cost_usd "Numeric(10,4)"
         json request_metadata
         datetime created_at
@@ -371,7 +373,7 @@ graph TD
 
 ## 5. 基础设施架构
 
-基础设施使用 Terraform 定义（`iac-612674025488-us-west-2/`）。它配置 VPC、带有 Karpenter 自动扩缩的 EKS 集群、Aurora PostgreSQL，以及可选的 Global Accelerator。
+基础设施使用 Terraform 定义（`iac-612674025488-us-west-2/`）。它配置 VPC、带有 Karpenter 自动扩缩的 EKS 集群、Aurora PostgreSQL、Redis 分布式限流，以及可选的 Global Accelerator。密钥通过 AWS Secrets Manager + External Secrets Operator（ESO）管理。
 
 ```mermaid
 graph TD
@@ -390,11 +392,14 @@ graph TD
                     BackendPod["Backend Pod<br/>(FastAPI + Uvicorn)"]
                 end
                 Aurora["Aurora PostgreSQL<br/>(RDS Module)<br/>(私有，无外部访问)"]
+                Redis_Pod["Redis Standalone<br/>(kbp 命名空间)"]
+                ESO["External Secrets<br/>Operator (ESO)"]
             end
         end
 
         ECR["ECR<br/>(Container Registry)"]
         Bedrock["AWS Bedrock"]
+        SecretsManager["AWS Secrets Manager"]
         GA["Global Accelerator<br/>(optional)"]
     end
 
@@ -405,10 +410,39 @@ graph TD
     ALB --> BackendPod
     BackendPod -->|"Via NAT"| Bedrock
     BackendPod --> Aurora
+    BackendPod -.->|"限流"| Redis_Pod
+    ESO -->|"同步密钥<br/>(refreshInterval: 1h)"| SecretsManager
     Karpenter --> Private_Subnets
     LBC -.->|"创建和管理"| ALB
     ECR -.->|"Pull images"| EKS
 ```
+
+### 密钥管理（ESO + AWS Secrets Manager）
+
+密钥存储在 **AWS Secrets Manager** 中，由 **External Secrets Operator（ESO）** 自动同步到 Kubernetes Secrets。这取代了本地 `secrets.yaml` 文件，确保密钥不存在于版本控制中。
+
+| 组件 | 角色 |
+|------|------|
+| AWS Secrets Manager | 所有密钥的单一事实来源（数据库凭证、JWT 密钥、OAuth 客户端密钥等） |
+| External Secrets Operator（ESO） | 运行在集群内，监听 `ExternalSecret` CRD，从 AWS Secrets Manager 同步密钥到 K8s Secrets |
+| Pod Identity | ESO 通过 EKS Pod Identity 认证 AWS Secrets Manager（无需静态 AWS 凭证） |
+| `deploy-all.sh` | 部署时通过 `aws secretsmanager put-secret-value` 推送密钥到 AWS Secrets Manager |
+
+**同步行为：**
+- `refreshInterval: 1h` -- ESO 每小时重新从 Secrets Manager 拉取密钥
+- 密钥以标准 Kubernetes Secrets 形式创建，Pod 通过 `envFrom` 或 `env` 引用消费
+- AWS Secrets Manager 中的密钥轮换会在刷新间隔内自动生效
+
+### Redis 分布式限流
+
+**Redis standalone** 实例运行在 `kbp`（kolya-br-proxy）命名空间中，为所有后端 Pod 提供分布式限流。
+
+| 方面 | 详情 |
+|------|------|
+| 部署方式 | Redis standalone，部署在 `kbp` 命名空间（Kubernetes Deployment + Service） |
+| 用途 | 通过原子 Lua 脚本实现全局令牌桶限流 |
+| 降级策略 | Redis 不可用时，每个 Pod 回退到本地内存 `LocalTokenBucket`（按 Pod 限流，而非跳过限流） |
+| 访问方式 | 后端 Pod 通过 Kubernetes Service DNS 连接（`redis.kbp.svc.cluster.local`） |
 
 ### Terraform 模块
 
@@ -613,15 +647,17 @@ sequenceDiagram
 
 ```mermaid
 graph TD
-    A["API Response received<br/>with token counts"] --> B["Extract model name<br/>+ prompt_tokens + completion_tokens"]
-    B --> C{"Model in<br/>PRICING table?"}
-    C -->|"Yes"| D["Get model-specific<br/>(input_rate, output_rate)"]
-    C -->|"No"| E["Fallback: Claude 3.5<br/>Sonnet pricing"]
-    D --> F["cost = prompt_tokens * input_rate<br/>+ completion_tokens * output_rate"]
+    A["收到 API 响应<br/>含 token 计数"] --> B["提取 model、prompt_tokens、<br/>completion_tokens、<br/>cache_creation_input_tokens、<br/>cache_read_input_tokens"]
+    B --> C{"模型在<br/>PRICING 表中？"}
+    C -->|"是"| D["获取模型定价<br/>(input_rate, output_rate)"]
+    C -->|"否"| E["回退：Claude 3.5<br/>Sonnet 定价"]
+    D --> F["cost = prompt_tokens × input_rate<br/>+ completion_tokens × output_rate<br/>+ cache_write_tokens × input_rate × 1.25<br/>+ cache_read_tokens × input_rate × 0.1"]
     E --> F
-    F --> G["INSERT UsageRecord<br/>(cost_usd, tokens, model)"]
-    G --> H["Token quota check on<br/>next request:<br/>SUM(cost_usd) vs quota_usd"]
+    F --> G["INSERT UsageRecord<br/>(cost_usd, tokens, cache tokens, model)"]
+    G --> H["下次请求时检查配额：<br/>SUM(cost_usd) vs quota_usd"]
 ```
+
+> **Prompt Cache 计价**：开启 prompt caching 后，cache 写入 token 按 1.25x、cache 读取 token 按 0.1x 基础 input 价格计费。详见[动态价格系统](pricing-system.zh.md#prompt-cache-差异化计价)。
 
 ### 8.2 支持的模型定价
 
@@ -668,6 +704,7 @@ total_cost  = $0.0025 + $0.00625 = $0.00875
 | 文档 | 说明 |
 |------|------|
 | [请求转换管线](request-translation.zh.md) | 完整的请求/响应转换管线（OpenAI → Bedrock → Anthropic） |
+| [动态价格系统](pricing-system.zh.md) | 价格获取、cache 差异化计费、价格表展示 |
 | [API 参考](api-reference.zh.md) | 完整的端点文档及请求/响应示例 |
 | [OAuth 配置](oauth-setup.zh.md) | Microsoft 和 Cognito OAuth 配置 |
 | [部署指南](deployment.zh.md) | 生产和非生产环境部署指南 |
