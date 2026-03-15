@@ -333,4 +333,4 @@ npm run format         # 代码格式化
 
 ## 许可
 
-本项目为内部使用的专有项目。
+MIT License — 详见 [LICENSE](LICENSE)。

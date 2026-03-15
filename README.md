@@ -334,4 +334,4 @@ npm run format         # Format
 
 ## License
 
-This project is proprietary and for internal use.
+MIT License — see [LICENSE](LICENSE) for details.
