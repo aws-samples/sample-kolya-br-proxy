@@ -1,28 +1,73 @@
 # Kolya BR Proxy
 
-**An AI Gateway that provides an OpenAI-compatible API backed by AWS Bedrock (Claude, Nova, DeepSeek, and more).**
+**[English](README.md) | [中文](README.zh.md)**
+
+**An AI Gateway that provides an OpenAI-compatible API backed by AWS Bedrock — supporting Claude, Nova, DeepSeek, Mistral, Llama, and more.**
 
 ---
 
-## Overview
+## Why Kolya BR Proxy?
 
-Kolya BR Proxy bridges the OpenAI API ecosystem with AWS Bedrock models. Any tool or SDK
-that speaks the OpenAI protocol (Cline, Cursor, OpenAI Python/JS SDK, etc.) can connect to
-Bedrock through this gateway with zero code changes. Anthropic models (Claude) use the native
-InvokeModel API for full feature support (thinking, effort, prompt caching), while non-Anthropic
-models (Amazon Nova, DeepSeek, Mistral, Llama, etc.) are automatically routed through the
-Bedrock Converse API.
+- **Zero migration cost** — Drop-in replacement for OpenAI API. Any tool (Cline, Cursor, OpenAI SDK) works with zero code changes
+- **Up to 90% cost savings** — Prompt caching reads at 0.1x price; Agent loops save ~60% after just 2 requests
+- **Enterprise-grade security** — 3-layer CSRF defense, AWS WAF, API token dual protection (SHA256 + AES-128), ESO secrets management
+- **Production-ready at scale** — Distributed Redis rate limiting, HPA autoscaling (1-10 Pods), streaming heartbeat optimization
 
-### Key Features
+---
 
+## Screenshots
+
+![Dashboard — Prompt Cache Pricing](assets/dashboard-cache-pricing.png)
+
+![API Management — Cache Settings](assets/api-cache-settings.png)
+
+![Models Management — Per-Key Model Access](assets/models-management.png)
+
+![AI Playground](assets/playground.png)
+
+![Usage Monitoring](assets/monitoring.png)
+
+---
+
+## Key Features
+
+### API Gateway
 - OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints
-- Streaming and non-streaming responses
+- Streaming and non-streaming responses with 15s heartbeat keep-alive
 - Multi-modal message support (text + images)
-- OAuth-only authentication with AWS Cognito (default) and Microsoft Entra ID SSO
-- Per-token quota management (USD-based billing)
-- Per-token model access control
-- Admin dashboard with AI Playground
-- Kubernetes-native deployment on AWS EKS
+- Dual API routing: `/v1/*` for SDK clients + `/admin/*` JWT-based dashboard
+
+### Multi-Provider Support
+- **19 providers** via unified translation layer
+- Anthropic Claude via native InvokeModel API (full thinking, effort, prompt caching support)
+- Amazon Nova, DeepSeek, Mistral, Llama via Converse API
+- Automatic request/response format translation
+
+### Cost Optimization
+- **Prompt cache**: 90% discount on reads, 25% premium on writes; breakeven at request 2
+- **Per-token billing by model**: Dynamic pricing from AWS API + scraper (181+ regional pricing records)
+- **Real-time cost tracking**: Background async usage recording with per-token quota limits
+- **Agent loop savings**: ~60% total cost reduction for 10+ turn conversations
+
+### Enterprise Security
+- **Defense-in-depth CSRF**: Origin + Referer + X-Requested-With header validation
+- **AWS WAF**: Rate limiting at ALB layer (20/300/2000 req per 5min by endpoint tier), SQLi/XSS managed rules
+- **API token protection**: SHA256 hash index for O(1) lookup (0.5ms) + Fernet AES-128 encrypted storage
+- **OAuth SSO**: AWS Cognito (default) + Microsoft Entra ID; PKCE (S256) + OAuth State with 10min expiry; refresh tokens in HttpOnly cookies
+- **ESO + AWS Secrets Manager**: Secrets never in git, auto-sync every 10 minutes via Pod Identity
+
+### High-Performance Architecture
+- **Distributed Redis token bucket**: Global 500 RPM rate limit via Lua scripts, graceful fallback to per-Pod LocalTokenBucket
+- **Streaming optimization**: ALB idle timeout (600s) > Bedrock read timeout (300s); inner layer fails first with meaningful errors
+- **Asyncio semaphore**: 50 concurrent requests with back-pressure matching connection pool
+- **HPA autoscaling**: CPU-based scaling (70% threshold), round-robin ALB distribution
+
+### Production-Ready Infrastructure
+- **Kubernetes-native**: EKS deployment with Karpenter, Metrics Server, gp3 StorageClass
+- **Two deployment modes**: `deploy-all.sh` (full IaC with Terraform) or `deploy-to-existing.sh` (existing EKS cluster)
+- **Optional Global Accelerator**: One-flag enable (`enable_global_accelerator = true`) for Anycast IP global low-latency routing with automatic failover
+- **Admin dashboard**: Vue 3 + Quasar with AI Playground, token management, model access control
+- **Observability**: Structured logging, health checks, Swagger UI in debug mode
 
 ---
 
@@ -35,7 +80,7 @@ graph LR
     Frontend -->|Admin API| Backend
     Backend -->|InvokeModel /<br/>Converse API| Bedrock[AWS Bedrock<br/>LLM Models]
     Backend -->|asyncpg| PostgreSQL[(Aurora<br/>PostgreSQL)]
-    Backend -.->|Cache| Redis[(Redis)]
+    Backend -.->|Cache + Rate Limit| Redis[(Redis)]
     subgraph AWS EKS
         Frontend
         Backend
@@ -56,9 +101,10 @@ and model management.
 | **Frontend** | Vue 3, Quasar Framework, TypeScript, Pinia, Vite |
 | **Backend** | Python 3.12+, FastAPI, SQLAlchemy (async), Alembic, Pydantic |
 | **Database** | PostgreSQL (Aurora in prod), asyncpg driver |
+| **Cache** | Redis (rate limiting, prompt cache tracking) |
 | **Auth** | JWT, AWS Cognito (default), Microsoft OAuth |
-| **Cloud** | AWS Bedrock, EKS, ECR, Global Accelerator |
-| **IaC** | Terraform, Karpenter |
+| **Cloud** | AWS Bedrock, EKS, ECR, WAF, Secrets Manager |
+| **IaC** | Terraform, Karpenter, External Secrets Operator |
 | **Package Mgmt** | uv (backend), npm (frontend) |
 
 ---
@@ -102,7 +148,7 @@ uv run alembic upgrade head
 
 # Start development server
 cd backend
-uv run python main.py
+KBR_ENV=local uv run python main.py
 ```
 
 The backend runs at `http://localhost:8000`. Visit `/docs` for Swagger UI.
@@ -176,126 +222,29 @@ Click the **Authorize** button in the top-right corner of Swagger UI:
 
 ---
 
-## Directory Structure
+## Deployment
 
-```
-kolya-br-proxy/
-├── backend/                  # FastAPI backend service
-│   ├── app/
-│   │   ├── api/              # API routes (admin + v1 gateway)
-│   │   ├── core/             # Config, database, security
-│   │   ├── middleware/        # Request middleware
-│   │   ├── models/           # SQLAlchemy ORM models
-│   │   ├── schemas/          # Pydantic request/response schemas
-│   │   └── services/         # Business logic (Bedrock, OAuth, etc.)
-│   ├── alembic/              # Database migrations
-│   ├── main.py               # Application entry point
-│   ├── app/                  # Application code
-│   │   ├── api/              # API endpoints
-│   │   ├── core/             # Core configuration
-│   │   ├── models/           # Database models
-│   │   ├── schemas/          # Pydantic schemas
-│   │   └── services/         # Business logic
-├── frontend/                 # Vue 3 + Quasar admin dashboard
-│   └── src/
-│       ├── pages/            # Page components
-│       ├── stores/           # Pinia state management
-│       └── router/           # Vue Router config
-├── k8s/                      # Kubernetes manifests
-│   ├── application/          # App deployments and services
-│   └── infrastructure/       # Cluster-level resources
-├── iac-612674025488-us-west-2/  # Terraform IaC
-│   └── modules/              # Terraform modules
-├── docs/                     # Extended documentation
-├── build-and-push.sh         # Container image build script
-└── deploy-all.sh             # Full deployment script
+### Option 1: Full IaC (New Infrastructure)
+
+```bash
+# Creates EKS cluster, RDS, VPC, and deploys everything
+./deploy-all.sh
 ```
 
----
+### Option 2: Existing EKS Cluster
 
-## Environment Variables
+```bash
+# Interactive mode
+./deploy-to-existing.sh
 
-All backend environment variables use the `KBR_` prefix. Key variables:
+# Or with config file
+./deploy-to-existing.sh --config config.yaml
 
-| Variable | Description | Default |
-|----------|------------|---------|
-| `KBR_ENV` | Environment mode (`non-prod` or `prod`) | `non-prod` |
-| `KBR_DEBUG` | Enable debug mode | `false` |
-| `KBR_PORT` | Server port | `8000` |
-| `KBR_DATABASE_URL` | PostgreSQL connection string (asyncpg) | -- (required) |
-| `KBR_DATABASE_POOL_SIZE` | Connection pool size | `10` |
-| `KBR_DATABASE_MAX_OVERFLOW` | Max overflow connections | `20` |
-| `KBR_JWT_SECRET_KEY` | JWT signing key (min 32 chars) | -- (required) |
-| `KBR_JWT_ALGORITHM` | JWT algorithm | `HS256` |
-| `KBR_JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | Access token TTL (minutes) | `30` |
-| `KBR_JWT_REFRESH_TOKEN_EXPIRE_DAYS` | Refresh token TTL (days) | `7` |
-| `KBR_AWS_REGION` | AWS region for Bedrock | `us-west-2` |
-| `KBR_AWS_PROFILE` | AWS CLI profile (local dev only) | -- |
-| `KBR_ALLOWED_ORIGINS` | CORS origins (comma-separated) | `localhost` |
-| `KBR_MICROSOFT_CLIENT_ID` | Microsoft OAuth client ID | -- |
-| `KBR_MICROSOFT_CLIENT_SECRET` | Microsoft OAuth client secret | -- |
-| `KBR_MICROSOFT_TENANT_ID` | Microsoft OAuth tenant ID | -- |
-| `KBR_COGNITO_USER_POOL_ID` | AWS Cognito User Pool ID | -- |
-| `KBR_COGNITO_CLIENT_ID` | AWS Cognito App Client ID | -- |
-| `KBR_INITIAL_USER_BALANCE_USD` | Initial balance for new users | `5.0` |
-| `KBR_LOG_LEVEL` | Logging level | `INFO` |
+# Or single step
+./deploy-to-existing.sh --step 1  # Helm infrastructure only
+```
 
-See `backend/.env.example` for a complete template.
-
----
-
-## Environment Configuration
-
-### Local Development
-
-**Configuration:**
-- Config file: `.env.local` (only environment file used locally)
-- `KBR_ENV`: Not set (defaults to `non-prod`)
-- `KBR_DEBUG`: `true`
-- `KBR_LOG_LEVEL`: `INFO` or `DEBUG`
-
-**Infrastructure:**
-- Database: Local PostgreSQL (`127.0.0.1:5432`)
-- AWS Auth: `KBR_AWS_PROFILE` or `KBR_AWS_ACCESS_KEY_ID`/`KBR_AWS_SECRET_ACCESS_KEY`
-- CORS: `localhost` origins (can include `*`)
-- OAuth Redirect: `http://localhost:9000/auth/*/callback`
-- TLS: Optional
-
-### Cloud Deployments (Non-Production & Production)
-
-**Configuration Source:**
-- All environment variables are defined in Kubernetes manifests:
-  - `k8s/application/backend-configmap.yaml` - Non-sensitive configuration
-  - `k8s/application/secrets.yaml` - Sensitive credentials (database URL, JWT secret, OAuth credentials)
-- `.env.non-prod` and `.env.prod` files are NOT used in cloud deployments
-
-**Non-Production (Cloud):**
-- `KBR_ENV`: `non-prod` (set in ConfigMap)
-- `KBR_DEBUG`: `true`
-- `KBR_LOG_LEVEL`: `INFO`
-- Database: Aurora PostgreSQL (RDS)
-- AWS Auth: EKS Pod Identity (no credentials needed)
-- CORS: Non-prod domain origins (can include `*` for testing)
-- OAuth Redirect: Non-prod domain URLs
-- TLS: Required (ALB/Global Accelerator)
-- Deletion Protection: Disabled (Terraform)
-- Backup Retention: 1 day (Terraform)
-- Performance Insights: Disabled (Terraform)
-
-**Production (Cloud):**
-- `KBR_ENV`: `prod` (set in ConfigMap)
-- `KBR_DEBUG`: `false`
-- `KBR_LOG_LEVEL`: `WARNING`
-- Database: Aurora PostgreSQL (RDS)
-- AWS Auth: EKS Pod Identity
-- CORS: Strict domain whitelist (no wildcards allowed)
-- OAuth Redirect: Production domain URLs only
-- TLS: Required (ALB/Global Accelerator)
-- Deletion Protection: Enabled (Terraform)
-- Backup Retention: 7 days (Terraform)
-- Performance Insights: Enabled (Terraform)
-
-For detailed deployment instructions, see `docs/deployment.md`.
+See [Deployment Guide](docs/deployment.md) for detailed instructions.
 
 ---
 
@@ -306,11 +255,14 @@ Start with [Architecture](docs/architecture.md) for the system overview, then dr
 | Document | Description |
 |----------|-------------|
 | **[Architecture](docs/architecture.md)** | System overview, component diagrams, database ER, auth flows, pricing model |
-| **[Security](docs/security.md)** | CORS & CSRF protection design, attack scenarios, defense-in-depth implementation |
-| ↳ [Request Translation](docs/request-translation.md) | How requests are translated between OpenAI, Bedrock, and Anthropic formats |
-| ↳ [API Reference](docs/api-reference.md) | Full endpoint documentation with request/response examples |
-| ↳ [OAuth Setup](docs/oauth-setup.md) | Microsoft and Cognito OAuth configuration |
-| ↳ [Deployment](docs/deployment.md) | Production and non-production deployment guide |
+| **[Performance](docs/performance.md)** | Streaming optimization, rate limiting, timeout tuning, HPA autoscaling |
+| **[Pricing System](docs/pricing-system.md)** | Per-token billing, dynamic pricing, prompt cache cost model |
+| **[Prompt Caching](docs/prompt-caching.md)** | Auto-injection mechanism, cost savings analysis, model thresholds |
+| **[Security](docs/security.md)** | CORS & CSRF protection, WAF rules, defense-in-depth implementation |
+| **[Request Translation](docs/request-translation.md)** | OpenAI to Bedrock/Anthropic format translation |
+| **[API Reference](docs/api-reference.md)** | Full endpoint documentation with request/response examples |
+| **[OAuth Setup](docs/oauth-setup.md)** | Microsoft and Cognito OAuth configuration |
+| **[Deployment](docs/deployment.md)** | Production and non-production deployment guide |
 | [backend/README.md](backend/README.md) | Backend development details |
 | [frontend/README.md](frontend/README.md) | Frontend development details |
 | [k8s/README.md](k8s/README.md) | Kubernetes deployment guide |

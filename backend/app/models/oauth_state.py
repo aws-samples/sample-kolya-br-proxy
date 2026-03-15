@@ -25,6 +25,7 @@ class OAuthState(Base):
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     state = Column(String, unique=True, nullable=False, index=True)
     provider = Column(String, nullable=False)  # e.g., "microsoft"
+    code_verifier = Column(String(128), nullable=True)  # PKCE code_verifier
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at = Column(
         DateTime,

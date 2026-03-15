@@ -55,15 +55,13 @@ onMounted(async () => {
 
     console.log('Token exchange response:', response.data);
 
-    // Save tokens
-    const { access_token, refresh_token, user } = response.data;
+    // Save access token (refresh token is set as HttpOnly cookie by the server)
+    const { access_token, user } = response.data;
     authStore.accessToken = access_token;
-    authStore.refreshToken = refresh_token;
     authStore.user = user;
     authStore.isAuthenticated = true;
 
     localStorage.setItem('access_token', access_token);
-    localStorage.setItem('refresh_token', refresh_token);
 
     api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 

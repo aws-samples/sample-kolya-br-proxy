@@ -77,8 +77,13 @@ class Settings(BaseSettings):
         "in local mode it is per-Pod burst.",
     )
     PROMPT_CACHE_AUTO_INJECT: bool = Field(
-        default=True,
+        default=False,
         description="Default behavior for auto-injecting cache_control breakpoints (can be overridden per-request via bedrock_auto_cache)",
+    )
+    PROMPT_CACHE_TTL: str = Field(
+        default="1h",
+        description="Prompt cache TTL. Supported values: '5m' (default Anthropic TTL) or '1h' (extended). "
+        "Using '1h' reduces cache misses in long-running sessions at no extra cost.",
     )
 
     # Redis configuration (for distributed rate limiting)
@@ -199,22 +204,14 @@ class Settings(BaseSettings):
     @validator("ALLOWED_ORIGINS")
     def validate_allowed_origins(cls, v, values):
         """Validate CORS origins configuration."""
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        # Check if in production mode
+        # Only allow wildcard CORS in local environment
         env = os.getenv("KBR_ENV", "non-prod")
-        debug = values.get("DEBUG", False)
 
-        # Warn if using wildcard in production
-        if v == "*" and env == "prod" and not debug:
-            logger.error(
-                "SECURITY WARNING: ALLOWED_ORIGINS is set to '*' in production. "
-                "This is a security risk. Set specific allowed origins instead."
+        if v == "*" and env != "local":
+            raise ValueError(
+                f"Wildcard CORS origins ('*') not allowed in {env} environment. "
+                "Only KBR_ENV=local supports '*'. Set specific allowed origins instead."
             )
-            # In strict mode, we could raise an error here
-            # raise ValueError("Wildcard CORS origins not allowed in production")
 
         return v
 

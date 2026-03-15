@@ -61,13 +61,16 @@ class MicrosoftOAuthService:
                 detail=f"Invalid redirect_uri. Must be one of: {', '.join(self.allowed_redirect_uris)}",
             )
 
-    def get_authorization_url(self, redirect_uri: str, state: str) -> str:
+    def get_authorization_url(
+        self, redirect_uri: str, state: str, code_challenge: str | None = None
+    ) -> str:
         """
         Get Microsoft OAuth authorization URL.
 
         Args:
             redirect_uri: Redirect URI after authorization
             state: State parameter for CSRF protection
+            code_challenge: PKCE code challenge (S256)
 
         Returns:
             Authorization URL
@@ -90,11 +93,15 @@ class MicrosoftOAuthService:
             "state": state,
         }
 
+        if code_challenge:
+            params["code_challenge"] = code_challenge
+            params["code_challenge_method"] = "S256"
+
         query_string = urlencode(params)
         return f"{self.authorize_url}?{query_string}"
 
     async def exchange_code_for_token(
-        self, code: str, redirect_uri: str
+        self, code: str, redirect_uri: str, code_verifier: str | None = None
     ) -> dict[str, str]:
         """
         Exchange authorization code for access token.
@@ -102,6 +109,7 @@ class MicrosoftOAuthService:
         Args:
             code: Authorization code from Microsoft
             redirect_uri: Redirect URI used in authorization
+            code_verifier: PKCE code verifier
 
         Returns:
             Token response with access_token, id_token, etc.
@@ -122,6 +130,9 @@ class MicrosoftOAuthService:
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
         }
+
+        if code_verifier:
+            data["code_verifier"] = code_verifier
 
         async with httpx.AsyncClient() as client:
             try:

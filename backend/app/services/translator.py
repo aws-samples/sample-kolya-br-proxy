@@ -288,6 +288,7 @@ class RequestTranslator:
             additional_model_response_field_paths=request.bedrock_additional_model_response_field_paths,
             request_metadata=request.bedrock_request_metadata,
             auto_cache=request.bedrock_auto_cache,
+            cache_ttl=request.bedrock_cache_ttl,
         )
 
         # Debug logging

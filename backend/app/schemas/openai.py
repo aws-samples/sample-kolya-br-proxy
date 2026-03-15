@@ -61,6 +61,7 @@ class ChatCompletionRequest(BaseModel):
     bedrock_additional_model_response_field_paths: Optional[List[str]] = None
     bedrock_request_metadata: Optional[Dict[str, str]] = None
     bedrock_auto_cache: Optional[bool] = None  # None = use server default
+    bedrock_cache_ttl: Optional[str] = None  # Per-request TTL override ("5m" or "1h")
 
 
 class ChatCompletionChoice(BaseModel):

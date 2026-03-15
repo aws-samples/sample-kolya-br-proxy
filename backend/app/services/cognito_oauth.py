@@ -112,13 +112,16 @@ class CognitoOAuthService:
         ).digest()
         return base64.b64encode(dig).decode()
 
-    def get_authorization_url(self, redirect_uri: str, state: str) -> str:
+    def get_authorization_url(
+        self, redirect_uri: str, state: str, code_challenge: str | None = None
+    ) -> str:
         """
         Get Cognito OAuth authorization URL.
 
         Args:
             redirect_uri: Redirect URI after authorization
             state: State parameter for CSRF protection
+            code_challenge: PKCE code challenge (S256)
 
         Returns:
             Authorization URL
@@ -140,11 +143,15 @@ class CognitoOAuthService:
             "state": state,
         }
 
+        if code_challenge:
+            params["code_challenge"] = code_challenge
+            params["code_challenge_method"] = "S256"
+
         query_string = urlencode(params)
         return f"{self.authorize_url}?{query_string}"
 
     async def exchange_code_for_token(
-        self, code: str, redirect_uri: str
+        self, code: str, redirect_uri: str, code_verifier: str | None = None
     ) -> dict[str, str]:
         """
         Exchange authorization code for access token.
@@ -152,6 +159,7 @@ class CognitoOAuthService:
         Args:
             code: Authorization code from Cognito
             redirect_uri: Redirect URI used in authorization
+            code_verifier: PKCE code verifier
 
         Returns:
             Token response with access_token, id_token, refresh_token, etc.
@@ -181,6 +189,9 @@ class CognitoOAuthService:
             "code": code,
             "redirect_uri": redirect_uri,
         }
+
+        if code_verifier:
+            data["code_verifier"] = code_verifier
 
         async with httpx.AsyncClient() as client:
             try:

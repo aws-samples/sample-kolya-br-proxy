@@ -22,6 +22,13 @@ class ModelPricing:
         """
         self.db = db
 
+    # Cache write multipliers by TTL (relative to input price)
+    CACHE_WRITE_MULTIPLIER = {
+        "5m": Decimal("1.25"),
+        "1h": Decimal("2.0"),
+    }
+    CACHE_READ_MULTIPLIER = Decimal("0.1")
+
     async def calculate_cost(
         self,
         model: str,
@@ -30,6 +37,7 @@ class ModelPricing:
         region: str = None,
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
+        cache_ttl: str = None,
     ) -> Decimal:
         """
         Calculate the cost for a model usage.
@@ -40,8 +48,9 @@ class ModelPricing:
             prompt_tokens: Number of input tokens (excludes cache tokens)
             completion_tokens: Number of output tokens
             region: AWS region (defaults to configured AWS_REGION)
-            cache_creation_input_tokens: Tokens written to cache (1.25x input price)
+            cache_creation_input_tokens: Tokens written to cache
             cache_read_input_tokens: Tokens read from cache (0.1x input price)
+            cache_ttl: Cache TTL used ("5m" → 1.25x write, "1h" → 2.0x write)
 
         Returns:
             Cost in USD as Decimal
@@ -54,6 +63,11 @@ class ModelPricing:
 
             region = get_settings().AWS_REGION
 
+        # Determine cache write multiplier based on TTL
+        write_multiplier = self.CACHE_WRITE_MULTIPLIER.get(
+            cache_ttl or "5m", Decimal("1.25")
+        )
+
         # Try to get pricing from database
         if self.db:
             from app.services.pricing_updater import PricingUpdater
@@ -65,16 +79,16 @@ class ModelPricing:
                 input_price_per_token, output_price_per_token = pricing
                 input_cost = Decimal(prompt_tokens) * input_price_per_token
                 output_cost = Decimal(completion_tokens) * output_price_per_token
-                # Cache tokens use differentiated pricing
+                # Cache tokens use differentiated pricing based on TTL
                 cache_write_cost = (
                     Decimal(cache_creation_input_tokens)
                     * input_price_per_token
-                    * Decimal("1.25")
+                    * write_multiplier
                 )
                 cache_read_cost = (
                     Decimal(cache_read_input_tokens)
                     * input_price_per_token
-                    * Decimal("0.1")
+                    * self.CACHE_READ_MULTIPLIER
                 )
                 return input_cost + output_cost + cache_write_cost + cache_read_cost
 

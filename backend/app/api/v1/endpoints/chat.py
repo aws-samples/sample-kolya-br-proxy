@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_token
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -150,6 +151,14 @@ async def create_chat_completion(
                         f"Failed to parse X-Bedrock-Request-Metadata as JSON: {e}"
                     )
 
+    # Apply token-level prompt cache settings (lower priority than request-level)
+    if token.token_metadata:
+        meta = token.token_metadata
+        if request_data.bedrock_auto_cache is None and "prompt_cache_enabled" in meta:
+            request_data.bedrock_auto_cache = meta["prompt_cache_enabled"]
+        if request_data.bedrock_cache_ttl is None and "prompt_cache_ttl" in meta:
+            request_data.bedrock_cache_ttl = meta["prompt_cache_ttl"]
+
     # Log request with full details for debugging
     logger.info(
         f"Chat completion request received: model={request_data.model}, "
@@ -226,6 +235,8 @@ async def create_chat_completion(
                     db=db,
                     start_time=start_time,
                     http_request=http_request,
+                    cache_ttl=request_data.bedrock_cache_ttl
+                    or get_settings().PROMPT_CACHE_TTL,
                 ),
                 media_type="text/event-stream",
             )
@@ -244,6 +255,11 @@ async def create_chat_completion(
         cache_creation_tokens = bedrock_response.usage.cache_creation_input_tokens or 0
         cache_read_tokens = bedrock_response.usage.cache_read_input_tokens or 0
 
+        # Determine effective cache TTL for pricing
+        effective_cache_ttl = (
+            request_data.bedrock_cache_ttl or get_settings().PROMPT_CACHE_TTL
+        )
+
         # Record usage asynchronously (don't block response)
         background_tasks.create_task(
             record_usage(
@@ -255,6 +271,7 @@ async def create_chat_completion(
                 completion_tokens=openai_response.usage.completion_tokens,
                 cache_creation_input_tokens=cache_creation_tokens,
                 cache_read_input_tokens=cache_read_tokens,
+                cache_ttl=effective_cache_ttl if cache_creation_tokens else None,
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -308,6 +325,7 @@ async def stream_chat_completion(
     db: AsyncSession,
     start_time: float,
     http_request: Request = None,
+    cache_ttl: str = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream chat completion responses with heartbeat to keep connection alive.
@@ -321,12 +339,11 @@ async def stream_chat_completion(
         db: Database session
         start_time: Request start time
         http_request: Original HTTP request (for disconnect detection)
+        cache_ttl: Effective cache TTL for pricing calculation
 
     Yields:
         SSE formatted response chunks
     """
-    from app.core.config import get_settings
-
     settings = get_settings()
     total_input_tokens = 0
     total_output_tokens = 0
@@ -492,6 +509,7 @@ async def stream_chat_completion(
                 completion_tokens=total_output_tokens,
                 cache_creation_input_tokens=total_cache_creation_tokens,
                 cache_read_input_tokens=total_cache_read_tokens,
+                cache_ttl=cache_ttl if total_cache_creation_tokens else None,
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -538,6 +556,7 @@ async def record_usage(
     completion_tokens: int,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
+    cache_ttl: str = None,
 ):
     """
     Record usage to database.
@@ -551,6 +570,7 @@ async def record_usage(
         completion_tokens: Number of completion tokens
         cache_creation_input_tokens: Tokens written to prompt cache
         cache_read_input_tokens: Tokens read from prompt cache
+        cache_ttl: Cache TTL for write pricing ("5m" → 1.25x, "1h" → 2.0x)
     """
     # Create new db session for background task
     async for db in get_db():
@@ -563,6 +583,7 @@ async def record_usage(
                 completion_tokens=completion_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
                 cache_read_input_tokens=cache_read_input_tokens,
+                cache_ttl=cache_ttl,
             )
 
             # Create usage record
@@ -572,7 +593,10 @@ async def record_usage(
                 model=model,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
-                total_tokens=prompt_tokens + completion_tokens,
+                total_tokens=prompt_tokens
+                + completion_tokens
+                + cache_creation_input_tokens
+                + cache_read_input_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
                 cache_read_input_tokens=cache_read_input_tokens,
                 cost_usd=cost_usd,

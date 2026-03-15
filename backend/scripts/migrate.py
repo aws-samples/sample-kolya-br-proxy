@@ -22,7 +22,7 @@ os.chdir(_backend_dir)
 from sqlalchemy import text  # noqa: E402
 from sqlalchemy.ext.asyncio import create_async_engine  # noqa: E402
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s  %(message)s")
 logger = logging.getLogger("migrate")
 
 # PostgreSQL advisory lock ID (arbitrary unique int64)
@@ -102,6 +102,15 @@ async def check_and_stamp():
 
 async def detect_stamp_revision(conn, existing_tables: list[str]) -> str:
     """Detect which alembic revision matches the current database state."""
+    # Check for PKCE code_verifier column (migration c3d4e5f6g7h8)
+    result = await conn.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='oauth_states' AND column_name='code_verifier'"
+        )
+    )
+    has_pkce_column = result.first() is not None
+
     # Check for cache token columns (migration a1b2c3d4e5f6)
     result = await conn.execute(
         text(
@@ -114,8 +123,10 @@ async def detect_stamp_revision(conn, existing_tables: list[str]) -> str:
     # Check for model_pricing table (migration 7ce867a32c84)
     has_model_pricing = "model_pricing" in existing_tables
 
-    if has_cache_columns:
+    if has_pkce_column:
         return "head"
+    elif has_cache_columns:
+        return "a1b2c3d4e5f6"  # pragma: allowlist secret
     elif has_model_pricing:
         return "7ce867a32c84"  # pragma: allowlist secret
     else:

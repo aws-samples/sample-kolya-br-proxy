@@ -269,6 +269,7 @@ erDiagram
         uuid id PK
         string state UK
         string provider "microsoft | cognito"
+        string code_verifier "PKCE code_verifier (nullable)"
         datetime created_at
         datetime expires_at "10 min TTL"
     }
@@ -481,23 +482,24 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     User->>FE: Click "Sign in with Microsoft"
-    FE->>BE: GET /admin/auth/microsoft/authorize?redirect_uri=...
-    BE->>DB: Store OAuthState (state token, 10 min TTL)
-    BE-->>FE: {authorization_url, state}
+    FE->>BE: GET /admin/auth/microsoft/login?redirect_uri=...
+    BE->>BE: Generate PKCE code_verifier + code_challenge (S256)
+    BE->>DB: Store OAuthState (state, code_verifier, 10 min TTL)
+    BE-->>FE: {authorization_url (includes code_challenge), state}
     FE->>IdP: Redirect to authorization_url
 
     User->>IdP: Authenticate + consent
     IdP-->>FE: Redirect to /auth/microsoft/callback?code=...&state=...
     FE->>BE: POST /admin/auth/microsoft/callback {code, state, redirect_uri}
-    BE->>DB: Verify OAuthState (CSRF check)
-    BE->>IdP: Exchange code for tokens
+    BE->>DB: Verify OAuthState (CSRF check), retrieve code_verifier
+    BE->>IdP: Exchange code for tokens (with code_verifier)
     IdP-->>BE: {access_token, id_token}
     BE->>IdP: Fetch user profile (MS Graph / Cognito userInfo)
     IdP-->>BE: {email, name, sub}
     BE->>DB: Find or create User (auth_method=MICROSOFT)
     BE->>DB: Create RefreshToken + AuditLog
-    BE-->>FE: {access_token, refresh_token, user}
-    FE->>FE: Store tokens, redirect to dashboard
+    BE-->>FE: {access_token, user} + Set-Cookie: kbr_refresh_token (HttpOnly)
+    FE->>FE: Store access_token in localStorage, redirect to dashboard
 ```
 
 ### 6.2 API Key Authentication (Gateway)
@@ -534,7 +536,7 @@ sequenceDiagram
 |---|---|---|---|
 | Lifetime | 30 minutes | 7 days | Until expiry or revocation |
 | Used by | Admin dashboard | Admin dashboard (refresh) | OpenAI-compatible clients |
-| Storage | localStorage | localStorage | Client configuration |
+| Storage | localStorage | HttpOnly cookie (`kbr_refresh_token`, Path=/admin/auth) | Client configuration |
 | Validation | JWT decode + signature | DB lookup (hash + family) | DB lookup (SHA256 hash) |
 | Rotation | On refresh | On each use (new token issued) | Manual |
 

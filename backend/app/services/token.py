@@ -39,6 +39,7 @@ class TokenService:
         expires_at: Optional[datetime] = None,
         quota_usd: Optional[Decimal] = None,
         allowed_ips: Optional[List[str]] = None,
+        token_metadata: Optional[dict] = None,
     ) -> tuple[APIToken, str]:
         """
         Create a new API token for a user.
@@ -49,6 +50,7 @@ class TokenService:
             expires_at: Optional expiration datetime
             quota_usd: Optional usage quota in USD
             allowed_ips: Optional list of allowed IP addresses/ranges
+            token_metadata: Optional metadata dict for per-key configuration
 
         Returns:
             Tuple of (APIToken object, plain token string)
@@ -68,6 +70,7 @@ class TokenService:
             expires_at=expires_at,
             quota_usd=quota_usd,
             allowed_ips=allowed_ips or [],
+            token_metadata=token_metadata,
             is_active=True,
         )
 

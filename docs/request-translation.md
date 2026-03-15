@@ -59,7 +59,7 @@ sequenceDiagram
 
 **File**: `backend/app/services/translator.py` — `RequestTranslator.openai_to_bedrock()`
 
-### 2.1Message Conversion
+### 2.1 Message Conversion
 
 | OpenAI Message | BedrockMessage | Notes |
 |---|---|---|
@@ -70,7 +70,7 @@ sequenceDiagram
 | `role: "assistant"` (with `tool_calls`) | `role: "assistant", content: [tool_use blocks]` | Converted to `BedrockContentPart(type="tool_use")` |
 | `role: "tool"` | `role: "user", content: [tool_result blocks]` | Multiple consecutive tool messages merged into one user message |
 
-### 2.2Image Handling
+### 2.2 Image Handling
 
 ```
 OpenAI: {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
@@ -80,7 +80,7 @@ Bedrock: {"type": "image", "source": {"type": "base64", "media_type": "image/png
 
 URL-based images are fetched, base64-encoded, and converted to the Bedrock inline format.
 
-### 2.3Tool Call Conversion
+### 2.3 Tool Call Conversion
 
 ```
 OpenAI tool_calls:                          Bedrock content parts:
@@ -102,7 +102,7 @@ OpenAI tool message:                        Bedrock content part:
 └─────────────────────────┘                └─────────────────────────────┘
 ```
 
-### 2.4Scalar Parameter Mapping
+### 2.4 Scalar Parameter Mapping
 
 | OpenAI | BedrockRequest | Behavior |
 |---|---|---|
@@ -119,7 +119,7 @@ OpenAI tool message:                        Bedrock content part:
 | `presence_penalty` | Ignored | Warning logged if ≠ 0 |
 | `frequency_penalty` | Ignored | Warning logged if ≠ 0 |
 
-### 2.5Bedrock Extension Fields (Pass-through)
+### 2.5 Bedrock Extension Fields (Pass-through)
 
 These fields from the OpenAI request body are passed directly to `BedrockRequest`:
 
@@ -152,7 +152,7 @@ These can also be set via `X-Bedrock-*` HTTP headers (headers override body):
 
 This phase converts the internal `BedrockRequest` into the exact JSON body that Bedrock's `invoke_model` API expects (Anthropic Messages API format).
 
-### 3.1Body Construction
+### 3.1 Body Construction
 
 ```python
 # Final JSON body sent to invoke_model:
@@ -181,7 +181,7 @@ This phase converts the internal `BedrockRequest` into the exact JSON body that 
 }
 ```
 
-### 3.2invoke_model Top-level Parameters
+### 3.2 invoke_model Top-level Parameters
 
 ```python
 # Keyword arguments for invoke_model() (everything except body):
@@ -200,7 +200,7 @@ This phase converts the internal `BedrockRequest` into the exact JSON body that 
 }
 ```
 
-### 3.3Why InvokeModel for Anthropic
+### 3.3 Why InvokeModel for Anthropic
 
 The Converse API uses AWS-specific formats (camelCase fields, nested `inferenceConfig`). With `invoke_model`, the body is **native Anthropic Messages API format** — no field renaming needed. This enables direct pass-through of Anthropic-native parameters like `thinking` and `effort`.
 
@@ -221,7 +221,7 @@ The Converse API uses AWS-specific formats (camelCase fields, nested `inferenceC
 
 Non-Anthropic models (Amazon Nova, DeepSeek, Mistral, Llama, etc.) use the Bedrock Converse API, which is model-agnostic and handles format conversion automatically. The `BedrockClient.is_anthropic_model()` method detects the model type based on the `anthropic.` prefix (with optional geo-prefix like `us.`, `eu.`, etc.).
 
-### 4.1Converse API Parameter Mapping
+### 4.1 Converse API Parameter Mapping
 
 ```python
 # Parameters sent to converse() / converse_stream():
@@ -255,7 +255,7 @@ Non-Anthropic models (Amazon Nova, DeepSeek, Mistral, Llama, etc.) use the Bedro
 }
 ```
 
-### 4.2Content Block Format Differences
+### 4.2 Content Block Format Differences
 
 | Content Type | Anthropic (InvokeModel) | Converse API |
 |---|---|---|
@@ -264,7 +264,7 @@ Non-Anthropic models (Amazon Nova, DeepSeek, Mistral, Llama, etc.) use the Bedro
 | Tool use | `{"type": "tool_use", "id": "...", "name": "...", "input": {...}}` | `{"toolUse": {"toolUseId": "...", "name": "...", "input": {...}}}` |
 | Tool result | `{"type": "tool_result", "tool_use_id": "...", "content": "..."}` | `{"toolResult": {"toolUseId": "...", "content": [{"text": "..."}]}}` |
 
-### 4.3Converse API Response Mapping
+### 4.3 Converse API Response Mapping
 
 ```
 Converse API response                     BedrockResponse
@@ -290,7 +290,7 @@ Converse API response                     BedrockResponse
 
 ## 5. Phase 3: Response → BedrockResponse → OpenAI
 
-### 5.1Non-streaming Response Parsing
+### 5.1 Non-streaming Response Parsing
 
 **File**: `bedrock.py` — `_invoke_inner()`
 
@@ -313,7 +313,7 @@ Anthropic JSON response                   BedrockResponse
 }                                         )
 ```
 
-### 5.2BedrockResponse → OpenAI ChatCompletionResponse
+### 5.2 BedrockResponse → OpenAI ChatCompletionResponse
 
 **File**: `translator.py` — `ResponseTranslator.bedrock_to_openai()`
 
@@ -332,7 +332,7 @@ Anthropic JSON response                   BedrockResponse
 
 ## 6. Streaming Event Translation
 
-### 6.1Anthropic SSE → BedrockStreamEvent (Anthropic Models)
+### 6.1 Anthropic SSE → BedrockStreamEvent (Anthropic Models)
 
 **File**: `bedrock.py` — `_anthropic_event_to_bedrock()`
 
@@ -350,7 +350,7 @@ The `invoke_model_with_response_stream` API returns a byte stream. Each chunk is
 | `message_stop` | `message_stop` | — |
 | `ping` | Skipped | — |
 
-### 6.2Converse Stream Events → BedrockStreamEvent (Non-Anthropic Models)
+### 6.2 Converse Stream Events → BedrockStreamEvent (Non-Anthropic Models)
 
 **File**: `bedrock.py` — `_converse_stream_event_to_bedrock()`
 
@@ -367,7 +367,7 @@ The `converse_stream` API returns events as dicts with one key per event:
 | `messageStop` | `message_delta` | `delta.stop_reason` |
 | `metadata` | `message_delta` | `usage.input_tokens`, `usage.output_tokens` |
 
-### 6.3BedrockStreamEvent → OpenAI SSE Chunks
+### 6.3 BedrockStreamEvent → OpenAI SSE Chunks
 
 **File**: `chat.py` — `stream_chat_completion()`
 
@@ -384,7 +384,7 @@ The `converse_stream` API returns events as dicts with one key per event:
 | `message_stop` | `{"finish_reason": "stop"}` or `"tool_calls"` | Final chunk |
 | — | `data: [DONE]\n\n` | Stream terminator |
 
-### 6.4Token Counting in Streaming
+### 6.4 Token Counting in Streaming
 
 ```
 message_start  ──▶  input_tokens   (captured at stream start)
@@ -481,7 +481,7 @@ The `_build_anthropic_body()` method in `bedrock.py` transforms it to:
 
 ## 9. Automatic Fixes
 
-### 9.1max_tokens vs budget_tokens
+### 9.1 max_tokens vs budget_tokens
 
 Anthropic requires `max_tokens > thinking.budget_tokens`. If a request has `max_tokens=2000` and `budget_tokens=2000`, the proxy auto-adjusts:
 
@@ -490,7 +490,7 @@ Before: max_tokens=2000, budget_tokens=2000  (invalid: max_tokens must be > budg
 After:  max_tokens=4000, budget_tokens=2000  (auto-fixed: max_tokens = budget + original max)
 ```
 
-### 9.2temperature / top_p Mutual Exclusion
+### 9.2 temperature / top_p Mutual Exclusion
 
 Anthropic doesn't allow both `temperature` and `top_p` in the same request. The translator enforces:
 

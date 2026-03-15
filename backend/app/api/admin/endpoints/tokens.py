@@ -21,6 +21,31 @@ from app.services.token import TokenService
 router = APIRouter()
 
 
+ALLOWED_METADATA_KEYS = {"prompt_cache_enabled", "prompt_cache_ttl"}
+ALLOWED_CACHE_TTL_VALUES = {"5m", "1h"}
+
+
+def validate_token_metadata(meta: dict | None) -> dict | None:
+    """Validate token_metadata keys and values."""
+    if meta is None:
+        return None
+    unknown = set(meta.keys()) - ALLOWED_METADATA_KEYS
+    if unknown:
+        raise ValueError(
+            f"Unknown token_metadata keys: {unknown}. Allowed: {ALLOWED_METADATA_KEYS}"
+        )
+    if "prompt_cache_enabled" in meta and not isinstance(
+        meta["prompt_cache_enabled"], bool
+    ):
+        raise ValueError("prompt_cache_enabled must be a boolean")
+    if "prompt_cache_ttl" in meta:
+        if meta["prompt_cache_ttl"] not in ALLOWED_CACHE_TTL_VALUES:
+            raise ValueError(
+                f"prompt_cache_ttl must be one of {ALLOWED_CACHE_TTL_VALUES}"
+            )
+    return meta
+
+
 class CreateTokenRequest(BaseModel):
     """Create token request."""
 
@@ -28,6 +53,7 @@ class CreateTokenRequest(BaseModel):
     expires_at: datetime | None = None
     quota_usd: Decimal | None = None
     allowed_ips: List[str] | None = None
+    token_metadata: dict | None = None
 
 
 class UpdateTokenRequest(BaseModel):
@@ -38,6 +64,7 @@ class UpdateTokenRequest(BaseModel):
     quota_usd: Decimal | None = None
     allowed_ips: List[str] | None = None
     is_active: bool | None = None
+    token_metadata: dict | None = None
 
 
 class TokenResponse(BaseModel):
@@ -55,6 +82,7 @@ class TokenResponse(BaseModel):
     is_quota_exceeded: bool
     created_at: datetime
     last_used_at: datetime | None
+    token_metadata: dict | None = None
 
     class Config:
         from_attributes = True
@@ -94,6 +122,7 @@ def build_token_response(token: APIToken, used_usd: Decimal) -> TokenResponse:
         is_quota_exceeded=token.is_quota_exceeded,
         created_at=token.created_at,
         last_used_at=token.last_used_at,
+        token_metadata=token.token_metadata,
     )
 
 
@@ -118,12 +147,19 @@ async def create_token(
     Returns the created token with the plain token key.
     **Important**: The plain token is only shown once. Save it securely.
     """
+    # Validate token_metadata
+    try:
+        validated_meta = validate_token_metadata(request.token_metadata)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     token, plain_token = await token_service.create_token(
         user_id=current_user.id,
         name=request.name,
         expires_at=request.expires_at,
         quota_usd=request.quota_usd,
         allowed_ips=request.allowed_ips,
+        token_metadata=validated_meta,
     )
 
     # New tokens have no usage records yet, skip the query
@@ -268,6 +304,13 @@ async def update_token(
             detail="Access denied",
         )
 
+    # Validate token_metadata if provided
+    if request.token_metadata is not None:
+        try:
+            validate_token_metadata(request.token_metadata)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     # Update token fields directly (avoid redundant query)
     if request.name is not None:
         token.name = request.name
@@ -279,6 +322,8 @@ async def update_token(
         token.allowed_ips = request.allowed_ips
     if request.is_active is not None:
         token.is_active = request.is_active
+    if request.token_metadata is not None:
+        token.token_metadata = request.token_metadata
 
     await db.commit()
     await db.refresh(token)

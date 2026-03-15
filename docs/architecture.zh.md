@@ -271,6 +271,7 @@ erDiagram
         uuid id PK
         string state UK
         string provider "microsoft | cognito"
+        string code_verifier "PKCE code_verifier (nullable)"
         datetime created_at
         datetime expires_at "10 min TTL"
     }
@@ -483,23 +484,24 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     User->>FE: Click "Sign in with Microsoft"
-    FE->>BE: GET /admin/auth/microsoft/authorize?redirect_uri=...
-    BE->>DB: Store OAuthState (state token, 10 min TTL)
-    BE-->>FE: {authorization_url, state}
+    FE->>BE: GET /admin/auth/microsoft/login?redirect_uri=...
+    BE->>BE: 生成 PKCE code_verifier + code_challenge (S256)
+    BE->>DB: 存储 OAuthState (state, code_verifier, 10 min TTL)
+    BE-->>FE: {authorization_url (含 code_challenge), state}
     FE->>IdP: Redirect to authorization_url
 
     User->>IdP: Authenticate + consent
     IdP-->>FE: Redirect to /auth/microsoft/callback?code=...&state=...
     FE->>BE: POST /admin/auth/microsoft/callback {code, state, redirect_uri}
-    BE->>DB: Verify OAuthState (CSRF check)
-    BE->>IdP: Exchange code for tokens
+    BE->>DB: 验证 OAuthState (CSRF 检查)，取回 code_verifier
+    BE->>IdP: 用 code + code_verifier 换取 tokens
     IdP-->>BE: {access_token, id_token}
     BE->>IdP: Fetch user profile (MS Graph / Cognito userInfo)
     IdP-->>BE: {email, name, sub}
     BE->>DB: Find or create User (auth_method=MICROSOFT)
     BE->>DB: Create RefreshToken + AuditLog
-    BE-->>FE: {access_token, refresh_token, user}
-    FE->>FE: Store tokens, redirect to dashboard
+    BE-->>FE: {access_token, user} + Set-Cookie: kbr_refresh_token (HttpOnly)
+    FE->>FE: 存储 access_token 到 localStorage，跳转仪表板
 ```
 
 ### 6.2 API 密钥认证（网关）
@@ -536,7 +538,7 @@ sequenceDiagram
 |------|-------------|-------------|-------------------|
 | 有效期 | 30 分钟 | 7 天 | 直到过期或撤销 |
 | 使用者 | 管理面板 | 管理面板（刷新） | OpenAI 兼容客户端 |
-| 存储 | localStorage | localStorage | 客户端配置 |
+| 存储 | localStorage | HttpOnly cookie (`kbr_refresh_token`, Path=/admin/auth) | 客户端配置 |
 | 验证 | JWT 解码 + 签名 | 数据库查找（哈希 + 族群） | 数据库查找（SHA256 哈希） |
 | 轮换 | 刷新时 | 每次使用（签发新令牌） | 手动 |
 

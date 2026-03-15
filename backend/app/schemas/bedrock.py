@@ -63,6 +63,7 @@ class BedrockRequest(BaseModel):
     additional_model_response_field_paths: Optional[List[str]] = None
     request_metadata: Optional[Dict[str, str]] = None
     auto_cache: Optional[bool] = None
+    cache_ttl: Optional[str] = None  # Per-request TTL override ("5m" or "1h")
 
 
 class BedrockContentBlock(BaseModel):

@@ -11,11 +11,11 @@ Kolya BR Proxy serves two types of clients:
 1. **API clients** (Cline, Cursor, OpenAI SDK) — Call `/v1/*` endpoints with Bearer Tokens
 2. **Browser clients** (Vue admin dashboard) — Call `/admin/*` endpoints with JWT (Bearer Token)
 
-This project **does not use cookie-based authentication**. The frontend stores JWTs in `localStorage` and sends them via `Authorization: Bearer <token>` headers. This means browsers do not automatically attach credentials, so traditional CSRF attacks (which rely on automatic cookie sending) pose a lower direct threat.
+This project uses a **hybrid authentication approach**: access tokens are stored in `localStorage` and sent via `Authorization: Bearer <token>` headers, while **refresh tokens are stored in HttpOnly cookies** (`kbr_refresh_token`, `Path=/admin/auth`, `SameSite=None; Secure`) to prevent XSS theft of long-lived credentials. The OAuth login flow also uses **PKCE (Proof Key for Code Exchange, S256)** to prevent authorization code interception attacks.
 
-Nevertheless, this project implements full CORS and CSRF protection for the following reasons:
+This project implements full CORS and CSRF protection for the following reasons:
 
-- **Defense in Depth** — Security should never rely on a single mechanism. If cookies are introduced in the future (e.g., HttpOnly refresh tokens), protections are already in place
+- **Defense in Depth** — Security should never rely on a single mechanism. The HttpOnly cookie for refresh tokens requires proper CSRF protection
 - **Origin validation** blocks cross-origin requests from unauthorized domains regardless of the authentication method
 - **Security response headers** prevent clickjacking, MIME sniffing, XSS, and other browser-side attacks
 - **Industry best practice** — OWASP recommends these protections for all web APIs regardless of the current authentication scheme
@@ -76,19 +76,21 @@ app.add_middleware(
 
 | Environment | `KBR_ALLOWED_ORIGINS` | Security Level |
 |-------------|----------------------|----------------|
-| Local development | `http://localhost:3000,http://localhost:9000` | Relaxed (developer convenience) |
-| Non-production | Non-prod domains, may include `*` for testing | Moderate |
+| Local development | `http://localhost:3000,http://localhost:9000` or `*` | Relaxed (only env that allows `*`) |
+| Non-production | Non-prod domains only (no wildcards) | Moderate |
 | Production | Production domains only (e.g., `https://kbp.kolya.fun`) | Strict |
 
-**Production validation** (`backend/app/core/config.py`):
+**Wildcard validation** (`backend/app/core/config.py`):
 
 ```python
 @validator("ALLOWED_ORIGINS")
 def validate_allowed_origins(cls, v, values):
     env = os.getenv("KBR_ENV", "non-prod")
-    debug = values.get("DEBUG", False)
-    if v == "*" and env == "prod" and not debug:
-        logger.error("SECURITY WARNING: ALLOWED_ORIGINS is set to '*' in production.")
+    if v == "*" and env != "local":
+        raise ValueError(
+            f"Wildcard CORS origins ('*') not allowed in {env} environment. "
+            "Only KBR_ENV=local supports '*'."
+        )
     return v
 ```
 
@@ -115,21 +117,20 @@ For this project's JSON API, the CORS preflight mechanism provides some protecti
 - Browser behavior varies in edge cases
 - Defense-in-depth requires multiple layers
 
-### Attack Scenario (Assuming Cookie-Based Auth)
+### Attack Scenario
 
-This project uses localStorage + Bearer Token and is not directly vulnerable to this attack. However, the following scenario illustrates why CSRF protection is critical in cookie-based systems:
+This project stores refresh tokens in HttpOnly cookies (`kbr_refresh_token`, `Path=/admin/auth`), which means the browser automatically attaches them to matching requests. This makes CSRF protection directly relevant:
 
 ```
-1. User is logged into a web application (browser stores auth cookie)
-2. User visits malicious page evil.com
-3. evil.com submits a hidden form to the target site
-   (Content-Type: application/x-www-form-urlencoded, no CORS preflight triggered)
-4. Browser automatically attaches the cookie
-5. Without CSRF protection, the request executes
-6. Attacker performs a sensitive operation without the user's knowledge
+1. Admin is logged into the Kolya BR Proxy dashboard (browser holds HttpOnly refresh token cookie)
+2. Admin opens a malicious page evil.com in another tab
+3. evil.com submits a hidden form POST to https://api.kbp.kolya.fun/admin/auth/refresh
+   (Content-Type: application/x-www-form-urlencoded, bypasses CORS preflight)
+4. Browser automatically attaches the kbr_refresh_token cookie
+5. Without CSRF protection, the server would issue a new access token to the attacker
 ```
 
-Although this project does not use cookies, Origin validation and custom header checks still effectively restrict cross-origin request sources as an important part of defense in depth.
+The three-layer CSRF defense (Origin validation + Referer check + custom header requirement) prevents this attack. Additionally, the cookie is scoped to `Path=/admin/auth`, limiting the attack surface to auth endpoints only. Access tokens are stored in localStorage and sent via `Authorization: Bearer` headers, which browsers never attach automatically.
 
 ### CSRF Protection Implementation
 
@@ -268,18 +269,21 @@ In the OAuth Authorization Code flow, after the user completes authentication at
 **Generate state** (`backend/app/services/oauth.py`):
 
 ```python
-async def generate_state(self, provider: str) -> str:
+async def generate_state(self, provider: str) -> tuple[str, str]:
     state = secrets.token_urlsafe(32)
-    oauth_state = OAuthState(state=state, provider=provider)
+    code_verifier = secrets.token_urlsafe(96)  # PKCE
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    oauth_state = OAuthState(state=state, provider=provider, code_verifier=code_verifier)
     self.db.add(oauth_state)
     await self.db.commit()
-    return state
+    return state, code_challenge
 ```
 
 **Validate state** (`backend/app/services/oauth.py`):
 
 ```python
-async def validate_state(self, state: str, provider: str) -> bool:
+async def validate_state(self, state: str, provider: str) -> tuple[bool, str | None]:
     # Query database
     query = select(OAuthState).where(
         OAuthState.state == state, OAuthState.provider == provider
@@ -287,24 +291,87 @@ async def validate_state(self, state: str, provider: str) -> bool:
     oauth_state = result.scalar_one_or_none()
 
     if not oauth_state or oauth_state.is_expired():
-        return False
+        return False, None
 
+    code_verifier = oauth_state.code_verifier  # PKCE
     # One-time use: delete after validation
     await self.db.delete(oauth_state)
     await self.db.commit()
-    return True
+    return True, code_verifier
 ```
 
 **Callback endpoint validation** (`backend/app/api/admin/endpoints/auth.py`):
 
 ```python
 # Both Microsoft and Cognito callbacks perform the same validation
-if not await oauth_state_service.validate_state(state, "cognito"):
+is_valid, code_verifier = await oauth_state_service.validate_state(state, "cognito")
+if not is_valid:
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Invalid or expired state parameter",
     )
+# code_verifier is passed to the token exchange request
 ```
+
+---
+
+## PKCE (Proof Key for Code Exchange)
+
+### Why PKCE?
+
+PKCE is an OAuth 2.1 best practice that prevents authorization code interception attacks. Even if an attacker intercepts the authorization code (e.g., via a malicious browser extension or redirect), they cannot exchange it for tokens without the `code_verifier`.
+
+### Implementation
+
+This project uses the **S256** challenge method. The entire PKCE flow is handled server-side — the frontend does not need to participate.
+
+| Step | Action | Location |
+|------|--------|----------|
+| 1. Generate | `code_verifier = secrets.token_urlsafe(96)` (~128 chars) | `OAuthService.generate_state()` |
+| 2. Challenge | `code_challenge = BASE64URL(SHA256(code_verifier))` | `OAuthService.generate_state()` |
+| 3. Store | `code_verifier` saved in `oauth_states` DB table | `OAuthState.code_verifier` column |
+| 4. Authorize | `code_challenge` + `code_challenge_method=S256` sent in auth URL | `get_authorization_url()` |
+| 5. Exchange | `code_verifier` sent in token exchange request | `exchange_code_for_token()` |
+| 6. Verify | IdP verifies `SHA256(code_verifier) == code_challenge` | Microsoft / Cognito server |
+
+### Key Design Decision
+
+Since the backend handles both the authorization URL construction and the token exchange, the `code_verifier` is stored server-side in the `oauth_states` database table (alongside the CSRF `state` parameter). This means **the frontend requires zero changes** for PKCE support.
+
+---
+
+## Refresh Token HttpOnly Cookie
+
+### Why HttpOnly Cookies for Refresh Tokens?
+
+Refresh tokens are long-lived (7 days) credentials. Storing them in `localStorage` exposes them to XSS attacks — any injected JavaScript can read `localStorage` and exfiltrate the token. HttpOnly cookies cannot be accessed by JavaScript (`document.cookie` returns nothing), providing a strong defense against XSS theft.
+
+### Cookie Configuration
+
+| Attribute | Value | Purpose |
+|-----------|-------|---------|
+| `key` | `kbr_refresh_token` | Cookie name |
+| `httponly` | `true` | Prevents JavaScript access |
+| `secure` | `true` (non-local) | Only sent over HTTPS |
+| `samesite` | `none` (non-local) / `lax` (local) | Cross-origin required for `api.kbp.kolya.fun` ↔ `kbp.kolya.fun` |
+| `path` | `/admin/auth` | Only sent to auth endpoints, not `/v1/*` |
+| `max_age` | 7 days | Matches refresh token lifetime |
+
+### Cross-Origin Considerations
+
+The frontend (`kbp.kolya.fun`) and backend (`api.kbp.kolya.fun`) are on different subdomains. This requires:
+- `SameSite=None; Secure` on the cookie (browsers require `Secure` when `SameSite=None`)
+- `withCredentials: true` on the Axios client (to send cookies cross-origin)
+- `allow_credentials=True` in CORS configuration (already in place)
+
+For local development over HTTP, the cookie uses `SameSite=Lax` since `SameSite=None` requires HTTPS.
+
+### Implementation
+
+- **Set cookie**: `backend/app/core/cookies.py` — `set_refresh_token_cookie()`
+- **Read cookie**: `backend/app/core/cookies.py` — `get_refresh_token_from_cookie()`
+- **Clear cookie**: `backend/app/core/cookies.py` — `clear_refresh_token_cookie()`
+- **Backward compatibility**: The `/admin/auth/refresh` and `/admin/auth/revoke` endpoints accept refresh tokens from both cookies (preferred) and request body (legacy)
 
 ---
 
@@ -533,7 +600,8 @@ deploy-all.sh
 | `backend/main.py` | CORS middleware configuration, SecurityMiddleware registration |
 | `backend/app/core/config.py` | `ALLOWED_ORIGINS` configuration and production validation |
 | `backend/app/core/security.py` | JWT/API Token generation, verification, encryption |
-| `backend/app/services/oauth.py` | OAuth State generation and validation (OAuth login CSRF protection) |
-| `backend/app/models/oauth_state.py` | OAuth State database model (10-minute expiry, one-time use) |
-| `backend/app/api/admin/endpoints/auth.py` | OAuth login and callback endpoints (state validation entry point) |
-| `frontend/src/boot/axios.ts` | Axios global config (`X-Requested-With` header) |
+| `backend/app/services/oauth.py` | OAuth State generation and validation (CSRF + PKCE) |
+| `backend/app/models/oauth_state.py` | OAuth State database model (10-minute expiry, one-time use, PKCE code_verifier) |
+| `backend/app/core/cookies.py` | HttpOnly cookie utilities for refresh token storage |
+| `backend/app/api/admin/endpoints/auth.py` | OAuth login and callback endpoints (PKCE + cookie handling) |
+| `frontend/src/boot/axios.ts` | Axios global config (`X-Requested-With` header, `withCredentials: true`) |

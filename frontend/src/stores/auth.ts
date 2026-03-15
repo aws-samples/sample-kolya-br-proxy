@@ -15,7 +15,6 @@ export interface User {
 
 export interface LoginResponse {
   access_token: string;
-  refresh_token: string;
   token_type: string;
   user: User;
 }
@@ -24,7 +23,6 @@ export const useAuthStore = defineStore('auth', {
   state: () => ({
     user: null as User | null,
     accessToken: localStorage.getItem('access_token') || null,
-    refreshToken: localStorage.getItem('refresh_token') || null,
     isAuthenticated: false,
   }),
 
@@ -64,7 +62,7 @@ export const useAuthStore = defineStore('auth', {
               message: 'Session expired, please login again',
               position: 'top',
             });
-            this.logout(false);
+            void this.logout(false);
             return;
           }
         }
@@ -74,36 +72,21 @@ export const useAuthStore = defineStore('auth', {
     },
 
     async refreshAccessToken() {
-      if (!this.refreshToken) {
-        Notify.create({
-          type: 'warning',
-          message: 'Session expired, please login again',
-          position: 'top',
-        });
-        this.logout(false);
-        return false;
-      }
-
       try {
+        // Cookie is sent automatically via withCredentials
         const response = await api.post<LoginResponse>(
           '/admin/auth/refresh',
-          {
-            refresh_token: this.refreshToken,
-          },
+          {},
           {
             // Skip interceptor to prevent infinite loop
             _skipAuthRefresh: true,
           } as Record<string, unknown>
         );
 
-        const { access_token, refresh_token } = response.data;
+        const { access_token } = response.data;
 
         this.accessToken = access_token;
-        this.refreshToken = refresh_token;
-
         localStorage.setItem('access_token', access_token);
-        localStorage.setItem('refresh_token', refresh_token);
-
         api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 
         return true;
@@ -113,19 +96,24 @@ export const useAuthStore = defineStore('auth', {
           message: 'Session expired, please login again',
           position: 'top',
         });
-        this.logout(false);
+        void this.logout(false);
         return false;
       }
     },
 
-    logout(showNotification = true) {
+    async logout(showNotification = true) {
+      // Revoke refresh token on server (clears cookie server-side)
+      try {
+        await api.post('/admin/auth/revoke', {});
+      } catch {
+        // Ignore errors during logout
+      }
+
       this.user = null;
       this.accessToken = null;
-      this.refreshToken = null;
       this.isAuthenticated = false;
 
       localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
 
       delete api.defaults.headers.common['Authorization'];
 

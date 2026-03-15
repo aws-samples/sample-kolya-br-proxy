@@ -1,26 +1,73 @@
 # Kolya BR Proxy
 
-**AI Gateway -- 提供兼容 OpenAI API 的 AWS Bedrock 代理服务（支持 Claude、Nova、DeepSeek 等模型）。**
+**[English](README.md) | [中文](README.zh.md)**
+
+**AI Gateway — 提供兼容 OpenAI API 的 AWS Bedrock 代理服务，支持 Claude、Nova、DeepSeek、Mistral、Llama 等模型。**
 
 ---
 
-## 概述
+## 为什么选择 Kolya BR Proxy？
 
-Kolya BR Proxy 将 OpenAI API 生态与 AWS Bedrock 模型连接起来。任何支持 OpenAI 协议的工具或
-SDK（Cline、Cursor、OpenAI Python/JS SDK 等）都可以通过此网关无缝接入 Bedrock，无需修改代码。
-Anthropic 模型（Claude）使用原生 InvokeModel API 以支持全部特性（thinking、effort、prompt caching），
-非 Anthropic 模型（Amazon Nova、DeepSeek、Mistral、Llama 等）自动通过 Bedrock Converse API 路由。
+- **零迁移成本** — OpenAI API 直接替换。Cline、Cursor、OpenAI SDK 等工具无需修改代码即可接入
+- **最高 90% 成本节省** — Prompt Cache 读取按 0.1 倍计费；Agent 循环仅 2 次请求即可回本，10+ 轮节省约 60%
+- **企业级安全** — 三层 CSRF 防御、AWS WAF、API Token 双重保护（SHA256 + AES-128）、ESO 密钥管理
+- **生产级可扩展** — 分布式 Redis 令牌桶限流、HPA 自动扩缩（1-10 Pods）、流式心跳优化
 
-### 主要功能
+---
 
+## 截图预览
+
+![仪表盘 — Prompt Cache 价格对比](assets/dashboard-cache-pricing.png)
+
+![API 管理 — Cache 设置](assets/api-cache-settings.png)
+
+![模型管理 — 按 API Key 配置模型](assets/models-management.png)
+
+![AI Playground](assets/playground.png)
+
+![使用量监控](assets/monitoring.png)
+
+---
+
+## 核心功能
+
+### API 网关
 - 兼容 OpenAI 的 `/v1/chat/completions` 和 `/v1/models` 端点
-- 流式和非流式响应
+- 流式和非流式响应，15 秒心跳保持连接活跃
 - 多模态消息支持（文本 + 图像）
-- 纯 OAuth 认证，支持 AWS Cognito（默认）和 Microsoft Entra ID SSO
-- 基于 USD 计费的按令牌配额管理
-- 按令牌模型访问控制
-- 管理面板，内含 AI Playground
-- 基于 AWS EKS 的 Kubernetes 原生部署
+- 双 API 路由：`/v1/*` 供 SDK 客户端 + `/admin/*` JWT 认证管理面板
+
+### 多厂商支持
+- 通过统一转换层支持 **19 家厂商**
+- Anthropic Claude 使用原生 InvokeModel API（完整支持 thinking、effort、prompt caching）
+- Amazon Nova、DeepSeek、Mistral、Llama 通过 Converse API
+- 自动请求/响应格式转换
+
+### 成本优化
+- **Prompt Cache**：读取 90% 折扣，写入 25% 溢价；第 2 次请求即可回本
+- **按模型按 Token 计费**：动态价格来自 AWS API + 爬虫（181+ 个地区价格记录）
+- **实时成本追踪**：后台异步记录使用量，每个 API Token 配额限制
+- **Agent 循环优化**：10+ 轮对话总成本降低约 60%
+
+### 企业安全
+- **纵深防御 CSRF**：Origin + Referer + X-Requested-With 头验证
+- **AWS WAF**：ALB 层限流（按端点层级 20/300/2000 req 每 5min），SQLi/XSS 托管规则
+- **API Token 双重保护**：SHA256 哈希索引 O(1) 查询（0.5ms）+ Fernet AES-128 加密存储
+- **OAuth SSO**：AWS Cognito（默认）+ Microsoft Entra ID；PKCE (S256) + OAuth State 10 分钟过期；Refresh Token 使用 HttpOnly Cookie 存储
+- **ESO + AWS Secrets Manager**：密钥不入 Git，通过 Pod Identity 每 10 分钟自动同步
+
+### 高性能架构
+- **分布式 Redis 令牌桶**：Lua 脚本实现全局 500 RPM 限流，Redis 不可用时优雅回退到 per-Pod LocalTokenBucket
+- **流式响应优化**：ALB 空闲超时（600s）> Bedrock 读超时（300s）；内层先超时返回有意义的错误
+- **异步信号量**：50 并发请求，反压匹配连接池大小
+- **HPA 自动扩缩**：CPU 70% 阈值触发扩容，ALB 轮询算法均衡分发
+
+### 生产就绪基础设施
+- **Kubernetes 原生**：EKS 部署，Karpenter、Metrics Server、gp3 StorageClass
+- **两种部署模式**：`deploy-all.sh`（完整 IaC + Terraform）或 `deploy-to-existing.sh`（已有 EKS 集群）
+- **Global Accelerator 可选集成**：一键启用 AWS Global Accelerator，Anycast IP 全球低延迟接入，自动故障转移（`enable_global_accelerator = true`）
+- **管理面板**：Vue 3 + Quasar，内含 AI Playground、Token 管理、模型访问控制
+- **可观测性**：结构化日志、健康检查、调试模式下 Swagger UI
 
 ---
 
@@ -33,7 +80,7 @@ graph LR
     Frontend -->|Admin API| Backend
     Backend -->|InvokeModel /<br/>Converse API| Bedrock[AWS Bedrock<br/>LLM Models]
     Backend -->|asyncpg| PostgreSQL[(Aurora<br/>PostgreSQL)]
-    Backend -.->|Cache| Redis[(Redis)]
+    Backend -.->|Cache + 限流| Redis[(Redis)]
     subgraph AWS EKS
         Frontend
         Backend
@@ -53,9 +100,10 @@ InvokeModel API（原生 Messages API 格式），非 Anthropic 模型使用 Con
 | **前端** | Vue 3, Quasar Framework, TypeScript, Pinia, Vite |
 | **后端** | Python 3.12+, FastAPI, SQLAlchemy (async), Alembic, Pydantic |
 | **数据库** | PostgreSQL（生产环境使用 Aurora），asyncpg 驱动 |
+| **缓存** | Redis（限流、Prompt Cache 追踪） |
 | **认证** | JWT, AWS Cognito（默认）, Microsoft OAuth |
-| **云服务** | AWS Bedrock, EKS, ECR, Global Accelerator |
-| **基础设施即代码** | Terraform, Karpenter |
+| **云服务** | AWS Bedrock, EKS, ECR, WAF, Secrets Manager |
+| **基础设施即代码** | Terraform, Karpenter, External Secrets Operator |
 | **包管理** | uv（后端）, npm（前端） |
 
 ---
@@ -99,7 +147,7 @@ uv run alembic upgrade head
 
 # 启动开发服务器
 cd backend
-uv run python main.py
+KBR_ENV=local uv run python main.py
 ```
 
 后端运行在 `http://localhost:8000`，访问 `/docs` 查看 Swagger UI。
@@ -173,141 +221,58 @@ for chunk in stream:
 
 ---
 
-## 项目结构
+## 部署
 
-```
-kolya-br-proxy/
-├── backend/                  # FastAPI 后端服务
-│   ├── app/
-│   │   ├── api/              # API 路由（管理 + v1 网关）
-│   │   ├── core/             # 配置、数据库、安全
-│   │   ├── middleware/        # 请求中间件
-│   │   ├── models/           # SQLAlchemy ORM 模型
-│   │   ├── schemas/          # Pydantic 请求/响应模式
-│   │   └── services/         # 业务逻辑（Bedrock、OAuth 等）
-│   ├── alembic/              # 数据库迁移
-│   ├── main.py               # 应用入口
-│   ├── app/                  # 应用代码
-│   │   ├── api/              # API 端点
-│   │   ├── core/             # 核心配置
-│   │   ├── models/           # 数据库模型
-│   │   ├── schemas/          # Pydantic 模式
-│   │   └── services/         # 业务逻辑
-├── frontend/                 # Vue 3 + Quasar 管理面板
-│   └── src/
-│       ├── pages/            # 页面组件
-│       ├── stores/           # Pinia 状态管理
-│       └── router/           # Vue Router 配置
-├── k8s/                      # Kubernetes 清单
-│   ├── application/          # 应用部署和服务
-│   └── infrastructure/       # 集群级资源
-├── iac-612674025488-us-west-2/  # Terraform 基础设施即代码
-│   └── modules/              # Terraform 模块
-├── docs/                     # 扩展文档
-├── build-and-push.sh         # 容器镜像构建脚本
-└── deploy-all.sh             # 完整部署脚本
+### 方式一：完整 IaC（新建基础设施）
+
+```bash
+# 创建 EKS 集群、RDS、VPC 并部署所有组件
+./deploy-all.sh
 ```
 
----
+### 方式二：已有 EKS 集群
 
-## 环境变量
+```bash
+# 交互式模式
+./deploy-to-existing.sh
 
-所有后端环境变量使用 `KBR_` 前缀。主要变量：
+# 或使用配置文件
+./deploy-to-existing.sh --config config.yaml
 
-| 变量 | 描述 | 默认值 |
-|------|------|--------|
-| `KBR_ENV` | 环境模式（`non-prod` 或 `prod`） | `non-prod` |
-| `KBR_DEBUG` | 启用调试模式 | `false` |
-| `KBR_PORT` | 服务端口 | `8000` |
-| `KBR_DATABASE_URL` | PostgreSQL 连接字符串（asyncpg） | --（必填） |
-| `KBR_DATABASE_POOL_SIZE` | 连接池大小 | `10` |
-| `KBR_DATABASE_MAX_OVERFLOW` | 最大溢出连接数 | `20` |
-| `KBR_JWT_SECRET_KEY` | JWT 签名密钥（至少 32 字符） | --（必填） |
-| `KBR_JWT_ALGORITHM` | JWT 算法 | `HS256` |
-| `KBR_JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | 访问令牌有效期（分钟） | `30` |
-| `KBR_JWT_REFRESH_TOKEN_EXPIRE_DAYS` | 刷新令牌有效期（天） | `7` |
-| `KBR_AWS_REGION` | Bedrock 所在 AWS 区域 | `us-west-2` |
-| `KBR_AWS_PROFILE` | AWS CLI 配置文件（仅本地开发） | -- |
-| `KBR_ALLOWED_ORIGINS` | CORS 来源（逗号分隔） | `localhost` |
-| `KBR_MICROSOFT_CLIENT_ID` | Microsoft OAuth 客户端 ID | -- |
-| `KBR_MICROSOFT_CLIENT_SECRET` | Microsoft OAuth 客户端密钥 | -- |
-| `KBR_MICROSOFT_TENANT_ID` | Microsoft OAuth 租户 ID | -- |
-| `KBR_COGNITO_USER_POOL_ID` | AWS Cognito 用户池 ID | -- |
-| `KBR_COGNITO_CLIENT_ID` | AWS Cognito 应用客户端 ID | -- |
-| `KBR_INITIAL_USER_BALANCE_USD` | 新用户初始余额 | `5.0` |
-| `KBR_LOG_LEVEL` | 日志级别 | `INFO` |
+# 或单步执行
+./deploy-to-existing.sh --step 1  # 仅安装 Helm 基础设施
+```
 
-完整模板请参考 `backend/.env.example`。
-
----
-
-## 环境配置
-
-### 本地开发环境
-
-**配置：**
-- 配置文件: `.env.local`（本地唯一使用的环境文件）
-- `KBR_ENV`: 不设置（默认为 `non-prod`）
-- `KBR_DEBUG`: `true`
-- `KBR_LOG_LEVEL`: `INFO` 或 `DEBUG`
-
-**基础设施：**
-- 数据库: 本地 PostgreSQL (`127.0.0.1:5432`)
-- AWS 认证: `KBR_AWS_PROFILE` 或 `KBR_AWS_ACCESS_KEY_ID`/`KBR_AWS_SECRET_ACCESS_KEY`
-- CORS: `localhost` 来源（可包含 `*`）
-- OAuth 重定向: `http://localhost:9000/auth/*/callback`
-- TLS: 可选
-
-### 云端部署（非生产和生产环境）
-
-**配置来源：**
-- 所有环境变量在 Kubernetes manifest 中定义：
-  - `k8s/application/backend-configmap.yaml` - 非敏感配置
-  - `k8s/application/secrets.yaml` - 敏感凭证（数据库 URL、JWT 密钥、OAuth 凭证）
-- `.env.non-prod` 和 `.env.prod` 文件在云端部署时不使用
-
-**非生产环境（云端）：**
-- `KBR_ENV`: `non-prod`（在 ConfigMap 中设置）
-- `KBR_DEBUG`: `true`
-- `KBR_LOG_LEVEL`: `INFO`
-- 数据库: Aurora PostgreSQL (RDS)
-- AWS 认证: EKS Pod Identity（无需凭证）
-- CORS: 非生产域名来源（可包含 `*` 用于测试）
-- OAuth 重定向: 非生产域名 URL
-- TLS: 必须（ALB/Global Accelerator）
-- 删除保护: 禁用（Terraform）
-- 备份保留: 1 天（Terraform）
-- 性能洞察: 禁用（Terraform）
-
-**生产环境（云端）：**
-- `KBR_ENV`: `prod`（在 ConfigMap 中设置）
-- `KBR_DEBUG`: `false`
-- `KBR_LOG_LEVEL`: `WARNING`
-- 数据库: Aurora PostgreSQL (RDS)
-- AWS 认证: EKS Pod Identity
-- CORS: 严格域名白名单（不允许通配符）
-- OAuth 重定向: 仅生产域名 URL
-- TLS: 必须（ALB/Global Accelerator）
-- 删除保护: 启用（Terraform）
-- 备份保留: 7 天（Terraform）
-- 性能洞察: 启用（Terraform）
-
-详细部署说明请参考 `docs/deployment.md`。
+详细部署说明请参考[部署指南](docs/deployment.md)。
 
 ---
 
 ## 文档
 
+从[架构概览](docs/architecture.zh.md)开始了解系统全貌，然后深入各专题：
+
 | 文档 | 描述 |
 |------|------|
-| [docs/architecture.md](docs/architecture.md) | 系统架构与流程图 |
-| [docs/security.zh.md](docs/security.zh.md) | CORS 与 CSRF 安全防护设计 |
-| [docs/deployment.md](docs/deployment.md) | 生产部署指南 |
-| [docs/api-reference.md](docs/api-reference.md) | API 端点参考 |
-| [docs/oauth-setup.md](docs/oauth-setup.md) | OAuth 配置说明 |
+| **[架构概览](docs/architecture.zh.md)** | 系统架构、组件图、数据库 ER 图、认证流程、计费模型 |
+| **[性能优化](docs/performance.zh.md)** | 流式优化、限流机制、超时调优、HPA 自动扩缩 |
+| **[计费系统](docs/pricing-system.zh.md)** | 按 Token 计费、动态定价、Prompt Cache 成本模型 |
+| **[Prompt 缓存](docs/prompt-caching.zh.md)** | 自动注入机制、成本节省分析、模型阈值 |
+| **[安全防护](docs/security.zh.md)** | CORS 与 CSRF 防护、WAF 规则、纵深防御实现 |
+| **[请求转换](docs/request-translation.md)** | OpenAI 到 Bedrock/Anthropic 格式转换 |
+| **[API 参考](docs/api-reference.md)** | 完整端点文档及请求/响应示例 |
+| **[OAuth 配置](docs/oauth-setup.md)** | Microsoft 和 Cognito OAuth 配置说明 |
+| **[部署指南](docs/deployment.md)** | 生产和非生产环境部署指南 |
 | [backend/README.md](backend/README.md) | 后端开发详情 |
 | [frontend/README.md](frontend/README.md) | 前端开发详情 |
 | [k8s/README.md](k8s/README.md) | Kubernetes 部署指南 |
+
+### 交互式架构图
+
+交互式 HTML 架构图位于 `kolya-br-proxy-arch/bundle.html`，覆盖所有层级（客户端、Ingress、前端、后端、基础设施、AWS 服务），支持点击查看详情面板，包含 CORS/CSRF 防护细节和完整请求流程。
+
+```bash
+open kolya-br-proxy-arch/bundle.html
+```
 
 ---
 

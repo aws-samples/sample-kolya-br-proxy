@@ -36,5 +36,7 @@ data:
   KBR_BEDROCK_RATE_BURST: "10"
   # Auto-inject prompt cache breakpoints for Anthropic models
   KBR_PROMPT_CACHE_AUTO_INJECT: "true"
+  # Prompt cache TTL: "5m" or "1h" (extended, reduces cache misses in long sessions)
+  KBR_PROMPT_CACHE_TTL: "1h"
   # Redis configuration (distributed rate limiting)
   KBR_REDIS_URL: "redis://redis-master.kbp.svc.cluster.local:6379/0"

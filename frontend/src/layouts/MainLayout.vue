@@ -140,7 +140,7 @@ async function goToSettings() {
 }
 
 async function handleLogout() {
-  authStore.logout();
+  void authStore.logout();
   await router.replace('/login');
 }
 

@@ -4,38 +4,67 @@ Kolya BR Proxy supports automatic prompt cache injection for Anthropic models on
 
 ## How It Works
 
-When enabled, the proxy automatically injects `cache_control` breakpoints into the Anthropic Messages API request body before sending it to Bedrock. Up to 3 breakpoints are injected:
+When enabled, the proxy automatically injects `cache_control` breakpoints into the Anthropic Messages API request body before sending it to Bedrock. Up to 4 breakpoints are injected (Anthropic API limit), using the following priority:
 
-| Breakpoint | Target | Condition |
-|------------|--------|-----------|
-| 1 | System prompt (last block) | Total chars >= 4096 |
-| 2 | Last tool definition | Total tool chars >= 4096 |
-| 3 | Second-to-last user message | Total chars >= 4096 |
+| Priority | Target | Description |
+|----------|--------|-------------|
+| 1 | Last tool definition | Tool definitions are stable across turns |
+| 2 | System prompt (last block) | System prompt rarely changes |
+| 3 | Last assistant message (last non-thinking block) | Caches conversation history prefix |
 
-The second-to-last user message is chosen (not the last) because the last message changes every request and would never hit cache.
+Thinking and redacted_thinking blocks in assistant messages are skipped — only text and tool_use blocks receive breakpoints.
+
+If the request already contains `cache_control` markers (e.g., set by the client), those count against the budget of 4. Pre-existing markers also have their TTL upgraded to match the server configuration.
 
 ## Control Priority
 
 ```
-Per-request parameter  >  Server default (env var)
+Per-request parameter  >  API Key config (token_metadata)  >  Server default (env var)
 ```
 
-| Client param | Server default | Result |
-|-------------|----------------|--------|
-| `bedrock_auto_cache: true` | any | Injection enabled |
-| `bedrock_auto_cache: false` | any | Injection disabled |
-| not set | `true` | Injection enabled |
-| not set | `false` | Injection disabled |
+| Per-request | API Key config | Server default | Result |
+|-------------|---------------|----------------|--------|
+| `bedrock_auto_cache: true` | any | any | Injection enabled |
+| `bedrock_auto_cache: false` | any | any | Injection disabled |
+| not set | `prompt_cache_enabled: true` | any | Injection enabled |
+| not set | `prompt_cache_enabled: false` | any | Injection disabled |
+| not set | not set | `true` | Injection enabled |
+| not set | not set | `false` | Injection disabled |
 
 ## Server Configuration
 
-Environment variable:
+Environment variables:
 
 ```bash
-KBR_PROMPT_CACHE_AUTO_INJECT=true   # default: true
+KBR_PROMPT_CACHE_AUTO_INJECT=false  # default: false
+KBR_PROMPT_CACHE_TTL=1h             # default: 1h (options: "5m" or "1h")
 ```
 
-Default is `true` because the primary clients (Claude Code, OpenCode) use standard OpenAI SDKs and cannot send custom parameters. These clients typically run multi-turn agent loops where system prompt + tools are stable — ideal for caching.
+`KBR_PROMPT_CACHE_AUTO_INJECT` defaults to `false`. Administrators can enable it globally or configure per-API-key cache settings via the admin panel (see [Per-API-Key Configuration](#per-api-key-configuration)).
+
+`KBR_PROMPT_CACHE_TTL` controls the cache duration. Anthropic supports two values:
+
+| TTL | Marker | Best for |
+|-----|--------|----------|
+| `5m` | `{"type": "ephemeral"}` | Short interactions, cost-sensitive workloads |
+| `1h` | `{"type": "ephemeral", "ttl": "1h"}` | Long agent sessions (recommended, reduces cache misses between turns) |
+
+The default `1h` is recommended for agent loops where turns may be spaced minutes apart. With `5m`, cache misses are common when users pause between interactions.
+
+## Per-API-Key Configuration
+
+Each API key can have independent prompt cache settings stored in `token_metadata`. These are configured via the admin panel under **API Keys > Settings** (gear icon).
+
+Available settings:
+
+| Setting | Values | Description |
+|---------|--------|-------------|
+| `prompt_cache_enabled` | `true` / `false` | Enable or disable prompt caching for this key |
+| `prompt_cache_ttl` | `"5m"` / `"1h"` | Cache TTL override for this key |
+
+When an API key has no cache settings configured, the server defaults (`KBR_PROMPT_CACHE_AUTO_INJECT` and `KBR_PROMPT_CACHE_TTL`) apply.
+
+Per-request parameters (body or header) always take the highest priority and override API key settings.
 
 ## Per-Request Control
 
@@ -59,6 +88,18 @@ curl -H "X-Bedrock-Auto-Cache: true" \
      -H "Authorization: Bearer kbr_xxx" \
      -d '{"model":"us.anthropic.claude-sonnet-4-20250514-v1:0","messages":[...]}' \
      https://api.example.com/v1/chat/completions
+```
+
+### Per-Request TTL Override
+
+You can also override the cache TTL on a per-request basis using `bedrock_cache_ttl`:
+
+```python
+response = client.chat.completions.create(
+    model="us.anthropic.claude-sonnet-4-20250514-v1:0",
+    messages=[...],
+    extra_body={"bedrock_auto_cache": True, "bedrock_cache_ttl": "5m"}
+)
 ```
 
 ## When to Disable Caching
@@ -99,13 +140,18 @@ KBR_PROMPT_CACHE_AUTO_INJECT=false
 
 ## Cost Model
 
-| Token type | Pricing |
-|-----------|---------|
-| `cache_creation_input_tokens` | 1.25x base input price (25% write premium) |
-| `cache_read_input_tokens` | 0.1x base input price (90% discount) |
-| `input_tokens` | 1x base input price (uncached) |
+Cache write pricing depends on the TTL:
 
-Caching breaks even at ~2 requests with the same cached prefix. For agent loops with 10+ turns, savings are significant.
+| Token type | TTL | Pricing |
+|-----------|-----|---------|
+| `cache_creation_input_tokens` | `5m` | 1.25x base input price (25% write premium) |
+| `cache_creation_input_tokens` | `1h` | 2.0x base input price (100% write premium) |
+| `cache_read_input_tokens` | any | 0.1x base input price (90% discount) |
+| `input_tokens` | — | 1x base input price (uncached) |
+
+With `5m` TTL, caching breaks even at ~2 requests. With `1h` TTL, the higher write cost means ~3 requests to break even, but significantly reduces cache misses in longer sessions.
+
+> **Note**: The cache pricing multipliers (1.25x for 5m, 2.0x for 1h, 0.1x for reads) are hardcoded in the proxy and based on Anthropic's published pricing. There is no auto-update mechanism — if Anthropic changes their cache pricing, these multipliers must be manually updated in `backend/app/services/pricing.py`.
 
 ## Verifying Cache Behavior (Logs)
 
@@ -114,7 +160,7 @@ The proxy logs cache metrics when they are non-zero.
 **First request (cache write):**
 
 ```
-INFO  Auto-injected prompt cache breakpoints: ['system', 'tools[-1]']
+INFO  Prompt cache: 2bp(tools+system,1h,pre=0)
 INFO  Bedrock invocation successful: model=us.anthropic.claude-sonnet-4-20250514-v1:0, api=invoke_model, attempt=1, duration=7.7s, input=7, output=152, cache_write=2359
 INFO  Chat completion successful: request_id=chatcmpl-xxx, duration=7.7s, prompt=7, completion=152, cache_write=2359
 ```
@@ -122,7 +168,7 @@ INFO  Chat completion successful: request_id=chatcmpl-xxx, duration=7.7s, prompt
 **Second identical request (cache hit):**
 
 ```
-INFO  Auto-injected prompt cache breakpoints: ['system', 'tools[-1]']
+INFO  Prompt cache: 2bp(tools+system,1h,pre=0)
 INFO  Bedrock invocation successful: model=us.anthropic.claude-sonnet-4-20250514-v1:0, api=invoke_model, attempt=1, duration=8.1s, input=7, output=178, cache_read=2359
 INFO  Chat completion successful: request_id=chatcmpl-xxx, duration=8.1s, prompt=7, completion=178, cache_read=2359
 ```
@@ -170,7 +216,7 @@ The most common reason caching silently fails is that the **cached content doesn
 | Claude Haiku 3.5 | 2,048 |
 | Claude Opus 4.5 / Haiku 4.5 | 4,096 |
 
-> **Pitfall**: The code checks character count (`MIN_CACHEABLE_CHARS = 4096` chars ≈ 1024 tokens), but the **actual caching** is enforced by Bedrock on token count. A system prompt with 4096+ characters may still have fewer than 1024 tokens and silently fail — Bedrock returns `cache_creation_input_tokens=0` without an error.
+> **Pitfall**: The proxy injects breakpoints unconditionally (no character threshold), but **actual caching** is enforced by Bedrock on token count. A short system prompt may have fewer than the minimum tokens and silently fail — Bedrock returns `cache_creation_input_tokens=0` without an error.
 
 Create a test file `test-cache.json` with a system prompt that is **well above** the minimum (recommend 2000+ tokens, ~8000+ characters):
 
@@ -220,19 +266,19 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
 **Expected logs:**
 
 ```
-INFO  Auto-injected prompt cache breakpoints: ['system']
+INFO  Prompt cache: 1bp(system,1h,pre=0)
 INFO  Bedrock invocation successful: model=global.anthropic.claude-sonnet-4-6, api=invoke_model, attempt=1, duration=7.7s, input=7, output=152, cache_write=2359
 INFO  Chat completion successful: request_id=chatcmpl-xxx, duration=7.7s, prompt=7, completion=152, cache_write=2359
 ```
 
 Key indicators:
-- `Auto-injected prompt cache breakpoints: ['system']` — injection happened
+- `Prompt cache: 1bp(system,1h,pre=0)` — 1 breakpoint injected on system, TTL=1h, 0 pre-existing
 - `cache_write=2359` — Bedrock accepted and cached the system prompt (2359 tokens)
 - `input=7` — only the user message counted as regular input
 
 ### Step 3: Second Request (Cache Read)
 
-Send the **exact same request** within 5 minutes:
+Send the **exact same request** within the configured TTL (default 1 hour):
 
 ```bash
 curl -s -X POST http://localhost:8000/v1/chat/completions \
@@ -244,7 +290,7 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
 **Expected logs:**
 
 ```
-INFO  Auto-injected prompt cache breakpoints: ['system']
+INFO  Prompt cache: 1bp(system,1h,pre=0)
 INFO  Bedrock invocation successful: model=global.anthropic.claude-sonnet-4-6, api=invoke_model, attempt=1, duration=8.1s, input=7, output=178, cache_read=2359
 INFO  Chat completion successful: request_id=chatcmpl-xxx, duration=8.1s, prompt=7, completion=178, cache_read=2359
 ```
@@ -272,9 +318,9 @@ INFO  Streaming chat completion successful: request_id=chatcmpl-xxx, duration=5.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| No `Auto-injected` log line | `should_inject=false` — auto-cache disabled | Check `KBR_PROMPT_CACHE_AUTO_INJECT` env var, or pass `bedrock_auto_cache: true` |
-| `Auto-injected` appears but `cache_write=0` | System prompt below Bedrock's **token** minimum (1024 for Sonnet) | Make the system prompt longer (8000+ chars to safely exceed 1024 tokens) |
-| `cache_write` on first request but no `cache_read` on second | Cache TTL expired (default 5 min) or system prompt changed between requests | Send second request within 5 min; ensure identical system prompt |
+| No `Prompt cache:` log line | `should_inject=false` — auto-cache disabled | Check `KBR_PROMPT_CACHE_AUTO_INJECT` env var, or pass `bedrock_auto_cache: true` |
+| `Prompt cache:` appears but `cache_write=0` | Content below Bedrock's **token** minimum (1024 for Sonnet) | Make the system prompt longer (8000+ chars to safely exceed 1024 tokens) |
+| `cache_write` on first request but no `cache_read` on second | Cache TTL expired or content changed between requests | Send second request within TTL window; ensure content is identical. Consider `KBR_PROMPT_CACHE_TTL=1h` for longer sessions |
 | `cache_write` appears but `cache_read` never does | Model may not support caching, or region limitation | Verify model and region support prompt caching in AWS docs |
 | Neither `cache_write` nor `cache_read` in log | Injection skipped because client sent manual `cache_control` | Check if `bedrock_prompt_caching` is set in request body |
 

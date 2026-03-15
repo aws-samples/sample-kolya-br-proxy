@@ -1,8 +1,11 @@
 """
 OAuth state management service.
 Handles generation and validation of OAuth state parameters for CSRF protection.
+Includes PKCE (Proof Key for Code Exchange) support for OAuth 2.1 best practices.
 """
 
+import base64
+import hashlib
 import secrets
 from datetime import datetime
 
@@ -18,27 +21,36 @@ class OAuthService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def generate_state(self, provider: str) -> str:
+    async def generate_state(self, provider: str) -> tuple[str, str]:
         """
-        Generate and store a new OAuth state parameter.
+        Generate and store a new OAuth state parameter with PKCE challenge.
 
         Args:
             provider: OAuth provider name (e.g., "microsoft")
 
         Returns:
-            Generated state string
+            Tuple of (state, code_challenge)
         """
         # Generate a cryptographically secure random state
         state = secrets.token_urlsafe(32)
 
+        # Generate PKCE code_verifier and code_challenge (S256)
+        code_verifier = secrets.token_urlsafe(96)  # ~128 chars
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
         # Store in database
-        oauth_state = OAuthState(state=state, provider=provider)
+        oauth_state = OAuthState(
+            state=state, provider=provider, code_verifier=code_verifier
+        )
         self.db.add(oauth_state)
         await self.db.commit()
 
-        return state
+        return state, code_challenge
 
-    async def validate_state(self, state: str, provider: str) -> bool:
+    async def validate_state(
+        self, state: str, provider: str
+    ) -> tuple[bool, str | None]:
         """
         Validate and consume an OAuth state parameter.
 
@@ -47,10 +59,10 @@ class OAuthService:
             provider: OAuth provider name
 
         Returns:
-            True if state is valid and not expired, False otherwise
+            Tuple of (is_valid, code_verifier)
         """
         if not state:
-            return False
+            return False, None
 
         # Query for the state
         query = select(OAuthState).where(
@@ -60,20 +72,23 @@ class OAuthService:
         oauth_state = result.scalar_one_or_none()
 
         if not oauth_state:
-            return False
+            return False, None
 
         # Check if expired
         if oauth_state.is_expired():
             # Delete expired state
             await self.db.delete(oauth_state)
             await self.db.commit()
-            return False
+            return False, None
+
+        # Extract code_verifier before deletion
+        code_verifier = oauth_state.code_verifier
 
         # Delete the state (one-time use)
         await self.db.delete(oauth_state)
         await self.db.commit()
 
-        return True
+        return True, code_verifier
 
     async def cleanup_expired_states(self) -> int:
         """

@@ -253,8 +253,7 @@ class BedrockClient:
             logger.info("BedrockClient singleton initialized")
         return cls._instance
 
-    CACHE_CONTROL_MARKER = {"type": "ephemeral"}
-    MIN_CACHEABLE_CHARS = 4096  # ~1024 tokens (chars/4 rough estimate)
+    MAX_CACHE_BREAKPOINTS = 4
 
     # Models that require cross-region inference profile
     # These models don't support direct on-demand invocation
@@ -340,114 +339,148 @@ class BedrockClient:
         return model_name
 
     @staticmethod
-    def _body_has_cache_control(body: dict) -> bool:
-        """Check if the body already contains any cache_control markers.
-
-        If the client (or prompt_caching pass-through) has already set
-        cache_control on system, tools, or message content blocks, we skip
-        auto-injection to avoid conflicts.
-        """
-        # Check system (array format)
-        system = body.get("system")
-        if isinstance(system, list):
-            for block in system:
-                if isinstance(block, dict) and "cache_control" in block:
-                    return True
-
-        # Check tools
-        for tool in body.get("tools", []):
-            if isinstance(tool, dict) and "cache_control" in tool:
-                return True
-
-        # Check message content blocks
-        for msg in body.get("messages", []):
-            content = msg.get("content") if isinstance(msg, dict) else None
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and "cache_control" in block:
-                        return True
-
-        return False
+    def _new_cache_marker(ttl: str | None = None) -> dict:
+        """Create a cache_control marker with configured TTL."""
+        cache_ttl = ttl or get_settings().PROMPT_CACHE_TTL
+        marker: dict = {"type": "ephemeral"}
+        if cache_ttl != "5m":
+            marker["ttl"] = cache_ttl
+        return marker
 
     @staticmethod
-    def _inject_prompt_cache_breakpoints(body: dict) -> None:
-        """Inject up to 3 cache_control breakpoints into the request body.
+    def _collect_cache_blocks(body: dict) -> list[dict]:
+        """Collect all blocks that already have cache_control markers."""
+        blocks: list[dict] = []
 
-        Breakpoints (in order):
-        1. System prompt — last block (string → converted to array first)
-        2. Last tool definition
-        3. Second-to-last user message (last content block)
+        def collect(items: list) -> None:
+            for item in items:
+                if isinstance(item, dict) and "cache_control" in item:
+                    blocks.append(item)
 
-        Each injection is guarded by a minimum character threshold to avoid
-        caching very short content (which incurs 25% write premium with 0%
-        hit rate).
-        """
-        marker = BedrockClient.CACHE_CONTROL_MARKER
-        threshold = BedrockClient.MIN_CACHEABLE_CHARS
-        injected: list[str] = []
-
-        # --- Breakpoint 1: System prompt ---
+        # Check tools
+        collect(body.get("tools") or [])
+        # Check system
         system = body.get("system")
-        if system is not None:
-            if isinstance(system, str):
-                if len(system) >= threshold:
+        if isinstance(system, list):
+            collect(system)
+        # Check message content blocks
+        for msg in body.get("messages", []):
+            if isinstance(msg, dict):
+                content = msg.get("content")
+                if isinstance(content, list):
+                    collect(content)
+
+        return blocks
+
+    @staticmethod
+    def _body_has_cache_control(body: dict) -> bool:
+        """Check if the body already contains any cache_control markers."""
+        return len(BedrockClient._collect_cache_blocks(body)) > 0
+
+    @staticmethod
+    def _inject_prompt_cache_breakpoints(body: dict, ttl: str | None = None) -> None:
+        """Inject up to 4 cache_control breakpoints into the request body.
+
+        Strategy aligned with claudecode-bedrock-proxy:
+        1. Upgrade TTL on all pre-existing breakpoints
+        2. Inject new breakpoints (up to remaining budget):
+           a. Last tool definition
+           b. System prompt — last block (string → converted to array)
+           c. Last assistant message — last non-thinking content block
+
+        The API limit is 4 breakpoints per request. Pre-existing breakpoints
+        count against this budget.
+        """
+        cache_ttl = ttl or get_settings().PROMPT_CACHE_TTL
+        marker = BedrockClient._new_cache_marker(ttl=cache_ttl)
+
+        # --- Step 1: Upgrade TTL on pre-existing breakpoints ---
+        existing_blocks = BedrockClient._collect_cache_blocks(body)
+        upgraded = 0
+        if cache_ttl != "5m":
+            for block in existing_blocks:
+                cc = block.get("cache_control")
+                if isinstance(cc, dict):
+                    cc["ttl"] = cache_ttl
+                    upgraded += 1
+
+        existing = len(existing_blocks)
+        budget = BedrockClient.MAX_CACHE_BREAKPOINTS - existing
+        if budget <= 0:
+            if upgraded > 0:
+                logger.info(
+                    f"Prompt cache: ttl-upgrade({upgraded}->{cache_ttl}, existing={existing})"
+                )
+            return
+
+        added = 0
+        parts: list[str] = []
+
+        # --- Step 2a: Last tool definition ---
+        tools = body.get("tools")
+        if tools and added < budget:
+            last_tool = tools[-1]
+            if isinstance(last_tool, dict) and "cache_control" not in last_tool:
+                last_tool["cache_control"] = marker
+                added += 1
+                parts.append("tools")
+
+        # --- Step 2b: System prompt ---
+        if added < budget:
+            system = body.get("system")
+            if system is not None:
+                if isinstance(system, str) and system:
                     body["system"] = [
                         {"type": "text", "text": system, "cache_control": marker}
                     ]
-                    injected.append("system")
-            elif isinstance(system, list) and system:
-                # Estimate total chars across all text blocks
-                total = sum(
-                    len(b.get("text", "")) for b in system if isinstance(b, dict)
-                )
-                if total >= threshold:
-                    system[-1]["cache_control"] = marker
-                    injected.append("system")
+                    added += 1
+                    parts.append("system")
+                elif isinstance(system, list) and system:
+                    last_block = system[-1]
+                    if (
+                        isinstance(last_block, dict)
+                        and "cache_control" not in last_block
+                    ):
+                        last_block["cache_control"] = marker
+                        added += 1
+                        parts.append("system")
 
-        # --- Breakpoint 2: Last tool definition ---
-        tools = body.get("tools")
-        if tools:
-            total_chars = 0
-            for t in tools:
-                if isinstance(t, dict):
-                    total_chars += len(t.get("name", ""))
-                    total_chars += len(t.get("description", ""))
-                    total_chars += len(str(t.get("input_schema", {})))
-            if total_chars >= threshold:
-                tools[-1]["cache_control"] = marker
-                injected.append("tools[-1]")
+        # --- Step 2c: Last assistant message (skip thinking blocks) ---
+        if added < budget:
+            messages = body.get("messages", [])
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
 
-        # --- Breakpoint 3: Second-to-last user message ---
-        messages = body.get("messages", [])
-        user_indices = [
-            i
-            for i, m in enumerate(messages)
-            if isinstance(m, dict) and m.get("role") == "user"
-        ]
-        if len(user_indices) >= 2:
-            target_idx = user_indices[-2]
-            target_msg = messages[target_idx]
-            content = target_msg.get("content")
-
-            if isinstance(content, str):
-                if len(content) >= threshold:
-                    target_msg["content"] = [
+                content = msg.get("content")
+                if isinstance(content, str) and content:
+                    msg["content"] = [
                         {"type": "text", "text": content, "cache_control": marker}
                     ]
-                    injected.append("messages[user-2]")
-            elif isinstance(content, list) and content:
-                total = sum(
-                    len(b.get("text", "") if isinstance(b, dict) else str(b))
-                    for b in content
-                )
-                if total >= threshold:
-                    last_block = content[-1]
-                    if isinstance(last_block, dict):
-                        last_block["cache_control"] = marker
-                        injected.append("messages[user-2]")
+                    added += 1
+                    parts.append("msgs")
+                elif isinstance(content, list) and content:
+                    # Find last non-thinking block
+                    for j in range(len(content) - 1, -1, -1):
+                        block = content[j]
+                        if not isinstance(block, dict):
+                            continue
+                        typ = block.get("type", "")
+                        if typ in ("thinking", "redacted_thinking"):
+                            continue
+                        if "cache_control" not in block:
+                            block["cache_control"] = marker
+                            added += 1
+                            parts.append("msgs")
+                        break
+                break  # Only process the last assistant message
 
-        if injected:
-            logger.info(f"Auto-injected prompt cache breakpoints: {injected}")
+        if added > 0 or upgraded > 0:
+            upg = f",upg={upgraded}" if upgraded > 0 else ""
+            logger.info(
+                f"Prompt cache: {added}bp({'+'.join(parts)},{cache_ttl},pre={existing}{upg})"
+            )
 
     @staticmethod
     def _build_anthropic_body(request: BedrockRequest) -> dict:
@@ -516,14 +549,8 @@ class BedrockClient:
         has_cache = (
             BedrockClient._body_has_cache_control(body) if should_inject else False
         )
-        logger.debug(
-            f"Prompt cache check: auto_cache={request.auto_cache}, "
-            f"server_default={get_settings().PROMPT_CACHE_AUTO_INJECT}, "
-            f"should_inject={should_inject}, has_cache_control={has_cache}, "
-            f"system_len={len(body.get('system', '') or '')}"
-        )
         if should_inject and not has_cache:
-            BedrockClient._inject_prompt_cache_breakpoints(body)
+            BedrockClient._inject_prompt_cache_breakpoints(body, ttl=request.cache_ttl)
 
         # --- effort parameter: requires beta flag + output_config wrapper ---
         # Users may pass "effort" as a top-level field (via additional_model_request_fields).

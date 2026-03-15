@@ -3,8 +3,9 @@ Authentication endpoints for user registration and login.
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,11 @@ from app.api.deps import (
     get_auth_service,
     get_current_user_from_jwt,
     get_refresh_token_service,
+)
+from app.core.cookies import (
+    clear_refresh_token_cookie,
+    get_refresh_token_from_cookie,
+    set_refresh_token_cookie,
 )
 from app.core.database import get_db
 from app.core.security import create_access_token, decode_jwt_token
@@ -47,45 +53,55 @@ class LoginResponse(BaseModel):
     """Login response with JWT tokens."""
 
     access_token: str
-    refresh_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserResponse
 
 
 class RefreshTokenRequest(BaseModel):
-    """Refresh token request."""
+    """Refresh token request (body is optional, cookie is preferred)."""
 
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 
 class RevokeTokenRequest(BaseModel):
-    """Revoke refresh token request."""
+    """Revoke refresh token request (body is optional, cookie is preferred)."""
 
-    refresh_token: str
+    refresh_token: Optional[str] = None
 
 
 @router.post("/refresh", response_model=LoginResponse)
 async def refresh_access_token(
-    request_body: RefreshTokenRequest,
     http_request: Request,
+    response: Response,
+    request_body: RefreshTokenRequest = None,
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
     audit_log_service: AuditLogService = Depends(get_audit_log_service),
 ):
     """
     Refresh access token using refresh token with automatic rotation.
 
-    - **refresh_token**: JWT refresh token
-
-    Returns new access token and refresh token.
-    Implements token rotation - old token is invalidated, new one issued.
+    Reads refresh token from HttpOnly cookie (preferred) or request body (legacy).
+    Returns new access token and sets new refresh token cookie.
     """
     # Get client info for audit
     ip_address = http_request.client.host if http_request.client else None
     user_agent = http_request.headers.get("user-agent")
 
+    # Read refresh token: cookie first, then body (backward compatibility)
+    refresh_token = get_refresh_token_from_cookie(http_request)
+    if not refresh_token and request_body:
+        refresh_token = request_body.refresh_token
+
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing refresh token",
+        )
+
     try:
         # Verify token type from JWT
-        payload = decode_jwt_token(request_body.refresh_token)
+        payload = decode_jwt_token(refresh_token)
 
         if payload.get("type") != "refresh":
             await audit_log_service.log_token_refresh_failed(
@@ -104,7 +120,7 @@ async def refresh_access_token(
             user,
             error,
         ) = await refresh_token_service.validate_and_rotate_token(
-            jwt_token=request_body.refresh_token,
+            jwt_token=refresh_token,
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -132,9 +148,11 @@ async def refresh_access_token(
             data={"sub": str(user.id), "email": user.email}
         )
 
+        # Set new refresh token cookie
+        set_refresh_token_cookie(response, new_refresh_token)
+
         return LoginResponse(
             access_token=access_token,
-            refresh_token=new_refresh_token,
             token_type="bearer",
             user=UserResponse(
                 id=str(user.id),
@@ -151,11 +169,17 @@ async def refresh_access_token(
     except HTTPException:
         raise
     except Exception as e:
-        await audit_log_service.log_token_refresh_failed(
-            ip_address=ip_address,
-            user_agent=user_agent,
-            error_message=str(e),
-        )
+        # Rollback any failed transaction before writing audit log
+        # (both services share the same DB session)
+        await refresh_token_service.db.rollback()
+        try:
+            await audit_log_service.log_token_refresh_failed(
+                ip_address=ip_address,
+                user_agent=user_agent,
+                error_message=str(e),
+            )
+        except Exception:
+            logger.error(f"Failed to log refresh token failure: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
@@ -164,20 +188,32 @@ async def refresh_access_token(
 
 @router.post("/revoke")
 async def revoke_refresh_token(
-    request_body: RevokeTokenRequest,
+    http_request: Request,
+    response: Response,
+    request_body: RevokeTokenRequest = None,
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
 ):
     """
     Revoke a specific refresh token.
 
-    - **refresh_token**: JWT refresh token to revoke
-
+    Reads refresh token from HttpOnly cookie (preferred) or request body (legacy).
     This invalidates the specific token. Use /revoke-all to logout from all devices.
     """
     from app.core.security import hash_refresh_token
 
+    # Read refresh token: cookie first, then body (backward compatibility)
+    refresh_token = get_refresh_token_from_cookie(http_request)
+    if not refresh_token and request_body:
+        refresh_token = request_body.refresh_token
+
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing refresh token",
+        )
+
     try:
-        token_hash = hash_refresh_token(request_body.refresh_token)
+        token_hash = hash_refresh_token(refresh_token)
         revoked = await refresh_token_service.revoke_token(
             token_hash, reason="User requested revocation"
         )
@@ -187,6 +223,9 @@ async def revoke_refresh_token(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Refresh token not found",
             )
+
+        # Clear the cookie
+        clear_refresh_token_cookie(response)
 
         return {"message": "Refresh token revoked successfully"}
 
@@ -202,6 +241,7 @@ async def revoke_refresh_token(
 @router.post("/revoke-all")
 async def revoke_all_refresh_tokens(
     http_request: Request,
+    response: Response,
     current_user: User = Depends(get_current_user_from_jwt),
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
     audit_log_service: AuditLogService = Depends(get_audit_log_service),
@@ -225,6 +265,9 @@ async def revoke_all_refresh_tokens(
         ip_address=ip_address,
         user_agent=user_agent,
     )
+
+    # Clear current cookie
+    clear_refresh_token_cookie(response)
 
     return {"message": f"Revoked {count} refresh tokens successfully"}
 
@@ -303,7 +346,7 @@ async def microsoft_login(
 
     - **redirect_uri**: Redirect URI after authorization
 
-    Generates a secure state parameter and returns authorization URL.
+    Generates a secure state parameter with PKCE and returns authorization URL.
     """
     from app.services.oauth import OAuthService
 
@@ -315,11 +358,13 @@ async def microsoft_login(
             detail="Microsoft OAuth not configured",
         )
 
-    # Generate and store state
+    # Generate and store state with PKCE
     oauth_state_service = OAuthService(db)
-    state = await oauth_state_service.generate_state("microsoft")
+    state, code_challenge = await oauth_state_service.generate_state("microsoft")
 
-    auth_url = oauth_service.get_authorization_url(redirect_uri, state)
+    auth_url = oauth_service.get_authorization_url(
+        redirect_uri, state, code_challenge=code_challenge
+    )
     return {"authorization_url": auth_url, "state": state}
 
 
@@ -329,6 +374,7 @@ async def microsoft_callback(
     redirect_uri: str,
     state: str,
     http_request: Request,
+    response: Response,
     auth_service: AuthService = Depends(get_auth_service),
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
     db: AsyncSession = Depends(get_db),
@@ -341,6 +387,7 @@ async def microsoft_callback(
     - **state**: State parameter for CSRF protection
 
     Creates or logs in user with Microsoft account.
+    Refresh token is set as HttpOnly cookie.
     """
     # Validate state parameter (CSRF protection)
     if not state:
@@ -349,11 +396,14 @@ async def microsoft_callback(
             detail="Missing state parameter",
         )
 
-    # Verify state against database
+    # Verify state against database and retrieve PKCE code_verifier
     from app.services.oauth import OAuthService
 
     oauth_state_service = OAuthService(db)
-    if not await oauth_state_service.validate_state(state, "microsoft"):
+    is_valid, code_verifier = await oauth_state_service.validate_state(
+        state, "microsoft"
+    )
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or expired state parameter",
@@ -361,8 +411,10 @@ async def microsoft_callback(
 
     oauth_service = get_microsoft_oauth_service()
 
-    # Exchange code for token
-    token_response = await oauth_service.exchange_code_for_token(code, redirect_uri)
+    # Exchange code for token with PKCE code_verifier
+    token_response = await oauth_service.exchange_code_for_token(
+        code, redirect_uri, code_verifier=code_verifier
+    )
     access_token = token_response.get("access_token")
 
     if not access_token:
@@ -503,9 +555,11 @@ async def microsoft_callback(
         user=user, ip_address=ip_address, user_agent=user_agent
     )
 
+    # Set refresh token as HttpOnly cookie
+    set_refresh_token_cookie(response, refresh_token_jwt)
+
     return LoginResponse(
         access_token=access_token_jwt,
-        refresh_token=refresh_token_jwt,
         token_type="bearer",
         user=UserResponse(
             id=str(user.id),
@@ -530,7 +584,7 @@ async def cognito_login(
 
     - **redirect_uri**: Redirect URI after authorization
 
-    Generates a secure state parameter and returns authorization URL.
+    Generates a secure state parameter with PKCE and returns authorization URL.
     """
     from app.services.oauth import OAuthService
 
@@ -542,11 +596,13 @@ async def cognito_login(
             detail="Cognito OAuth not configured",
         )
 
-    # Generate and store state
+    # Generate and store state with PKCE
     oauth_state_service = OAuthService(db)
-    state = await oauth_state_service.generate_state("cognito")
+    state, code_challenge = await oauth_state_service.generate_state("cognito")
 
-    auth_url = oauth_service.get_authorization_url(redirect_uri, state)
+    auth_url = oauth_service.get_authorization_url(
+        redirect_uri, state, code_challenge=code_challenge
+    )
     return {"authorization_url": auth_url, "state": state}
 
 
@@ -556,6 +612,7 @@ async def cognito_callback(
     redirect_uri: str,
     state: str,
     http_request: Request,
+    response: Response,
     auth_service: AuthService = Depends(get_auth_service),
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
     db: AsyncSession = Depends(get_db),
@@ -568,6 +625,7 @@ async def cognito_callback(
     - **state**: State parameter for CSRF protection
 
     Creates or logs in user with Cognito account.
+    Refresh token is set as HttpOnly cookie.
     """
     # Validate state parameter (CSRF protection)
     if not state:
@@ -576,11 +634,12 @@ async def cognito_callback(
             detail="Missing state parameter",
         )
 
-    # Verify state against database
+    # Verify state against database and retrieve PKCE code_verifier
     from app.services.oauth import OAuthService
 
     oauth_state_service = OAuthService(db)
-    if not await oauth_state_service.validate_state(state, "cognito"):
+    is_valid, code_verifier = await oauth_state_service.validate_state(state, "cognito")
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or expired state parameter",
@@ -588,8 +647,10 @@ async def cognito_callback(
 
     oauth_service = get_cognito_oauth_service()
 
-    # Exchange code for token
-    token_response = await oauth_service.exchange_code_for_token(code, redirect_uri)
+    # Exchange code for token with PKCE code_verifier
+    token_response = await oauth_service.exchange_code_for_token(
+        code, redirect_uri, code_verifier=code_verifier
+    )
     access_token = token_response.get("access_token")
 
     if not access_token:
@@ -732,9 +793,11 @@ async def cognito_callback(
         user=user, ip_address=ip_address, user_agent=user_agent
     )
 
+    # Set refresh token as HttpOnly cookie
+    set_refresh_token_cookie(response, refresh_token_jwt)
+
     return LoginResponse(
         access_token=access_token_jwt,
-        refresh_token=refresh_token_jwt,
         token_type="bearer",
         user=UserResponse(
             id=str(user.id),

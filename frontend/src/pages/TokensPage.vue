@@ -87,8 +87,28 @@
             </q-td>
           </template>
 
+          <template v-slot:body-cell-cache="props">
+            <q-td :props="props">
+              <q-badge
+                :color="getCacheBadge(props.row).color"
+                :label="getCacheBadge(props.row).label"
+              />
+            </q-td>
+          </template>
+
           <template v-slot:body-cell-actions="props">
             <q-td :props="props">
+              <q-btn
+                flat
+                dense
+                round
+                icon="settings"
+                color="grey-7"
+                @click="openSettings(props.row)"
+                class="q-mr-xs"
+              >
+                <q-tooltip>Cache Settings</q-tooltip>
+              </q-btn>
               <q-btn
                 flat
                 dense
@@ -221,6 +241,32 @@
               </template>
             </q-input>
 
+            <q-list dark dense class="q-mb-md">
+              <q-item>
+                <q-item-section>
+                  <q-item-label>Prompt Cache</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle v-model="newToken.cacheEnabled" dark dense />
+                </q-item-section>
+              </q-item>
+              <q-item v-if="newToken.cacheEnabled">
+                <q-item-section>
+                  <q-item-label>Cache TTL</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-option-group
+                    v-model="newToken.cacheTtl"
+                    :options="cacheTtlOptions"
+                    type="radio"
+                    inline
+                    dark
+                    dense
+                  />
+                </q-item-section>
+              </q-item>
+            </q-list>
+
             <div class="row justify-end q-mt-md q-gutter-sm">
               <q-btn label="Cancel" flat v-close-popup />
               <q-btn
@@ -266,6 +312,58 @@
       </q-card>
     </q-dialog>
 
+    <!-- Cache Settings Dialog -->
+    <q-dialog v-model="showSettingsDialog">
+      <q-card dark style="min-width: 400px">
+        <q-card-section>
+          <div class="text-h6">Cache Settings</div>
+        </q-card-section>
+
+        <q-card-section class="q-pt-none">
+          <div class="text-caption text-grey-7 q-mb-md">
+            Token: {{ settingsToken?.name }}
+          </div>
+
+          <q-list dark dense>
+            <q-item>
+              <q-item-section>
+                <q-item-label>Prompt Cache</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-toggle v-model="settingsCacheEnabled" dark dense />
+              </q-item-section>
+            </q-item>
+            <q-item v-if="settingsCacheEnabled">
+              <q-item-section>
+                <q-item-label>Cache TTL</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-option-group
+                  v-model="settingsCacheTtl"
+                  :options="cacheTtlOptions"
+                  type="radio"
+                  inline
+                  dark
+                  dense
+                />
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn label="Cancel" flat v-close-popup />
+          <q-btn
+            label="Save"
+            color="grey-8"
+            @click="saveSettings"
+            :loading="savingSettings"
+            unelevated
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
   </q-page>
 </template>
 
@@ -274,7 +372,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useTokensStore } from 'src/stores/tokens';
 import { Notify, Dialog } from 'quasar';
 import { getApiBaseUrl } from 'src/utils/api';
-import type { APIToken, CreateTokenRequest } from 'src/stores/tokens';
+import type { APIToken, CreateTokenRequest, TokenMetadata } from 'src/stores/tokens';
 
 const tokensStore = useTokensStore();
 
@@ -289,10 +387,23 @@ const rechargeAmount = ref<number | undefined>(undefined);
 const copyingTokenId = ref<string | null>(null);
 const deletingTokenId = ref<string | null>(null);
 
+const showSettingsDialog = ref(false);
+const settingsToken = ref<APIToken | null>(null);
+const settingsCacheEnabled = ref(false);
+const settingsCacheTtl = ref('1h');
+const savingSettings = ref(false);
+
+const cacheTtlOptions = [
+  { label: '5m', value: '5m' },
+  { label: '1h', value: '1h' },
+];
+
 const newToken = ref({
   name: '',
   quota_usd: undefined as number | undefined,
   expires_at: '',
+  cacheEnabled: false,
+  cacheTtl: '1h',
 });
 
 const columns = [
@@ -331,6 +442,12 @@ const columns = [
     label: 'Expiration',
     field: 'expires_at',
     align: 'left' as const,
+  },
+  {
+    name: 'cache',
+    label: 'Cache',
+    field: 'token_metadata',
+    align: 'center' as const,
   },
   {
     name: 'actions',
@@ -372,6 +489,41 @@ function getQuotaColor(token: APIToken) {
   return 'positive';
 }
 
+function getCacheBadge(token: APIToken): { label: string; color: string } {
+  const meta = token.token_metadata;
+  if (!meta?.prompt_cache_enabled) return { label: 'Off', color: 'grey-7' };
+  const ttl = meta.prompt_cache_ttl || '1h';
+  return { label: ttl, color: 'positive' };
+}
+
+function openSettings(token: APIToken) {
+  settingsToken.value = token;
+  settingsCacheEnabled.value = token.token_metadata?.prompt_cache_enabled ?? false;
+  settingsCacheTtl.value = token.token_metadata?.prompt_cache_ttl || '1h';
+  showSettingsDialog.value = true;
+}
+
+async function saveSettings() {
+  if (!settingsToken.value) return;
+  savingSettings.value = true;
+  try {
+    const metadata: TokenMetadata = {
+      prompt_cache_enabled: settingsCacheEnabled.value,
+      prompt_cache_ttl: settingsCacheTtl.value,
+    };
+    const success = await tokensStore.updateToken(
+      settingsToken.value.id,
+      { token_metadata: metadata } as Partial<CreateTokenRequest>,
+      true,
+    );
+    if (success) {
+      showSettingsDialog.value = false;
+    }
+  } finally {
+    savingSettings.value = false;
+  }
+}
+
 function formatDate(dateString: string) {
   return new Date(dateString).toLocaleString('zh-CN');
 }
@@ -390,6 +542,12 @@ async function handleCreateToken() {
       tokenData.expires_at = newToken.value.expires_at;
     }
 
+    // Build token_metadata from advanced settings
+    tokenData.token_metadata = {
+      prompt_cache_enabled: newToken.value.cacheEnabled,
+      prompt_cache_ttl: newToken.value.cacheTtl,
+    };
+
     // createToken will automatically refresh the list
     const result = await tokensStore.createToken(tokenData);
 
@@ -402,6 +560,8 @@ async function handleCreateToken() {
         name: '',
         quota_usd: undefined,
         expires_at: '',
+        cacheEnabled: false,
+        cacheTtl: '1h',
       };
     }
   } finally {

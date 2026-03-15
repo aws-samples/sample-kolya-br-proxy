@@ -2,6 +2,11 @@ import { defineStore } from 'pinia';
 import { api } from 'src/boot/axios';
 import { Notify } from 'quasar';
 
+export interface TokenMetadata {
+  prompt_cache_enabled?: boolean;
+  prompt_cache_ttl?: string;
+}
+
 export interface APIToken {
   id: string;
   name: string;
@@ -16,6 +21,7 @@ export interface APIToken {
   is_quota_exceeded: boolean;
   created_at: string;
   last_used_at: string | null;
+  token_metadata?: TokenMetadata | null;
 }
 
 export interface APITokenWithKey extends APIToken {
@@ -28,6 +34,7 @@ export interface CreateTokenRequest {
   quota_usd?: number;
   allowed_ips?: string[];
   allowed_models?: string[];
+  token_metadata?: TokenMetadata | null;
 }
 
 export const useTokensStore = defineStore('tokens', {

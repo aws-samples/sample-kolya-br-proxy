@@ -25,6 +25,7 @@ const apiBaseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 const api = axios.create({
   baseURL: apiBaseURL,
   timeout: 900000, // 15 minutes for long-running tasks
+  withCredentials: true, // Send HttpOnly cookies for cross-origin auth requests
   headers: {
     'Content-Type': 'application/json',
     'X-Requested-With': 'XMLHttpRequest', // CSRF protection for browser requests
@@ -62,7 +63,6 @@ api.interceptors.response.use(
         });
         // Clear auth state and redirect
         localStorage.removeItem('access_token');
-        localStorage.removeItem('refresh_token');
         if (typeof window !== 'undefined') {
           window.location.href = '/login';
         }
@@ -73,35 +73,18 @@ api.interceptors.response.use(
       if (!config._retry) {
         config._retry = true;
 
-        const refreshToken = localStorage.getItem('refresh_token');
-
-        if (!refreshToken) {
-          Notify.create({
-            type: 'warning',
-            message: 'Session expired, please login again',
-            position: 'top',
-          });
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login';
-          }
-          return Promise.reject(new Error('No refresh token'));
-        }
-
         try {
-          // Try to refresh the token
+          // Try to refresh the token (cookie sent automatically via withCredentials)
           const response = await api.post(
             '/admin/auth/refresh',
-            { refresh_token: refreshToken },
+            {},
             { _skipAuthRefresh: true } as Record<string, unknown>
           );
 
-          const { access_token, refresh_token } = response.data;
+          const { access_token } = response.data;
 
-          // Save new tokens
+          // Save new access token
           localStorage.setItem('access_token', access_token);
-          localStorage.setItem('refresh_token', refresh_token);
 
           // Update authorization header
           api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
@@ -117,7 +100,6 @@ api.interceptors.response.use(
             position: 'top',
           });
           localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
           if (typeof window !== 'undefined') {
             window.location.href = '/login';
           }
@@ -131,7 +113,6 @@ api.interceptors.response.use(
     // Handle 403 Forbidden - treat as auth failure, redirect to login
     if (error.response?.status === 403) {
       localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
         window.location.href = '/login';
       }
