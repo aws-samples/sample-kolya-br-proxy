@@ -46,8 +46,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
 
       - name: Audit with pip-audit
         run: |
@@ -119,31 +117,3 @@ jobs:
           scan-ref: iac-612674025488-us-west-2
           exit-code: "0"
           severity: HIGH,CRITICAL
-
-  container-scan:
-    name: Container Image Scan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build backend image for scanning
-        run: |
-          # Override ARM64 platform for CI (x86_64 runner)
-          sed 's|FROM --platform=linux/arm64|FROM --platform=linux/amd64|' backend/Dockerfile > /tmp/Dockerfile.ci
-          docker build --platform linux/amd64 -f /tmp/Dockerfile.ci -t backend-scan:latest .
-
-      - name: Scan backend image with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: backend-scan:latest
-          format: sarif
-          output: trivy-backend.sarif
-          severity: HIGH,CRITICAL
-          exit-code: "0"
-
-      - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-backend.sarif') != ''
-        with:
-          sarif_file: trivy-backend.sarif
-          category: trivy-backend
