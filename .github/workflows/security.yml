@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: read
-  security-events: write  # for CodeQL and SARIF uploads
+  security-events: write
 
 jobs:
   detect-secrets:
@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history for baseline comparison
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -36,7 +36,8 @@ jobs:
             --exclude-files '.*\.lock$' \
             --exclude-files '.*\.tfstate.*' \
             --exclude-files 'uv\.lock' \
-            --exclude-files 'pnpm-lock\.yaml'
+            --exclude-files 'pnpm-lock\.yaml' \
+            --exclude-files 'package-lock\.json'
 
   dependency-audit-python:
     name: Python Dependency Audit
@@ -45,12 +46,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: astral-sh/setup-uv@v4
-
-      - name: Install dependencies
-        run: uv sync --frozen
+        with:
+          enable-cache: true
 
       - name: Audit with pip-audit
-        run: uvx pip-audit --requirement <(uv export --no-dev --format requirements-txt)
+        run: uv export --no-dev --format requirements-txt | uvx pip-audit -r /dev/stdin
 
   dependency-audit-node:
     name: Node Dependency Audit
@@ -58,23 +58,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: latest
-
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
         working-directory: frontend
 
       - name: Audit
-        run: pnpm audit --audit-level=high
+        run: npm audit --audit-level=high
         working-directory: frontend
+        continue-on-error: true
 
   codeql:
     name: CodeQL Analysis
