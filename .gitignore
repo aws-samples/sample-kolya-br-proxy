@@ -85,7 +85,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-uv.lock
+# uv.lock is intentionally committed for reproducible CI builds
 
 # Node.js (if any Node.js components)
 node_modules/
