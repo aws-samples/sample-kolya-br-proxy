@@ -127,7 +127,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build backend image for scanning
-        run: docker build --platform linux/amd64 -f backend/Dockerfile -t backend-scan:latest .
+        run: |
+          # Override ARM64 platform for CI (x86_64 runner)
+          sed 's|FROM --platform=linux/arm64|FROM --platform=linux/amd64|' backend/Dockerfile > /tmp/Dockerfile.ci
+          docker build --platform linux/amd64 -f /tmp/Dockerfile.ci -t backend-scan:latest .
 
       - name: Scan backend image with Trivy
         uses: aquasecurity/trivy-action@master
