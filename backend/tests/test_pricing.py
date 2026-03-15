@@ -264,7 +264,9 @@ class TestPricingUpdater:
             },
         }
 
-        with patch("app.services.pricing_updater.get_settings", return_value=mock_settings):
+        with patch(
+            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        ):
             with patch("httpx.AsyncClient") as mock_client:
                 mock_response_obj = MagicMock()
                 mock_response_obj.raise_for_status = MagicMock()
@@ -289,7 +291,9 @@ class TestPricingUpdater:
         mock_settings = MagicMock()
         mock_settings.AWS_REGION = "us-east-1"
 
-        with patch("app.services.pricing_updater.get_settings", return_value=mock_settings):
+        with patch(
+            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        ):
             with patch("httpx.AsyncClient") as mock_client:
                 mock_resp = MagicMock()
                 mock_resp.raise_for_status = MagicMock()
@@ -300,8 +304,11 @@ class TestPricingUpdater:
                     return mock_resp, mock_resp, mock_resp
 
                 import asyncio as _asyncio
+
                 with patch.object(_asyncio, "gather", side_effect=mock_gather):
-                    mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=mock_resp)
+                    mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                        return_value=mock_resp
+                    )
                     pricing_data = await updater._scrape_aws_pricing_page()
                     # Empty HTML → no pricing extracted, but no crash
                     assert isinstance(pricing_data, list)
@@ -323,8 +330,12 @@ class TestPricingUpdater:
             }
         ]
 
-        with patch("app.services.pricing_updater.get_settings", return_value=mock_settings):
-            with patch.object(updater, "_fetch_from_price_list_api", return_value=mock_pricing_data):
+        with patch(
+            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        ):
+            with patch.object(
+                updater, "_fetch_from_price_list_api", return_value=mock_pricing_data
+            ):
                 with patch.object(updater, "_scrape_aws_pricing_page", return_value=[]):
                     stats = await updater.update_all_pricing()
 
@@ -349,9 +360,17 @@ class TestPricingUpdater:
             }
         ]
 
-        with patch("app.services.pricing_updater.get_settings", return_value=mock_settings):
-            with patch.object(updater, "_fetch_from_price_list_api", side_effect=Exception("API Error")):
-                with patch.object(updater, "_scrape_aws_pricing_page", return_value=mock_pricing_data):
+        with patch(
+            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        ):
+            with patch.object(
+                updater,
+                "_fetch_from_price_list_api",
+                side_effect=Exception("API Error"),
+            ):
+                with patch.object(
+                    updater, "_scrape_aws_pricing_page", return_value=mock_pricing_data
+                ):
                     stats = await updater.update_all_pricing()
 
                     assert "aws-scraper" in stats["source"]
@@ -365,9 +384,19 @@ class TestPricingUpdater:
         mock_settings = MagicMock()
         mock_settings.AWS_REGION = "us-east-1"
 
-        with patch("app.services.pricing_updater.get_settings", return_value=mock_settings):
-            with patch.object(updater, "_fetch_from_price_list_api", side_effect=Exception("API Error")):
-                with patch.object(updater, "_scrape_aws_pricing_page", side_effect=Exception("Scraper Error")):
+        with patch(
+            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        ):
+            with patch.object(
+                updater,
+                "_fetch_from_price_list_api",
+                side_effect=Exception("API Error"),
+            ):
+                with patch.object(
+                    updater,
+                    "_scrape_aws_pricing_page",
+                    side_effect=Exception("Scraper Error"),
+                ):
                     stats = await updater.update_all_pricing()
 
                     assert stats["updated"] == 0
@@ -611,8 +640,12 @@ class TestPricingIntegration:
         mock_settings.AWS_REGION = "us-east-1"
 
         # Step 3: Simulate auto-fetch from API when database is empty
-        with patch("app.services.pricing_updater.get_settings", return_value=mock_settings):
-            with patch.object(updater, "_fetch_from_price_list_api", return_value=mock_pricing_data):
+        with patch(
+            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        ):
+            with patch.object(
+                updater, "_fetch_from_price_list_api", return_value=mock_pricing_data
+            ):
                 with patch.object(updater, "_scrape_aws_pricing_page", return_value=[]):
                     stats = await updater.update_all_pricing()
 
@@ -626,7 +659,9 @@ class TestPricingIntegration:
         assert len(all_records) == 3, "Should have 3 pricing records"
 
         # Step 5: Verify each model's pricing is accessible
-        claude_sonnet = await updater.get_pricing("claude-3-5-sonnet-20241022", "us-east-1")
+        claude_sonnet = await updater.get_pricing(
+            "claude-3-5-sonnet-20241022", "us-east-1"
+        )
         assert claude_sonnet is not None
         assert claude_sonnet[0] == Decimal("0.000003")
         assert claude_sonnet[1] == Decimal("0.000015")
