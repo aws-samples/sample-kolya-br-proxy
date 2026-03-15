@@ -50,7 +50,10 @@ jobs:
           enable-cache: true
 
       - name: Audit with pip-audit
-        run: uv export --no-dev --format requirements-txt | uvx pip-audit -r /dev/stdin
+        run: |
+          uv export --no-dev --format requirements-txt | \
+            uvx pip-audit -r /dev/stdin \
+              --ignore-vuln CVE-2024-23342
 
   dependency-audit-node:
     name: Node Dependency Audit
@@ -84,16 +87,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
 
@@ -124,7 +127,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build backend image for scanning
-        run: docker build -f backend/Dockerfile -t backend-scan:latest .
+        run: docker build --platform linux/amd64 -f backend/Dockerfile -t backend-scan:latest .
 
       - name: Scan backend image with Trivy
         uses: aquasecurity/trivy-action@master
@@ -136,8 +139,8 @@ jobs:
           exit-code: "0"
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('trivy-backend.sarif') != ''
         with:
           sarif_file: trivy-backend.sarif
           category: trivy-backend

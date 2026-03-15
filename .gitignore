@@ -40,6 +40,7 @@ frontend/.env.*
 *.pfx
 *credentials*
 *secret*
+!.secrets.baseline
 *password*
 aws-credentials
 .aws/credentials
