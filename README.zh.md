@@ -223,27 +223,9 @@ for chunk in stream:
 
 ## 部署
 
-### 方式一：完整 IaC（新建基础设施）
+本地开发请参考上方[快速开始](#快速开始)部分。
 
-```bash
-# 创建 EKS 集群、RDS、VPC 并部署所有组件
-./deploy-all.sh
-```
-
-### 方式二：已有 EKS 集群
-
-```bash
-# 交互式模式
-./deploy-to-existing.sh
-
-# 或使用配置文件
-./deploy-to-existing.sh --config config.yaml
-
-# 或单步执行
-./deploy-to-existing.sh --step 1  # 仅安装 Helm 基础设施
-```
-
-详细部署说明请参考[部署指南](docs/deployment.md)。
+生产环境部署（AWS EKS）、资源销毁及日常运维，请参考 **[部署 SOP](docs/deployment.zh.md)**。
 
 ---
 

@@ -224,27 +224,9 @@ Click the **Authorize** button in the top-right corner of Swagger UI:
 
 ## Deployment
 
-### Option 1: Full IaC (New Infrastructure)
+For local development, see the [Quick Start](#quick-start) section above.
 
-```bash
-# Creates EKS cluster, RDS, VPC, and deploys everything
-./deploy-all.sh
-```
-
-### Option 2: Existing EKS Cluster
-
-```bash
-# Interactive mode
-./deploy-to-existing.sh
-
-# Or with config file
-./deploy-to-existing.sh --config config.yaml
-
-# Or single step
-./deploy-to-existing.sh --step 1  # Helm infrastructure only
-```
-
-See [Deployment Guide](docs/deployment.md) for detailed instructions.
+For production deployment (AWS EKS), teardown, and day-to-day operations, see the **[Deployment SOP](docs/deployment.md)**.
 
 ---
 
@@ -262,7 +244,7 @@ Start with [Architecture](docs/architecture.md) for the system overview, then dr
 | **[Request Translation](docs/request-translation.md)** | OpenAI to Bedrock/Anthropic format translation |
 | **[API Reference](docs/api-reference.md)** | Full endpoint documentation with request/response examples |
 | **[OAuth Setup](docs/oauth-setup.md)** | Microsoft and Cognito OAuth configuration |
-| **[Deployment](docs/deployment.md)** | Production and non-production deployment guide |
+| **[Deployment SOP](docs/deployment.md)** | Deployment, teardown, and operations guide |
 | [backend/README.md](backend/README.md) | Backend development details |
 | [frontend/README.md](frontend/README.md) | Frontend development details |
 | [k8s/README.md](k8s/README.md) | Kubernetes deployment guide |
