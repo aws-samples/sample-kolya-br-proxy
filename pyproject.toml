@@ -1,6 +1,6 @@
 [project]
 name = "kolya-br-proxy"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI Gateway Proxy infrastructure and application"
 readme = "README.md"
 license = "MIT"
