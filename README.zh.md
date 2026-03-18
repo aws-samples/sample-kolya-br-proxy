@@ -240,10 +240,10 @@ for chunk in stream:
 | **[计费系统](docs/pricing-system.zh.md)** | 按 Token 计费、动态定价、Prompt Cache 成本模型 |
 | **[Prompt 缓存](docs/prompt-caching.zh.md)** | 自动注入机制、成本节省分析、模型阈值 |
 | **[安全防护](docs/security.zh.md)** | CORS 与 CSRF 防护、WAF 规则、纵深防御实现 |
-| **[请求转换](docs/request-translation.md)** | OpenAI 到 Bedrock/Anthropic 格式转换 |
-| **[API 参考](docs/api-reference.md)** | 完整端点文档及请求/响应示例 |
-| **[OAuth 配置](docs/oauth-setup.md)** | Microsoft 和 Cognito OAuth 配置说明 |
-| **[部署指南](docs/deployment.md)** | 生产和非生产环境部署指南 |
+| **[请求转换](docs/request-translation.zh.md)** | OpenAI 到 Bedrock/Anthropic 格式转换 |
+| **[API 参考](docs/api-reference.zh.md)** | 完整端点文档及请求/响应示例 |
+| **[OAuth 配置](docs/oauth-setup.zh.md)** | Microsoft 和 Cognito OAuth 配置说明 |
+| **[部署 SOP](docs/deployment.zh.md)** | 部署、销毁及运维指南 |
 | [backend/README.md](backend/README.md) | 后端开发详情 |
 | [frontend/README.md](frontend/README.md) | 前端开发详情 |
 | [k8s/README.md](k8s/README.md) | Kubernetes 部署指南 |
