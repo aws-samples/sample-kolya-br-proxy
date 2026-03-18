@@ -80,7 +80,7 @@ No resources.
 | <a name="input_eks_version"></a> [eks\_version](#input\_eks\_version) | EKS Kubernetes version | `string` | `"1.35"` | no |
 | <a name="input_enable_cognito"></a> [enable\_cognito](#input\_enable\_cognito) | Enable AWS Cognito for user authentication | `bool` | `true` | no |
 | <a name="input_enable_global_accelerator"></a> [enable\_global\_accelerator](#input\_enable\_global\_accelerator) | Enable AWS Global Accelerator for reduced latency | `bool` | `false` | no |
-| <a name="input_enable_waf"></a> [enable\_waf](#input\_enable\_waf) | Enable AWS WAF for rate limiting and security protection on ALBs | `bool` | `true` | no |
+| <a name="input_enable_waf"></a> [enable\_waf](#input\_enable\_waf) | Enable AWS WAF for rate limiting and security protection on ALBs | `bool` | `false` | no |
 | <a name="input_ga_api_alb_name"></a> [ga\_api\_alb\_name](#input\_ga\_api\_alb\_name) | Name of the API ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
 | <a name="input_ga_frontend_alb_name"></a> [ga\_frontend\_alb\_name](#input\_ga\_frontend\_alb\_name) | Name of the frontend ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
 | <a name="input_project_name"></a> [project\_name](#input\_project\_name) | The name of the project | `string` | `"kolya-br-proxy"` | no |

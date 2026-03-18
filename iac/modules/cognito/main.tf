@@ -28,7 +28,7 @@ data "archive_file" "lambda_pre_signup" {
 
 # IAM role for Lambda execution
 resource "aws_iam_role" "lambda_pre_signup" {
-  name = "${var.project_name_alias}-cognito-pre-signup-${var.workspace}"
+  name = "${var.project_name_alias}-cognito-pre-signup-${var.region}-${var.workspace}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -66,7 +66,7 @@ resource "aws_iam_role_policy" "lambda_pre_signup_logs" {
           "logs:CreateLogStream",
           "logs:PutLogEvents"
         ]
-        Resource = "arn:aws:logs:${var.region}:${var.account}:log-group:/aws/lambda/${var.project_name_alias}-cognito-pre-signup-${var.workspace}:*"
+        Resource = "arn:aws:logs:${var.region}:${var.account}:log-group:/aws/lambda/${var.project_name_alias}-cognito-pre-signup-${var.region}-${var.workspace}:*"
       }
     ]
   })
@@ -75,7 +75,7 @@ resource "aws_iam_role_policy" "lambda_pre_signup_logs" {
 # Lambda function
 resource "aws_lambda_function" "pre_signup" {
   filename         = data.archive_file.lambda_pre_signup.output_path
-  function_name    = "${var.project_name_alias}-cognito-pre-signup-${var.workspace}"
+  function_name    = "${var.project_name_alias}-cognito-pre-signup-${var.region}-${var.workspace}"
   role             = aws_iam_role.lambda_pre_signup.arn
   handler          = "lambda_pre_signup.lambda_handler"
   source_code_hash = data.archive_file.lambda_pre_signup.output_base64sha256
@@ -91,7 +91,7 @@ resource "aws_lambda_function" "pre_signup" {
   tags = merge(
     var.default_tags,
     {
-      Name = "${var.project_name_alias}-cognito-pre-signup-${var.workspace}"
+      Name = "${var.project_name_alias}-cognito-pre-signup-${var.region}-${var.workspace}"
     }
   )
 }

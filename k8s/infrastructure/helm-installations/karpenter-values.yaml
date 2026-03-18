@@ -5,6 +5,6 @@ serviceAccount:
   name: karpenter
 
 settings:
-  clusterName: kbr-proxy-eks-kolya
-  clusterEndpoint: https://3D4A3F21F8D5EF478D802ACA536DE8CE.gr7.us-west-2.eks.amazonaws.com
+  clusterName: kbr-proxy-eks-us-west-1-kolya
+  clusterEndpoint: https://1F61DF777DFA9E0AFC9C2E679AA87587.sk1.us-west-1.eks.amazonaws.com
   interruptionQueue: kbr-proxy-kolya-karpenter

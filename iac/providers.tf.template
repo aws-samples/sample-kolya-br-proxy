@@ -2,9 +2,9 @@ terraform {
   required_version = ">= 1.0"
 
   backend "s3" {
-    region = "us-west-2"
-    bucket = "tf-state-lh-core-612674025488-us-west-2-kolya"
-    key    = "kolya-br-proxy/tf.state"
+    region = "${TF_STATE_REGION}"
+    bucket = "${TF_STATE_BUCKET}"
+    key    = "${TF_STATE_KEY}"
   }
 
   required_providers {

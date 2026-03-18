@@ -62,9 +62,10 @@ resource "aws_secretsmanager_secret_version" "aurora_postgresql_password" {
   secret_string = jsonencode({ password = random_password.master_password.result })
 }
 
-# Data source to get VPC information
+# Data source to get VPC information (only needed when creating fallback security group)
 data "aws_vpc" "selected" {
-  id = var.vpc_id
+  count = length(var.security_group_ids) == 0 ? 1 : 0
+  id    = var.vpc_id
 }
 
 # Local variables for consistent naming (matching lakehouse-core pattern)
@@ -97,7 +98,7 @@ resource "aws_security_group" "aurora_security_group" {
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.selected.cidr_block]
+    cidr_blocks = [data.aws_vpc.selected[0].cidr_block]
     description = "Aurora PostgreSQL VPC access only"
   }
 

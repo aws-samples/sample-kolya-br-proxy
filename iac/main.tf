@@ -6,7 +6,7 @@ locals {
   workspace       = terraform.workspace
   deployment_name = "${var.project_name}-${local.workspace}"
   eks_version     = var.eks_version
-  cluster_name    = "${var.project_name_alias}-eks-${local.workspace}"
+  cluster_name    = "${var.project_name_alias}-eks-${local.region}-${local.workspace}"
 
   default_tags = {
     "DeploymentName" = local.deployment_name

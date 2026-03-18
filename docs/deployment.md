@@ -229,12 +229,12 @@ aws ecr get-login-password --region us-west-2 | \
   docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.us-west-2.amazonaws.com
 
 # Backend (context is project root, Dockerfile in backend/)
-docker build -f backend/Dockerfile \
+docker build --platform linux/arm64 -f backend/Dockerfile \
   -t $ACCOUNT_ID.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-backend:latest .
 
 # Frontend (context is frontend/)
 cd frontend
-docker build \
+docker build --platform linux/arm64 \
   --build-arg VITE_API_BASE_URL=https://api.kbp.kolya.fun \
   --build-arg VITE_MICROSOFT_REDIRECT_URI=https://kbp.kolya.fun/auth/microsoft/callback \
   -t $ACCOUNT_ID.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-frontend:latest .

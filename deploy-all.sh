@@ -19,6 +19,9 @@
 
 set -e
 
+# Disable AWS CLI pager so commands never block waiting for user input
+export AWS_PAGER=""
+
 # Color definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,7 +33,7 @@ NC='\033[0m' # No Color
 
 # Directory definitions
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IAC_DIR="$SCRIPT_DIR/iac-612674025488-us-west-2"
+IAC_DIR="$SCRIPT_DIR/iac"
 K8S_DIR="$SCRIPT_DIR/k8s"
 BACKEND_DIR="$SCRIPT_DIR/backend"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
@@ -38,9 +41,18 @@ FRONTEND_DIR="$SCRIPT_DIR/frontend"
 # Default configuration
 SKIP_CONFIRMATION=false
 SPECIFIC_STEP=""
-AWS_REGION="us-west-2"
+AWS_REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}"
+AWS_ACCOUNT_ID=""
 ECR_NAMESPACE="kolya-br-proxy"
 DEPLOY_ENV=""  # Auto-derived from Terraform workspace: prod or non-prod
+
+# Common Terraform -var flags (populated after credentials check)
+TF_VAR_FLAGS=""
+
+# Build the -var flags for all terraform commands
+_build_tf_var_flags() {
+    TF_VAR_FLAGS="-var=account=${AWS_ACCOUNT_ID} -var=region=${AWS_REGION}"
+}
 
 # Print functions
 print_banner() {
@@ -243,13 +255,140 @@ check_aws_credentials() {
         exit 1
     fi
 
-    local account_id=$(aws sts get-caller-identity --query Account --output text)
+    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
     local user_arn=$(aws sts get-caller-identity --query Arn --output text)
 
     print_success "AWS credentials valid"
-    print_info "Account ID: $account_id"
+    print_info "Account ID: $AWS_ACCOUNT_ID"
     print_info "User: $user_arn"
+
+    # Prompt for region if auto-detection failed and --region was not provided
+    if [[ -z "$AWS_REGION" ]]; then
+        print_warning "AWS region could not be detected automatically"
+        while [[ -z "$AWS_REGION" ]]; do
+            read -p "Enter AWS region (e.g. us-west-2): " AWS_REGION
+            if [[ -z "$AWS_REGION" ]]; then
+                print_warning "Region is required"
+            fi
+        done
+    fi
+
     print_info "Region: $AWS_REGION"
+
+    # Build common Terraform -var flags
+    _build_tf_var_flags
+}
+
+# Verify Terraform backend state is correct
+# Call this before any step that reads terraform output (step 2, 4, etc.)
+verify_terraform_state() {
+    print_header "Verifying Terraform State"
+
+    cd "$IAC_DIR"
+
+    local need_configure=false
+
+    # Check if providers.tf exists
+    if [[ ! -f "$IAC_DIR/providers.tf" ]]; then
+        print_warning "providers.tf not found, need to configure Terraform backend"
+        need_configure=true
+    else
+        # Show current backend config and let user confirm
+        local current_bucket=$(grep 'bucket' "$IAC_DIR/providers.tf" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+        local current_region=$(grep 'region' "$IAC_DIR/providers.tf" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+        local current_key=$(grep 'key' "$IAC_DIR/providers.tf" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+
+        echo ""
+        print_info "Current Terraform backend configuration:"
+        echo "  Bucket: $current_bucket"
+        echo "  Region: $current_region"
+        echo "  Key:    $current_key"
+        echo ""
+
+        read -p "Is this the correct state backend? (yes/no): " state_confirm
+        if [[ "$state_confirm" != "yes" ]]; then
+            need_configure=true
+            rm -f "$IAC_DIR/providers.tf"
+        fi
+    fi
+
+    if [[ "$need_configure" == "true" ]]; then
+        print_substep "Configuring Terraform S3 backend..."
+
+        if [[ ! -f "$IAC_DIR/providers.tf.template" ]]; then
+            print_error "providers.tf.template not found in $IAC_DIR"
+            exit 1
+        fi
+
+        local tf_state_bucket=""
+        while [[ -z "$tf_state_bucket" ]]; do
+            read -p "S3 bucket name for Terraform state: " tf_state_bucket
+            if [[ -z "$tf_state_bucket" ]]; then
+                print_warning "Bucket name is required"
+            fi
+        done
+
+        local tf_state_region="$AWS_REGION"
+        local tf_state_key="kolya-br-proxy/tf.state"
+
+        export TF_STATE_BUCKET="$tf_state_bucket"
+        export TF_STATE_REGION="$tf_state_region"
+        export TF_STATE_KEY="$tf_state_key"
+        envsubst '${TF_STATE_BUCKET} ${TF_STATE_REGION} ${TF_STATE_KEY}' < "$IAC_DIR/providers.tf.template" > "$IAC_DIR/providers.tf"
+        print_success "providers.tf generated (bucket: $tf_state_bucket, region: $tf_state_region)"
+
+        print_substep "Initializing Terraform..."
+        if ! terraform init -reconfigure -upgrade; then
+            print_error "Terraform init failed"
+            exit 1
+        fi
+        print_success "Terraform initialized"
+    else
+        # Ensure terraform is initialized
+        if [[ ! -d "$IAC_DIR/.terraform" ]]; then
+            print_substep "Initializing Terraform..."
+            if ! terraform init -upgrade; then
+                print_error "Terraform init failed"
+                exit 1
+            fi
+            print_success "Terraform initialized"
+        fi
+    fi
+
+    # Verify and confirm workspace
+    local current_workspace=$(terraform workspace show 2>/dev/null || echo "default")
+    print_info "Current Terraform workspace: $current_workspace"
+
+    read -p "Use workspace '$current_workspace'? (yes/no) [yes]: " ws_confirm
+    ws_confirm="${ws_confirm:-yes}"
+    if [[ "$ws_confirm" != "yes" ]]; then
+        # Show available workspaces
+        print_substep "Available workspaces:"
+        terraform workspace list
+        echo ""
+        local new_ws=""
+        while [[ -z "$new_ws" ]]; do
+            read -p "Enter workspace name: " new_ws
+            if [[ -z "$new_ws" ]]; then
+                print_warning "Workspace name is required"
+            fi
+        done
+        if ! terraform workspace list | grep -q "^[* ]*${new_ws}$"; then
+            print_error "Workspace '$new_ws' does not exist"
+            exit 1
+        fi
+        terraform workspace select "$new_ws"
+        print_success "Switched to workspace: $new_ws"
+    fi
+
+    # Verify state has resources
+    local state_count=$(terraform state list 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$state_count" == "0" ]]; then
+        print_warning "Terraform state is empty for current workspace ($(terraform workspace show))"
+        print_info "This may mean you need to switch workspace or the state backend is incorrect"
+    else
+        print_success "Terraform state verified ($state_count resources)"
+    fi
 }
 
 # Post-Terraform Cognito setup: configure callback URLs and create initial admin user
@@ -282,38 +421,32 @@ setup_cognito_post_terraform() {
     echo ""
     print_substep "Cognito callback URL configuration"
 
-    # Check if callback URLs are managed in terraform.tfvars
-    if grep -q '^cognito_callback_urls' "$IAC_DIR/terraform.tfvars" 2>/dev/null; then
-        print_success "Cognito callback URLs are managed in terraform.tfvars (no AWS CLI override needed)"
-        print_info "To update callback URLs, edit terraform.tfvars and re-run terraform apply."
-    else
-        echo "Enter the frontend domain so callback URLs can be configured on the Cognito app client."
-        echo ""
-        local post_frontend_domain=""
-        while [[ -z "$post_frontend_domain" ]]; do
-            read -p "Frontend domain (e.g. kbp.kolya.fun): " post_frontend_domain
-            if [[ -z "$post_frontend_domain" ]]; then
-                print_warning "This field is required."
-            fi
-        done
-
-        local cognito_callback="https://${post_frontend_domain}/auth/cognito/callback"
-        local cognito_logout="https://${post_frontend_domain}/"
-        if aws cognito-idp update-user-pool-client \
-            --user-pool-id "$pool_id" \
-            --client-id "$client_id" \
-            --callback-urls "$cognito_callback" "http://localhost:9000/auth/cognito/callback" \
-            --logout-urls "$cognito_logout" "http://localhost:9000/" \
-            --allowed-o-auth-flows code \
-            --allowed-o-auth-scopes email openid profile \
-            --allowed-o-auth-flows-user-pool-client \
-            --supported-identity-providers COGNITO \
-            --region "$cognito_region" \
-            --no-cli-pager &> /dev/null; then
-            print_success "Cognito callback URLs configured: $cognito_callback"
-        else
-            print_warning "Failed to update Cognito callback URLs. Please configure manually."
+    echo "Enter the frontend domain so callback URLs can be configured on the Cognito app client."
+    echo ""
+    local post_frontend_domain=""
+    while [[ -z "$post_frontend_domain" ]]; do
+        read -p "Frontend domain (e.g. kbp.kolya.fun): " post_frontend_domain
+        if [[ -z "$post_frontend_domain" ]]; then
+            print_warning "This field is required."
         fi
+    done
+
+    local cognito_callback="https://${post_frontend_domain}/auth/cognito/callback"
+    local cognito_logout="https://${post_frontend_domain}/"
+    if aws cognito-idp update-user-pool-client \
+        --user-pool-id "$pool_id" \
+        --client-id "$client_id" \
+        --callback-urls "$cognito_callback" "http://localhost:9000/auth/cognito/callback" \
+        --logout-urls "$cognito_logout" "http://localhost:9000/" \
+        --allowed-o-auth-flows code \
+        --allowed-o-auth-scopes email openid profile \
+        --allowed-o-auth-flows-user-pool-client \
+        --supported-identity-providers COGNITO \
+        --region "$cognito_region" \
+        --no-cli-pager 2>&1; then
+        print_success "Cognito callback URLs configured: $cognito_callback"
+    else
+        print_warning "Failed to update Cognito callback URLs. Please configure manually."
     fi
 
     # --- Initial admin user ---
@@ -378,7 +511,56 @@ deploy_terraform() {
 
     cd "$IAC_DIR"
 
-    # Check Terraform workspace and derive environment
+    # --- Backend & Init (must happen before any workspace operations) ---
+
+    # Generate providers.tf from template if it doesn't exist
+    local backend_changed=false
+    if [[ ! -f "$IAC_DIR/providers.tf" ]]; then
+        backend_changed=true
+        print_substep "Configuring Terraform S3 backend..."
+        if [[ ! -f "$IAC_DIR/providers.tf.template" ]]; then
+            print_error "providers.tf.template not found in $IAC_DIR"
+            exit 1
+        fi
+
+        echo ""
+        print_info "Terraform remote state requires an S3 bucket."
+        print_info "Please create the bucket first if it doesn't exist."
+        echo ""
+
+        local tf_state_bucket=""
+        while [[ -z "$tf_state_bucket" ]]; do
+            read -p "S3 bucket name for Terraform state: " tf_state_bucket
+            if [[ -z "$tf_state_bucket" ]]; then
+                print_warning "Bucket name is required"
+            fi
+        done
+
+        local tf_state_region="$AWS_REGION"
+        local tf_state_key="kolya-br-proxy/tf.state"
+
+        export TF_STATE_BUCKET="$tf_state_bucket"
+        export TF_STATE_REGION="$tf_state_region"
+        export TF_STATE_KEY="$tf_state_key"
+        envsubst '${TF_STATE_BUCKET} ${TF_STATE_REGION} ${TF_STATE_KEY}' < "$IAC_DIR/providers.tf.template" > "$IAC_DIR/providers.tf"
+        print_success "providers.tf generated (bucket: $tf_state_bucket, region: $tf_state_region)"
+    fi
+
+    # Terraform init (use -reconfigure when backend config just changed)
+    print_substep "Initializing Terraform..."
+    local init_flags="-upgrade"
+    if [[ "$backend_changed" == "true" ]]; then
+        init_flags="-reconfigure -upgrade"
+        print_info "Backend changed, running init with -reconfigure"
+    fi
+    if ! terraform init $init_flags; then
+        print_error "Terraform init failed"
+        exit 1
+    fi
+    print_success "Terraform initialized"
+
+    # --- Workspace selection (requires initialized backend) ---
+
     print_substep "Checking Terraform workspace..."
     local current_workspace=$(terraform workspace show 2>/dev/null || echo "default")
 
@@ -473,17 +655,9 @@ deploy_terraform() {
         exit 0
     fi
 
-    # Terraform init
-    print_substep "Initializing Terraform..."
-    if ! terraform init -upgrade; then
-        print_error "Terraform init failed"
-        exit 1
-    fi
-    print_success "Terraform initialized"
-
     # Terraform plan
     print_substep "Generating Terraform execution plan..."
-    if ! terraform plan -var="enable_global_accelerator=false" -out=tfplan; then
+    if ! terraform plan $TF_VAR_FLAGS -var="enable_global_accelerator=false" -var="enable_waf=false" -out=tfplan; then
         print_error "Terraform plan failed"
         exit 1
     fi
@@ -524,6 +698,9 @@ deploy_terraform() {
 # Step 2: Deploy Kubernetes infrastructure
 deploy_k8s_infrastructure() {
     print_step "2" "Deploy Kubernetes Infrastructure (Helm)"
+
+    # Verify terraform state before reading outputs
+    verify_terraform_state
 
     # Configure kubectl
     print_substep "Configuring kubectl..."
@@ -611,11 +788,11 @@ build_and_push_images() {
     done
 
     # Build Backend image
-    print_substep "Building Backend Docker image..."
+    print_substep "Building Backend Docker image (platform: linux/arm64)..."
     local backend_image="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-backend:latest"
     local backend_tag="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-backend:$(date +%Y%m%d-%H%M%S)"
 
-    if ! docker build -f "$BACKEND_DIR/Dockerfile" -t "$backend_image" -t "$backend_tag" "$SCRIPT_DIR"; then
+    if ! docker build --network host --platform linux/arm64 -f "$BACKEND_DIR/Dockerfile" -t "$backend_image" -t "$backend_tag" "$SCRIPT_DIR"; then
         print_error "Backend image build failed"
         exit 1
     fi
@@ -627,12 +804,12 @@ build_and_push_images() {
     print_success "Backend image pushed"
 
     # Build Frontend image
-    print_substep "Building Frontend Docker image..."
+    print_substep "Building Frontend Docker image (platform: linux/arm64)..."
     cd "$FRONTEND_DIR"
     local frontend_image="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-frontend:latest"
     local frontend_tag="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-frontend:$(date +%Y%m%d-%H%M%S)"
 
-    if ! docker build -t "$frontend_image" -t "$frontend_tag" .; then
+    if ! docker build --network host --platform linux/arm64 -t "$frontend_image" -t "$frontend_tag" .; then
         print_error "Frontend image build failed"
         exit 1
     fi
@@ -1046,6 +1223,9 @@ run_config_wizard() {
 deploy_application() {
     print_step "4" "Deploy Application to EKS"
 
+    # Verify terraform state before reading outputs (used by config wizard)
+    verify_terraform_state
+
     # If DEPLOY_ENV not set (single step execution), derive from workspace
     if [[ -z "$DEPLOY_ENV" ]]; then
         detect_environment
@@ -1150,7 +1330,18 @@ deploy_application() {
     if [[ "$frontend_alb" == "creating..." || "$api_alb" == "creating..." ]]; then
         print_warning "ALB creation timed out. Please check manually:"
         echo "  kubectl get ingress -n kbp"
+        print_warning "Skipping WAF auto-enable (ALBs not ready)"
         return 0
+    fi
+
+    # Auto-enable WAF now that ALBs are ready
+    print_substep "Auto-enabling WAF (ALBs are ready)..."
+    cd "$IAC_DIR"
+    if terraform apply $TF_VAR_FLAGS -var="enable_waf=true" -target=module.waf -auto-approve; then
+        print_success "WAF enabled successfully"
+    else
+        print_warning "WAF auto-enable failed. You can retry manually:"
+        echo "  cd $IAC_DIR && terraform apply $TF_VAR_FLAGS -var=\"enable_waf=true\" -target=module.waf -auto-approve"
     fi
 
     # Get domain names from configmap
@@ -1306,16 +1497,21 @@ _regenerate_and_apply_configmaps() {
 deploy_global_accelerator() {
     print_step "5" "Global Accelerator (Toggle)"
 
+    # Verify terraform state before reading outputs
+    verify_terraform_state
+
     cd "$IAC_DIR"
 
-    # Detect current GA status from terraform.tfvars
+    # Detect current GA status from terraform state
     local ga_currently_enabled=false
-    if grep -qE '^\s*enable_global_accelerator\s*=\s*true' "$IAC_DIR/terraform.tfvars" 2>/dev/null; then
+    local ga_dns=$(terraform output -raw global_accelerator_dns_name 2>/dev/null || echo "")
+    if [[ -n "$ga_dns" && "$ga_dns" != "" ]]; then
         ga_currently_enabled=true
     fi
 
     if [[ "$ga_currently_enabled" == "true" ]]; then
         print_info "Global Accelerator is currently: ENABLED"
+        print_info "DNS: $ga_dns"
         echo ""
         echo "  1) Disable Global Accelerator"
         echo "  2) Cancel (keep current state)"
@@ -1331,14 +1527,16 @@ deploy_global_accelerator() {
         # --- Disable GA ---
         print_header "Disabling Global Accelerator"
 
-        # Update terraform.tfvars
-        print_substep "Updating terraform.tfvars..."
-        sed -i '' 's/^enable_global_accelerator = true/enable_global_accelerator = false/' "$IAC_DIR/terraform.tfvars"
-        print_success "Set enable_global_accelerator = false in terraform.tfvars"
+        # Preserve current WAF state by checking if WAF resources exist in terraform state
+        local waf_enabled="false"
+        if terraform state list 2>/dev/null | grep -q "module.waf"; then
+            waf_enabled="true"
+        fi
+        print_info "Preserving WAF state: enable_waf=$waf_enabled"
 
         # Terraform plan & apply
         print_substep "Running Terraform to destroy Global Accelerator..."
-        terraform plan -out=tfplan-ga
+        terraform plan $TF_VAR_FLAGS -var="enable_global_accelerator=false" -var="enable_waf=$waf_enabled" -out=tfplan-ga
         if [[ $? -ne 0 ]]; then
             print_error "Terraform plan failed"
             rm -f tfplan-ga
@@ -1348,8 +1546,7 @@ deploy_global_accelerator() {
         echo ""
         read -p "Apply the plan above? (yes/no): " confirm_apply
         if [[ "$confirm_apply" != "yes" ]]; then
-            print_info "Terraform apply cancelled. Reverting terraform.tfvars..."
-            sed -i '' 's/^enable_global_accelerator = false/enable_global_accelerator = true/' "$IAC_DIR/terraform.tfvars"
+            print_info "Terraform apply cancelled"
             rm -f tfplan-ga
             return 0
         fi
@@ -1385,21 +1582,24 @@ deploy_global_accelerator() {
 
         # Verify ALBs exist
         print_substep "Verifying ALBs exist..."
+        local ga_frontend_alb_name=$(terraform output -raw ga_frontend_alb_name 2>/dev/null || echo "kolya-br-proxy-frontend-alb")
+        local ga_api_alb_name=$(terraform output -raw ga_api_alb_name 2>/dev/null || echo "kolya-br-proxy-api-alb")
+        local ga_region=$(terraform output -raw region 2>/dev/null || echo "$AWS_REGION")
         local frontend_alb_arn=$(aws elbv2 describe-load-balancers \
-            --names kolya-br-proxy-frontend-alb \
-            --region "$(terraform output -raw region 2>/dev/null || echo us-west-2)" \
+            --names "$ga_frontend_alb_name" \
+            --region "$ga_region" \
             --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
         local api_alb_arn=$(aws elbv2 describe-load-balancers \
-            --names kolya-br-proxy-api-alb \
-            --region "$(terraform output -raw region 2>/dev/null || echo us-west-2)" \
+            --names "$ga_api_alb_name" \
+            --region "$ga_region" \
             --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>/dev/null || echo "")
 
         if [[ -z "$frontend_alb_arn" || "$frontend_alb_arn" == "None" ]]; then
-            print_error "Frontend ALB (kolya-br-proxy-frontend-alb) not found. Run Steps 1-4 first."
+            print_error "Frontend ALB ($ga_frontend_alb_name) not found. Run Steps 1-4 first."
             exit 1
         fi
         if [[ -z "$api_alb_arn" || "$api_alb_arn" == "None" ]]; then
-            print_error "API ALB (kolya-br-proxy-api-alb) not found. Run Steps 1-4 first."
+            print_error "API ALB ($ga_api_alb_name) not found. Run Steps 1-4 first."
             exit 1
         fi
         print_success "Frontend ALB: $frontend_alb_arn"
@@ -1419,17 +1619,17 @@ deploy_global_accelerator() {
         # --- Enable GA ---
         print_substep "Running Terraform to create Global Accelerator..."
 
-        # Update terraform.tfvars
-        if grep -qE '^\s*enable_global_accelerator\s*=' "$IAC_DIR/terraform.tfvars" 2>/dev/null; then
-            sed -i '' 's/^enable_global_accelerator = false/enable_global_accelerator = true/' "$IAC_DIR/terraform.tfvars"
-        else
-            echo 'enable_global_accelerator = true' >> "$IAC_DIR/terraform.tfvars"
-        fi
-
         local current_workspace=$(terraform workspace show 2>/dev/null || echo "default")
         print_info "Terraform workspace: $current_workspace"
 
-        terraform plan -out=tfplan-ga
+        # Preserve current WAF state by checking if WAF resources exist in terraform state
+        local waf_enabled="false"
+        if terraform state list 2>/dev/null | grep -q "module.waf"; then
+            waf_enabled="true"
+        fi
+        print_info "Preserving WAF state: enable_waf=$waf_enabled"
+
+        terraform plan $TF_VAR_FLAGS -var="enable_global_accelerator=true" -var="enable_waf=$waf_enabled" -out=tfplan-ga
         if [[ $? -ne 0 ]]; then
             print_error "Terraform plan failed"
             rm -f tfplan-ga
@@ -1453,7 +1653,7 @@ deploy_global_accelerator() {
 
         # Show results
         echo ""
-        local ga_dns=$(terraform output -raw global_accelerator_dns_name 2>/dev/null || echo "N/A")
+        ga_dns=$(terraform output -raw global_accelerator_dns_name 2>/dev/null || echo "N/A")
         local ga_ips=$(terraform output -json global_accelerator_static_ips 2>/dev/null || echo "[]")
 
         print_success "Global Accelerator deployed!"

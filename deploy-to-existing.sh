@@ -503,11 +503,11 @@ build_and_push_images() {
     done
 
     # Build Backend image
-    print_substep "Building Backend Docker image..."
+    print_substep "Building Backend Docker image (platform: linux/arm64)..."
     local backend_image="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-backend:latest"
     local backend_tag="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-backend:$(date +%Y%m%d-%H%M%S)"
 
-    if ! docker build -f "$BACKEND_DIR/Dockerfile" -t "$backend_image" -t "$backend_tag" "$SCRIPT_DIR"; then
+    if ! docker build --network host --platform linux/arm64 -f "$BACKEND_DIR/Dockerfile" -t "$backend_image" -t "$backend_tag" "$SCRIPT_DIR"; then
         print_error "Backend image build failed"
         exit 1
     fi
@@ -519,12 +519,12 @@ build_and_push_images() {
     print_success "Backend image pushed"
 
     # Build Frontend image
-    print_substep "Building Frontend Docker image..."
+    print_substep "Building Frontend Docker image (platform: linux/arm64)..."
     cd "$FRONTEND_DIR"
     local frontend_image="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-frontend:latest"
     local frontend_tag="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-frontend:$(date +%Y%m%d-%H%M%S)"
 
-    if ! docker build -t "$frontend_image" -t "$frontend_tag" .; then
+    if ! docker build --network host --platform linux/arm64 -t "$frontend_image" -t "$frontend_tag" .; then
         print_error "Frontend image build failed"
         exit 1
     fi

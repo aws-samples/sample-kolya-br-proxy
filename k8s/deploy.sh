@@ -24,7 +24,7 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$SCRIPT_DIR/application"
 INFRA_DIR="$SCRIPT_DIR/infrastructure"
-TERRAFORM_DIR="$SCRIPT_DIR/../iac-612674025488-us-west-2"
+TERRAFORM_DIR="$SCRIPT_DIR/../iac"
 
 # 命名空间
 NAMESPACE="kbp"
@@ -119,23 +119,8 @@ init_config() {
 
     cd "$APP_DIR"
 
-    # 检查是否已存在配置
-    if [ -f "secrets.yaml" ]; then
-        print_warning "secrets.yaml 已存在"
-        read -p "是否覆盖？(y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "保持现有配置"
-            return
-        fi
-    fi
-
-    print_info "从模板创建 secrets.yaml..."
-    cp secrets.yaml.template secrets.yaml
-
-    print_header "配置向导"
-    echo "请填写以下配置信息（留空使用默认值）"
-    echo ""
+    # Secrets are managed by AWS Secrets Manager + External Secrets Operator
+    print_info "Secrets 由 AWS Secrets Manager + External Secrets Operator 管理"
 
     # 获取 Terraform 输出
     print_info "尝试从 Terraform 获取配置..."
@@ -144,30 +129,16 @@ init_config() {
 
         if terraform output region &> /dev/null; then
             AWS_REGION=$(terraform output -raw region 2>/dev/null || echo "us-west-2")
-            RDS_ENDPOINT=$(terraform output -raw rds_cluster_endpoint 2>/dev/null || echo "")
-            RDS_DATABASE=$(terraform output -raw rds_cluster_database_name 2>/dev/null || echo "")
-            RDS_PORT=$(terraform output -raw rds_cluster_port 2>/dev/null || echo "5432")
 
             print_success "从 Terraform 获取了以下信息："
             echo "  AWS Region: $AWS_REGION"
-            [ -n "$RDS_ENDPOINT" ] && echo "  RDS Endpoint: $RDS_ENDPOINT"
-            [ -n "$RDS_DATABASE" ] && echo "  RDS Database: $RDS_DATABASE"
         else
-            print_warning "Terraform 输出不可用，需要手动输入"
+            print_warning "Terraform 输出不可用"
+            AWS_REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}"
         fi
     fi
 
     cd "$APP_DIR"
-
-    # 获取 AWS Account ID
-    print_info "获取 AWS Account ID..."
-    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
-    if [ -n "$AWS_ACCOUNT_ID" ]; then
-        print_success "AWS Account ID: $AWS_ACCOUNT_ID"
-    else
-        print_warning "无法自动获取 AWS Account ID"
-        read -p "请输入 AWS Account ID: " AWS_ACCOUNT_ID
-    fi
 
     # 域名配置
     echo ""
@@ -179,118 +150,6 @@ init_config() {
         print_error "域名不能为空"
         exit 1
     fi
-
-    # 数据库密码
-    echo ""
-    print_info "数据库配置"
-    read -sp "RDS 数据库密码: " DB_PASSWORD
-    echo ""
-
-    # JWT Secret
-    echo ""
-    print_info "JWT 配置"
-    echo "JWT Secret Key（留空自动生成）:"
-    read -p "> " JWT_SECRET
-    if [ -z "$JWT_SECRET" ]; then
-        JWT_SECRET=$(openssl rand -base64 32)
-        print_success "已生成随机 JWT Secret"
-    fi
-
-    # Auth Provider 选择
-    echo ""
-    print_info "认证提供者配置"
-    echo "  1) AWS Cognito (default - press Enter)"
-    echo "  2) Microsoft Entra ID"
-    echo "  3) 两者都配置"
-    read -p "选择认证方式 [1/2/3]: " AUTH_CHOICE
-    AUTH_CHOICE="${AUTH_CHOICE:-1}"
-
-    MS_CLIENT_ID=""
-    MS_CLIENT_SECRET=""
-    MS_TENANT_ID=""
-    COGNITO_USER_POOL_ID=""
-    COGNITO_CLIENT_ID=""
-    COGNITO_CLIENT_SECRET=""
-    COGNITO_REGION=""
-
-    if [[ "$AUTH_CHOICE" == "2" || "$AUTH_CHOICE" == "3" ]]; then
-        echo ""
-        print_info "Microsoft Entra ID 配置"
-        read -p "Microsoft Client ID: " MS_CLIENT_ID
-        read -sp "Microsoft Client Secret: " MS_CLIENT_SECRET
-        echo ""
-        read -p "Microsoft Tenant ID: " MS_TENANT_ID
-    fi
-
-    if [[ "$AUTH_CHOICE" == "1" || "$AUTH_CHOICE" == "3" ]]; then
-        echo ""
-        print_info "AWS Cognito 配置"
-        read -p "Cognito User Pool ID: " COGNITO_USER_POOL_ID
-        read -p "Cognito Client ID: " COGNITO_CLIENT_ID
-        read -sp "Cognito Client Secret: " COGNITO_CLIENT_SECRET
-        echo ""
-        read -p "Cognito Region (留空使用 ${AWS_REGION}): " COGNITO_REGION
-        COGNITO_REGION="${COGNITO_REGION:-$AWS_REGION}"
-    fi
-
-    # ACM 证书
-    echo ""
-    print_info "ACM 证书配置"
-    echo "获取证书列表..."
-    aws acm list-certificates --region ${AWS_REGION} --output table 2>/dev/null || true
-    echo ""
-    read -p "Frontend ACM Certificate ARN: " FRONTEND_CERT_ARN
-    read -p "API ACM Certificate ARN: " API_CERT_ARN
-
-    # 生成数据库 URL
-    if [ -n "$RDS_ENDPOINT" ] && [ -n "$DB_PASSWORD" ] && [ -n "$RDS_DATABASE" ]; then
-        DATABASE_URL="postgresql+asyncpg://postgres:${DB_PASSWORD}@${RDS_ENDPOINT}:${RDS_PORT}/${RDS_DATABASE}"
-    else
-        read -p "完整的数据库 URL: " DATABASE_URL
-    fi
-
-    # 写入配置文件
-    print_info "生成配置文件..."
-
-    cat > secrets.yaml << EOF
-apiVersion: v1
-kind: Secret
-metadata:
-  name: backend-secrets
-  namespace: ${NAMESPACE}
-type: Opaque
-stringData:
-  # Database connection
-  database-url: "${DATABASE_URL}"
-
-  # JWT secrets
-  jwt-secret-key: "${JWT_SECRET}"
-
-  # AWS credentials (optional - prefer IAM roles)
-  aws-access-key-id: ""
-  aws-secret-access-key: ""
-
-  # Microsoft Entra ID OAuth
-  microsoft-client-id: "${MS_CLIENT_ID}"
-  microsoft-client-secret: "${MS_CLIENT_SECRET}"
-  microsoft-tenant-id: "${MS_TENANT_ID}"
-
-  # AWS Cognito OAuth
-  cognito-user-pool-id: "${COGNITO_USER_POOL_ID}"
-  cognito-client-id: "${COGNITO_CLIENT_ID}"
-  cognito-client-secret: "${COGNITO_CLIENT_SECRET}"
-  cognito-region: "${COGNITO_REGION}"
-
-  # ACM Certificate ARNs
-  acm-certificate-frontend-arn: "${FRONTEND_CERT_ARN}"
-  acm-certificate-api-arn: "${API_CERT_ARN}"
-
-  # AWS Account and Region
-  aws-account-id: "${AWS_ACCOUNT_ID}"
-  aws-region: "${AWS_REGION}"
-EOF
-
-    print_success "配置文件已创建: application/secrets.yaml"
 
     # 从 Terraform workspace 推导环境
     local KBR_ENV="non-prod"
@@ -350,15 +209,15 @@ EOF
     envsubst < hpa-frontend.yaml.template > hpa-frontend.yaml
     print_success "Deployment 和 HPA 已生成"
 
-    # 生成 ingress 文件
-    print_info "生成 Ingress 配置..."
+    # 生成 ingress 文件 (从 k8s secret 读取证书 ARN)
+    print_info "生成 Ingress 配置 (从 ESO 同步的 k8s secret 读取证书 ARN)..."
     ./generate-ingress.sh
 
     print_success "初始化完成！"
     echo ""
     print_info "下一步："
-    echo "  1. 检查配置文件: application/secrets.yaml"
-    echo "  2. 检查 ConfigMap: application/backend-configmap.yaml, application/frontend-configmap.yaml"
+    echo "  1. 检查 ConfigMap: application/backend-configmap.yaml, application/frontend-configmap.yaml"
+    echo "  2. 检查 Ingress: application/ingress-frontend.yaml, application/ingress-api.yaml"
     echo "  3. 部署应用: ./deploy.sh deploy"
 }
 
@@ -461,6 +320,7 @@ deploy_app() {
     kubectl apply -f namespace.yaml
 
     print_info "步骤 2/8: 部署 Secrets (External Secrets Operator)..."
+    kubectl delete secretstore aws-secrets-manager -n kbp --ignore-not-found=true
     kubectl apply -f secret-store.yaml
     kubectl apply -f external-secret.yaml
 
@@ -655,6 +515,7 @@ delete_app() {
     kubectl delete -f backend-configmap.yaml --ignore-not-found=true
     kubectl delete -f external-secret.yaml --ignore-not-found=true
     kubectl delete -f secret-store.yaml --ignore-not-found=true
+    kubectl delete clustersecretstore aws-secrets-manager --ignore-not-found=true
 
     print_info "等待资源清理..."
     sleep 5

@@ -41,6 +41,7 @@ frontend/.env.*
 *credentials*
 *secret*
 !.secrets.baseline
+!*.template
 *password*
 aws-credentials
 .aws/credentials
@@ -54,6 +55,9 @@ secrets.yml
 k8s/secrets.yaml
 k8s/application/secrets.yaml
 
+# Generated Terraform backend (generated from template, environment-specific)
+iac/providers.tf
+
 # Generated k8s manifests (generated from templates, contain environment-specific values)
 k8s/ingress-frontend.yaml
 k8s/ingress-api.yaml
@@ -65,6 +69,8 @@ k8s/application/backend-deployment.yaml
 k8s/application/frontend-deployment.yaml
 k8s/application/hpa-backend.yaml
 k8s/application/hpa-frontend.yaml
+k8s/application/secret-store.yaml
+k8s/application/external-secret.yaml
 
 # Temporary files
 *.tmp

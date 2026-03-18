@@ -1,5 +1,5 @@
 # Build stage
-FROM --platform=linux/arm64 node:20-alpine as builder
+FROM node:20-alpine as builder
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ ENV VITE_MICROSOFT_REDIRECT_URI=${VITE_MICROSOFT_REDIRECT_URI}
 RUN npm run build
 
 # Runtime stage
-FROM --platform=linux/arm64 nginx:alpine
+FROM nginx:alpine
 
 WORKDIR /app
 

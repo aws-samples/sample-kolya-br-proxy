@@ -180,7 +180,7 @@ resource "aws_iam_role_policy_attachment" "eso" {
 
 resource "aws_eks_pod_identity_association" "eso" {
   cluster_name    = var.cluster_name
-  namespace       = "kbp"
-  service_account = "external-secrets-sa"
+  namespace       = "external-secrets"
+  service_account = "external-secrets"
   role_arn        = aws_iam_role.eso.arn
 }

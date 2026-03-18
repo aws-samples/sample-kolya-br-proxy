@@ -17,7 +17,7 @@ set -e
 #   SKIP_KARPENTER=true  (skip generating karpenter-values.yaml)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TF_DIR="${1:-$SCRIPT_DIR/../../../iac-612674025488-us-west-2}"
+TF_DIR="${1:-$SCRIPT_DIR/../../../iac}"
 
 # Color output
 GREEN='\033[0;32m'

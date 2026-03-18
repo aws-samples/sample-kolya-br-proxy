@@ -8,7 +8,7 @@ set -e
 # Usage: ./apply-karpenter-config.sh [path-to-terraform-directory]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TF_DIR="${1:-../../iac-612674025488-us-west-2}"
+TF_DIR="${1:-../../iac}"
 
 # Color output
 GREEN='\033[0;32m'

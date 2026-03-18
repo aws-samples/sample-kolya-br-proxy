@@ -1,46 +1,42 @@
 #!/bin/bash
 #
-# Generate Ingress YAML files from secrets.yaml
+# Generate Ingress YAML files from Kubernetes secret (synced by External Secrets Operator)
 #
-# This script reads ACM certificate ARNs and other config from secrets.yaml
-# and generates the final ingress files with proper values.
+# This script reads ACM certificate ARNs and other config from the k8s secret
+# 'backend-secrets' in namespace 'kbp', which is populated by ESO from AWS Secrets Manager.
 #
 # Usage:
 #   ./generate-ingress.sh
 #
 # Prerequisites:
-#   - yq (brew install yq)
-#   - secrets.yaml must exist (copy from secrets.yaml.template)
+#   - kubectl configured with cluster access
+#   - External Secrets Operator has synced backend-secrets in namespace kbp
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Check if secrets.yaml exists
-if [[ ! -f "secrets.yaml" ]]; then
-    echo "❌ Error: secrets.yaml not found"
-    echo "   Copy secrets.yaml.template to secrets.yaml and fill in values"
+NAMESPACE="kbp"
+SECRET_NAME="backend-secrets"  # pragma: allowlist secret
+
+# Check if kubectl can access the secret
+echo "Reading configuration from k8s secret '$SECRET_NAME' in namespace '$NAMESPACE'..."
+if ! kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" &> /dev/null; then
+    echo "❌ Error: secret '$SECRET_NAME' not found in namespace '$NAMESPACE'"
+    echo "   Ensure External Secrets Operator has synced the secret from AWS Secrets Manager"
+    echo "   Check: kubectl get externalsecret -n $NAMESPACE"
     exit 1
 fi
 
-# Check if yq is installed
-if ! command -v yq &> /dev/null; then
-    echo "❌ Error: yq is not installed"
-    echo "   Install with: brew install yq"
-    exit 1
-fi
-
-echo "📊 Reading configuration from secrets.yaml..."
-
-# Extract values from secrets.yaml
-FRONTEND_ACM_CERT=$(yq '.stringData.acm-certificate-frontend-arn' secrets.yaml)
-API_ACM_CERT=$(yq '.stringData.acm-certificate-api-arn' secrets.yaml)
-AWS_ACCOUNT_ID=$(yq '.stringData.aws-account-id' secrets.yaml)
-AWS_REGION=$(yq '.stringData.aws-region' secrets.yaml)
+# Extract values from k8s secret
+FRONTEND_ACM_CERT=$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.acm-certificate-frontend-arn}' | base64 -d)
+API_ACM_CERT=$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.acm-certificate-api-arn}' | base64 -d)
+AWS_ACCOUNT_ID=$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.aws-account-id}' | base64 -d)
+AWS_REGION=$(kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath='{.data.aws-region}' | base64 -d)
 
 # 从 Terraform workspace 推导环境：prod workspace = prod，其他一律 non-prod
-TERRAFORM_DIR="$SCRIPT_DIR/../../iac-612674025488-us-west-2"
+TERRAFORM_DIR="$SCRIPT_DIR/../../iac"
 if [[ -d "$TERRAFORM_DIR" ]]; then
     TF_WORKSPACE=$(cd "$TERRAFORM_DIR" && terraform workspace show 2>/dev/null || echo "default")
     if [[ "$TF_WORKSPACE" == "prod" ]]; then
@@ -53,14 +49,25 @@ else
 fi
 
 # Validate required values
-if [[ -z "$FRONTEND_ACM_CERT" || "$FRONTEND_ACM_CERT" == "null" ]]; then
-    echo "❌ Error: acm-certificate-frontend-arn not found in secrets.yaml"
+if [[ -z "$FRONTEND_ACM_CERT" ]]; then
+    echo "❌ Error: acm-certificate-frontend-arn not found in secret '$SECRET_NAME'"
     exit 1
 fi
 
-if [[ -z "$API_ACM_CERT" || "$API_ACM_CERT" == "null" ]]; then
-    echo "❌ Error: acm-certificate-api-arn not found in secrets.yaml"
+if [[ -z "$API_ACM_CERT" ]]; then
+    echo "❌ Error: acm-certificate-api-arn not found in secret '$SECRET_NAME'"
     exit 1
+fi
+
+# Validate certificate ARN region matches deployment region
+if [[ -n "$AWS_REGION" && "$FRONTEND_ACM_CERT" != *":acm:${AWS_REGION}:"* ]]; then
+    echo "⚠️  Warning: Frontend certificate ARN region does not match deployment region ($AWS_REGION)"
+    echo "   Certificate: $FRONTEND_ACM_CERT"
+fi
+
+if [[ -n "$AWS_REGION" && "$API_ACM_CERT" != *":acm:${AWS_REGION}:"* ]]; then
+    echo "⚠️  Warning: API certificate ARN region does not match deployment region ($AWS_REGION)"
+    echo "   Certificate: $API_ACM_CERT"
 fi
 
 echo "✅ Configuration loaded:"

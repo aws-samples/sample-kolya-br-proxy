@@ -101,7 +101,7 @@ variable "cognito_allowed_email_domains" {
 variable "enable_waf" {
   description = "Enable AWS WAF for rate limiting and security protection on ALBs"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "waf_frontend_alb_name" {

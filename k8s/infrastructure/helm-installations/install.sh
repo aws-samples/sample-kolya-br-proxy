@@ -117,7 +117,7 @@ else
     # Apply Karpenter NodePool and EC2NodeClass
     KARPENTER_CONFIG_DIR="$SCRIPT_DIR/../karpenter"
     # Determine Terraform directory - go up from helm-installations to infrastructure, then to root, then to iac
-    TF_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)/iac-612674025488-us-west-2"
+    TF_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)/iac"
 
     if [ -f "$KARPENTER_CONFIG_DIR/apply-karpenter-config.sh" ]; then
         if [ -d "$TF_DIR" ]; then
