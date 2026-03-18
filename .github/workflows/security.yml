@@ -80,13 +80,13 @@ jobs:
       - name: Run tfsec
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
-          working_directory: iac-612674025488-us-west-2
+          working_directory: iac
           soft_fail: true
 
       - name: Run trivy on IaC
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: config
-          scan-ref: iac-612674025488-us-west-2
+          scan-ref: iac
           exit-code: "0"
           severity: HIGH,CRITICAL
