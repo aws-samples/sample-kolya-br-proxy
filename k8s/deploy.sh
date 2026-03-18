@@ -202,6 +202,8 @@ init_config() {
     print_success "ConfigMap 已生成"
 
     # 生成 Deployment 和 HPA 配置
+    export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+    export AWS_REGION
     print_info "生成 Deployment 配置 ($KBR_ENV)..."
     envsubst < backend-deployment.yaml.template > backend-deployment.yaml
     envsubst < frontend-deployment.yaml.template > frontend-deployment.yaml
@@ -209,16 +211,14 @@ init_config() {
     envsubst < hpa-frontend.yaml.template > hpa-frontend.yaml
     print_success "Deployment 和 HPA 已生成"
 
-    # 生成 ingress 文件 (从 k8s secret 读取证书 ARN)
-    print_info "生成 Ingress 配置 (从 ESO 同步的 k8s secret 读取证书 ARN)..."
-    ./generate-ingress.sh
+    # Ingress files will be auto-generated during deploy after ESO syncs the k8s secret
+    print_info "Ingress 配置将在部署时自动生成（依赖 ESO 同步 k8s secret）"
 
     print_success "初始化完成！"
     echo ""
     print_info "下一步："
     echo "  1. 检查 ConfigMap: application/backend-configmap.yaml, application/frontend-configmap.yaml"
-    echo "  2. 检查 Ingress: application/ingress-frontend.yaml, application/ingress-api.yaml"
-    echo "  3. 部署应用: ./deploy.sh deploy"
+    echo "  2. 部署应用: ./deploy.sh deploy（Ingress 将在部署过程中自动生成）"
 }
 
 # 部署应用
@@ -233,11 +233,6 @@ deploy_app() {
         echo ""
         echo "请先运行: ./deploy.sh init"
         exit 1
-    fi
-
-    if [ ! -f "ingress-frontend.yaml" ] || [ ! -f "ingress-api.yaml" ]; then
-        print_warning "Ingress 配置不存在，正在生成..."
-        ./generate-ingress.sh
     fi
 
     # 确认部署
@@ -319,30 +314,59 @@ deploy_app() {
     # 创建或更新命名空间
     kubectl apply -f namespace.yaml
 
-    print_info "步骤 2/8: 部署 Secrets (External Secrets Operator)..."
+    print_info "步骤 2/9: 部署 Secrets (External Secrets Operator)..."
     kubectl delete secretstore aws-secrets-manager -n kbp --ignore-not-found=true
     kubectl apply -f secret-store.yaml
     kubectl apply -f external-secret.yaml
 
-    print_info "步骤 3/8: 部署 ConfigMaps..."
+    # 等待 External Secrets 同步
+    print_info "步骤 3/9: 等待 External Secrets 同步..."
+    local es_max_wait=120
+    local es_waited=0
+    while [ $es_waited -lt $es_max_wait ]; do
+        local es_ready=$(kubectl get externalsecret backend-secrets -n ${NAMESPACE} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+        if [ "$es_ready" == "True" ]; then
+            print_success "External Secrets 同步完成"
+            break
+        fi
+        echo -n "."
+        sleep 5
+        es_waited=$((es_waited + 5))
+    done
+    echo ""
+
+    if [ $es_waited -ge $es_max_wait ]; then
+        print_error "External Secrets 同步超时（${es_max_wait}s）"
+        echo "   请检查: kubectl describe externalsecret backend-secrets -n ${NAMESPACE}"
+        echo "   以及: kubectl describe clustersecretstore aws-secrets-manager"
+        exit 1
+    fi
+
+    print_info "步骤 4/9: 部署 ConfigMaps..."
     kubectl apply -f backend-configmap.yaml
     kubectl apply -f frontend-configmap.yaml
 
-    print_info "步骤 4/8: 部署 Backend..."
+    # 生成 Ingress（依赖 ESO 同步后的 k8s secret + ConfigMaps 中的域名）
+    if [ ! -f "ingress-frontend.yaml" ] || [ ! -f "ingress-api.yaml" ]; then
+        print_info "生成 Ingress 配置..."
+        ./generate-ingress.sh
+    fi
+
+    print_info "步骤 5/9: 部署 Backend..."
     kubectl apply -f backend-deployment.yaml
 
-    print_info "步骤 5/8: 部署 Frontend..."
+    print_info "步骤 6/9: 部署 Frontend..."
     kubectl apply -f frontend-deployment.yaml
 
-    print_info "步骤 6/8: 创建 Services..."
+    print_info "步骤 7/9: 创建 Services..."
     kubectl apply -f backend-service.yaml
     kubectl apply -f frontend-service.yaml
 
-    print_info "步骤 7/8: 创建 Ingress (ALB)..."
+    print_info "步骤 8/9: 创建 Ingress (ALB)..."
     kubectl apply -f ingress-frontend.yaml
     kubectl apply -f ingress-api.yaml
 
-    print_info "步骤 8/8: 配置 HPA (自动扩缩容)..."
+    print_info "步骤 9/9: 配置 HPA (自动扩缩容)..."
     kubectl apply -f hpa-backend.yaml
     kubectl apply -f hpa-frontend.yaml
 

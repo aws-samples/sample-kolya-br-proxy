@@ -26,7 +26,7 @@ spec:
         karpenter.sh/nodepool: common-nodepool
       initContainers:
       - name: db-migrate
-        image: 612674025488.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-backend:latest
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/kolya-br-proxy-backend:latest
         command: ["uv", "run", "python", "scripts/migrate.py"]
         workingDir: /app/backend
         envFrom:
@@ -38,9 +38,14 @@ spec:
             secretKeyRef:
               name: backend-secrets
               key: database-url
+        - name: KBR_JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: jwt-secret-key
       containers:
       - name: backend
-        image: 612674025488.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-backend:latest
+        image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/kolya-br-proxy-backend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000

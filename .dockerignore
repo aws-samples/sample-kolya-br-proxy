@@ -1,0 +1,42 @@
+# Environment files (secrets should not be baked into images)
+.env
+.env.*
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+!*.env.example
+!*/.env.example
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Node
+node_modules
+
+# Infrastructure (not needed in app images)
+iac/
+iac-*/
+k8s/
+.github/
+docs/
+
+# Other
+.claude/
+*.md
+LICENSE

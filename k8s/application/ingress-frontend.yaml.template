@@ -23,7 +23,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-  - host: kbp.kolya.fun
+  - host: ${FRONTEND_DOMAIN}
     http:
       paths:
       - path: /

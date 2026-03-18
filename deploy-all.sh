@@ -1209,11 +1209,8 @@ run_config_wizard() {
     print_success "Generated: application/secret-store.yaml"
     print_success "Generated: application/external-secret.yaml"
 
-    # --- Generate Ingress files ---
-    print_substep "Generating Ingress configuration..."
-    cd "$app_dir"
-    ./generate-ingress.sh
-    print_success "Generated Ingress files"
+    # Ingress files will be auto-generated during deploy.sh after ESO syncs the k8s secret
+    print_info "Ingress 配置将在部署时自动生成（依赖 ESO 同步 k8s secret）"
 
     echo ""
     print_success "Configuration wizard complete!"
@@ -1271,6 +1268,8 @@ deploy_application() {
 
     # Always generate Deployment and HPA from templates (env-aware resources)
     local app_dir="$K8S_DIR/application"
+    export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+    export AWS_REGION
     print_substep "Generating Deployment and HPA ($DEPLOY_ENV resources)..."
     if [[ "$DEPLOY_ENV" == "prod" ]]; then
         export BACKEND_CPU_REQUEST="200m"  BACKEND_CPU_LIMIT="1000m"

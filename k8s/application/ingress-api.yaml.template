@@ -23,7 +23,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-  - host: api.kbp.kolya.fun
+  - host: ${API_DOMAIN}
     http:
       paths:
       - path: /

@@ -42,6 +42,7 @@ frontend/.env.*
 *secret*
 !.secrets.baseline
 !*.template
+!*-values.yaml
 *password*
 aws-credentials
 .aws/credentials
