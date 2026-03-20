@@ -809,7 +809,27 @@ build_and_push_images() {
     local frontend_image="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-frontend:latest"
     local frontend_tag="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-frontend:$(date +%Y%m%d-%H%M%S)"
 
-    if ! docker build --network host --platform linux/arm64 -t "$frontend_image" -t "$frontend_tag" .; then
+    # Collect domain names for frontend build args (VITE_* are compiled at build time)
+    local fe_domain="${FRONTEND_DOMAIN:-}"
+    local api_domain="${API_DOMAIN:-}"
+    if [[ -z "$fe_domain" || -z "$api_domain" ]]; then
+        # Try reading from existing cluster configmaps
+        fe_domain=$(kubectl get configmap frontend-config -n kbp -o jsonpath='{.data.VITE_MICROSOFT_REDIRECT_URI}' 2>/dev/null | sed 's|https://||;s|/auth/microsoft/callback||')
+        api_domain=$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_ALLOWED_ORIGINS}' 2>/dev/null | sed 's|.*,https://||;s|:[0-9]*$||')
+    fi
+    if [[ -z "$fe_domain" || -z "$api_domain" ]]; then
+        # Ask user for domain names
+        echo ""
+        read -p "  Frontend domain (e.g. kbp.kolya.fun): " fe_domain
+        read -p "  API domain (e.g. api.kbp.kolya.fun): " api_domain
+    fi
+    print_info "Frontend build args: API=https://$api_domain, Frontend=$fe_domain"
+
+    if ! docker build --network host --platform linux/arm64 \
+        --build-arg VITE_API_BASE_URL="https://$api_domain" \
+        --build-arg VITE_MICROSOFT_REDIRECT_URI="https://$fe_domain/auth/microsoft/callback" \
+        --build-arg VITE_COGNITO_REDIRECT_URI="https://$fe_domain/auth/cognito/callback" \
+        -t "$frontend_image" -t "$frontend_tag" .; then
         print_error "Frontend image build failed"
         exit 1
     fi

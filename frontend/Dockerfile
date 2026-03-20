@@ -9,11 +9,14 @@ COPY . .
 # Install dependencies
 RUN npm ci
 
-# Build the application with production environment variables
-ARG VITE_API_BASE_URL=https://api.kbp.kolya.fun
-ARG VITE_MICROSOFT_REDIRECT_URI=https://kbp.kolya.fun/auth/microsoft/callback
+# Build the application with environment-specific variables
+# These MUST be provided via --build-arg at build time
+ARG VITE_API_BASE_URL
+ARG VITE_MICROSOFT_REDIRECT_URI
+ARG VITE_COGNITO_REDIRECT_URI
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ENV VITE_MICROSOFT_REDIRECT_URI=${VITE_MICROSOFT_REDIRECT_URI}
+ENV VITE_COGNITO_REDIRECT_URI=${VITE_COGNITO_REDIRECT_URI}
 RUN npm run build
 
 # Runtime stage
