@@ -122,6 +122,33 @@ init_config() {
     # Secrets are managed by AWS Secrets Manager + External Secrets Operator
     print_info "Secrets 由 AWS Secrets Manager + External Secrets Operator 管理"
 
+    # Read domains from terraform.tfvars first
+    local tfvars_file="$TERRAFORM_DIR/terraform.tfvars"
+    FRONTEND_DOMAIN=""
+    API_DOMAIN=""
+
+    if [[ -f "$tfvars_file" ]]; then
+        FRONTEND_DOMAIN=$(grep -E "^frontend_domain\s*=" "$tfvars_file" 2>/dev/null | head -1 | sed 's/^[^=]*=\s*//' | sed 's/^\s*"\(.*\)"\s*$/\1/' | sed 's/^\s*//;s/\s*$//')
+        API_DOMAIN=$(grep -E "^api_domain\s*=" "$tfvars_file" 2>/dev/null | head -1 | sed 's/^[^=]*=\s*//' | sed 's/^\s*"\(.*\)"\s*$/\1/' | sed 's/^\s*//;s/\s*$//')
+    fi
+
+    if [[ -n "$FRONTEND_DOMAIN" && -n "$API_DOMAIN" ]]; then
+        print_success "从 terraform.tfvars 读取域名："
+        echo "  Frontend: $FRONTEND_DOMAIN"
+        echo "  API: $API_DOMAIN"
+    else
+        # Fallback to interactive input
+        echo ""
+        print_info "域名配置 (terraform.tfvars 中未找到，请手动输入)"
+        read -p "Frontend 域名 (例如 kbp.kolya.fun): " FRONTEND_DOMAIN
+        read -p "API 域名 (例如 api.kbp.kolya.fun): " API_DOMAIN
+
+        if [[ -z "$FRONTEND_DOMAIN" || -z "$API_DOMAIN" ]]; then
+            print_error "域名不能为空"
+            exit 1
+        fi
+    fi
+
     # 获取 Terraform 输出
     print_info "尝试从 Terraform 获取配置..."
     if [ -d "$TERRAFORM_DIR" ]; then
@@ -139,17 +166,6 @@ init_config() {
     fi
 
     cd "$APP_DIR"
-
-    # 域名配置
-    echo ""
-    print_info "域名配置"
-    read -p "Frontend 域名 (例如 kbp.kolya.fun): " FRONTEND_DOMAIN
-    read -p "API 域名 (例如 api.kbp.kolya.fun): " API_DOMAIN
-
-    if [[ -z "$FRONTEND_DOMAIN" || -z "$API_DOMAIN" ]]; then
-        print_error "域名不能为空"
-        exit 1
-    fi
 
     # 从 Terraform workspace 推导环境
     local KBR_ENV="non-prod"

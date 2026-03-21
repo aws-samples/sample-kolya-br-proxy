@@ -79,13 +79,14 @@ aws s3 mb s3://tf-state-<account-id>-${AWS_REGION}-kolya --region $AWS_REGION
 The script will interactively:
 
 1. Validate AWS credentials and region
-2. Prompt for S3 backend config (bucket name) — generates `iac/providers.tf` from template
-3. Select or create a Terraform workspace
-4. Run `terraform init` + `plan` + `apply` (VPC, EKS, RDS, etc.)
-5. Deploy Helm charts (ALB Controller, Karpenter, Metrics Server)
-6. Build and push Docker images to ECR
-7. Deploy K8s application (prompts for domains, secrets via ESO, etc.)
-8. Auto-enable WAF after ALBs are ready
+2. **Configure `terraform.tfvars`** (Step 0) — auto-detects account/region/feature flags, prompts for domains
+3. Prompt for S3 backend config (bucket name) — generates `iac/providers.tf` from template
+4. Select or create a Terraform workspace
+5. Run `terraform init` + `plan` + `apply` (VPC, EKS, RDS, etc.)
+6. Deploy Helm charts (ALB Controller, Karpenter, Metrics Server)
+7. Build and push Docker images to ECR (domains read from `terraform.tfvars`)
+8. Deploy K8s application (config generated from `terraform.tfvars`, secrets via ESO)
+9. Auto-enable WAF after ALBs are ready
 
 ### 5. (Optional) Enable Global Accelerator
 
@@ -117,6 +118,7 @@ Then follow [Section A](#a-first-time-deployment-new-account-or-new-region) from
 
 ```bash
 # Run a specific step only
+./deploy-all.sh --step 0       # Configure terraform.tfvars
 ./deploy-all.sh --step 1       # Terraform only
 ./deploy-all.sh --step 2       # Helm only
 ./deploy-all.sh --step 3       # Docker build only
@@ -167,12 +169,14 @@ terraform init -reconfigure
 
 | Concern | How it's handled |
 |---------|-----------------|
-| Account / region variables | Passed via `-var` flags (no tfvars file needed) |
+| Account / region variables | Written to `terraform.tfvars` by Step 0 (single source of truth) |
+| Domain names | Written to `terraform.tfvars` by Step 0; read by all subsequent steps |
 | Terraform backend | Generated from `providers.tf.template` on first run |
 | Terraform workspace | Interactive selection with confirmation at each step |
-| WAF ordering | Disabled in Step 1, auto-enabled after ALBs in Step 4 |
-| Global Accelerator | Disabled by default, toggle via `--step 5` |
-| Cognito callback URLs | Configured from Terraform outputs after apply |
+| WAF / GA / Cognito toggles | Persisted in `terraform.tfvars`; auto-detected from state by Step 0 |
+| WAF ordering | Auto-enabled in `terraform.tfvars` after ALBs are ready in Step 4 |
+| Global Accelerator | Disabled by default, toggle via `--step 5` (updates `terraform.tfvars`) |
+| Cognito callback URLs | Auto-derived from `frontend_domain` in `terraform.tfvars` |
 | ESO credentials | Pod Identity → ESO controller in `external-secrets` namespace |
 
 ---

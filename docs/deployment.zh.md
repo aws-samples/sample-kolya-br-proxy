@@ -79,13 +79,14 @@ aws s3 mb s3://tf-state-<account-id>-${AWS_REGION}-kolya --region $AWS_REGION
 脚本将交互式引导你完成：
 
 1. 验证 AWS 凭证和区域
-2. 提示 S3 后端配置（存储桶名称）— 从模板生成 `iac/providers.tf`
-3. 选择或创建 Terraform workspace
-4. 执行 `terraform init` + `plan` + `apply`（VPC、EKS、RDS 等）
-5. 部署 Helm charts（ALB Controller、Karpenter、Metrics Server）
-6. 构建并推送 Docker 镜像到 ECR
-7. 部署 K8s 应用（提示域名、通过 ESO 管理 secrets 等）
-8. ALB 就绪后自动启用 WAF
+2. **配置 `terraform.tfvars`**（步骤 0）— 自动检测账户/区域/功能开关，提示输入域名
+3. 提示 S3 后端配置（存储桶名称）— 从模板生成 `iac/providers.tf`
+4. 选择或创建 Terraform workspace
+5. 执行 `terraform init` + `plan` + `apply`（VPC、EKS、RDS 等）
+6. 部署 Helm charts（ALB Controller、Karpenter、Metrics Server）
+7. 构建并推送 Docker 镜像到 ECR（域名从 `terraform.tfvars` 读取）
+8. 部署 K8s 应用（从 `terraform.tfvars` 生成配置，通过 ESO 管理 secrets）
+9. ALB 就绪后自动启用 WAF
 
 ### 5.（可选）启用 Global Accelerator
 
@@ -117,6 +118,7 @@ rm iac/providers.tf
 
 ```bash
 # 执行单个步骤
+./deploy-all.sh --step 0       # 配置 terraform.tfvars
 ./deploy-all.sh --step 1       # 仅 Terraform
 ./deploy-all.sh --step 2       # 仅 Helm
 ./deploy-all.sh --step 3       # 仅 Docker 构建
@@ -167,12 +169,14 @@ terraform init -reconfigure
 
 | 关注点 | 处理方式 |
 |--------|---------|
-| 账户/区域变量 | 通过 `-var` 标志传递（无需 tfvars 文件） |
+| 账户/区域变量 | 由步骤 0 写入 `terraform.tfvars`（唯一配置来源） |
+| 域名 | 由步骤 0 写入 `terraform.tfvars`；后续所有步骤从中读取 |
 | Terraform 后端 | 首次运行时从 `providers.tf.template` 生成 |
 | Terraform workspace | 每个步骤都会交互式选择并确认 |
-| WAF 顺序 | 步骤 1 中禁用，步骤 4 ALB 就绪后自动启用 |
-| Global Accelerator | 默认禁用，通过 `--step 5` 切换 |
-| Cognito 回调 URL | 从 Terraform 输出自动配置 |
+| WAF / GA / Cognito 开关 | 持久化在 `terraform.tfvars` 中；步骤 0 从 state 自动检测 |
+| WAF 顺序 | 步骤 4 ALB 就绪后自动写入 `terraform.tfvars` 并启用 |
+| Global Accelerator | 默认禁用，通过 `--step 5` 切换（更新 `terraform.tfvars`） |
+| Cognito 回调 URL | 从 `terraform.tfvars` 中的 `frontend_domain` 自动派生 |
 | ESO 凭证 | Pod Identity → `external-secrets` 命名空间中的 ESO 控制器 |
 
 ---

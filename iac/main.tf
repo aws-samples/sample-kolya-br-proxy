@@ -134,9 +134,16 @@ module "cognito" {
   account            = local.account
   region             = local.region
 
-  # OAuth callback URLs
-  callback_urls = var.cognito_callback_urls
-  logout_urls   = var.cognito_logout_urls
+  # OAuth callback URLs (auto-derived from frontend_domain if set)
+  callback_urls = var.frontend_domain != "" ? [
+    "https://${var.frontend_domain}/auth/cognito/callback",
+    "http://localhost:9000/auth/cognito/callback"
+  ] : var.cognito_callback_urls
+
+  logout_urls = var.frontend_domain != "" ? [
+    "https://${var.frontend_domain}/",
+    "http://localhost:9000/"
+  ] : var.cognito_logout_urls
 
   # Token validity
   access_token_validity  = var.cognito_access_token_validity

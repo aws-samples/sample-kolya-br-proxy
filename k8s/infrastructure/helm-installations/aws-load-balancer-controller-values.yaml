@@ -3,7 +3,7 @@
 
 clusterName: kbr-proxy-eks-us-west-1-kolya
 region: us-west-1
-vpcId: vpc-08625592917b7042c
+vpcId: vpc-0a3690acf92b1a87f
 
 serviceAccount:
   name: aws-load-balancer-controller

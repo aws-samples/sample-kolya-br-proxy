@@ -46,12 +46,590 @@ AWS_ACCOUNT_ID=""
 ECR_NAMESPACE="kolya-br-proxy"
 DEPLOY_ENV=""  # Auto-derived from Terraform workspace: prod or non-prod
 
-# Common Terraform -var flags (populated after credentials check)
-TF_VAR_FLAGS=""
+# Path to terraform.tfvars
+TFVARS_FILE="$IAC_DIR/terraform.tfvars"
 
-# Build the -var flags for all terraform commands
-_build_tf_var_flags() {
-    TF_VAR_FLAGS="-var=account=${AWS_ACCOUNT_ID} -var=region=${AWS_REGION}"
+# Read a single value from terraform.tfvars
+# Usage: _read_tfvar "key"
+# Returns the raw value with outer quotes stripped. For list/map values returns empty.
+_read_tfvar() {
+    local key="$1"
+    if [[ ! -f "$TFVARS_FILE" ]]; then
+        echo ""
+        return
+    fi
+    # Extract the value part after "key = ", skip list/map values (starting with [ or {)
+    local raw
+    raw=$(awk -v k="$key" '$1 == k && $2 == "=" { $1=""; $2=""; sub(/^[[:space:]]+/, ""); print; exit }' "$TFVARS_FILE")
+    # Strip outer quotes if present (handles exactly one pair)
+    if [[ "$raw" == \"*\" ]]; then
+        raw="${raw#\"}"
+        raw="${raw%\"}"
+    fi
+    echo "$raw"
+}
+
+# Write/update a single key-value pair in terraform.tfvars (idempotent)
+# Usage: _write_tfvar "key" "value" ["string"|"bare"]
+#   "string" (default) wraps value in quotes; "bare" writes as-is (for bool/number)
+_write_tfvar() {
+    local key="$1"
+    local value="$2"
+    local type="${3:-string}"
+
+    # Ensure tfvars file exists
+    if [[ ! -f "$TFVARS_FILE" ]]; then
+        touch "$TFVARS_FILE"
+    fi
+
+    local new_value
+    if [[ "$type" == "bare" ]]; then
+        new_value="$value"
+    else
+        new_value="\"${value}\""
+    fi
+
+    if grep -qE "^${key}\s*=" "$TFVARS_FILE" 2>/dev/null; then
+        # Update existing line using awk (avoids sed escaping issues)
+        local tmpfile
+        tmpfile=$(mktemp)
+        awk -v k="$key" -v v="$new_value" '
+            $1 == k && $2 == "=" { print k " = " v; next }
+            { print }
+        ' "$TFVARS_FILE" > "$tmpfile" && mv "$tmpfile" "$TFVARS_FILE"
+    else
+        # Append new line
+        echo "${key} = ${new_value}" >> "$TFVARS_FILE"
+    fi
+}
+
+# Safely read a terraform output value.
+# Returns empty string if the output doesn't exist or contains warnings/errors.
+# Usage: _tf_output "output_name"
+_tf_output() {
+    local name="$1"
+    local val
+    val=$(terraform output -raw "$name" 2>/dev/null) || return 1
+    # Reject if it contains ANSI codes, newlines, or warning markers (terraform outputs
+    # warnings to stdout with exit 0 when state has no outputs)
+    if [[ "$val" == *$'\n'* || "$val" == *$'\033'* || "$val" == *"Warning:"* || "$val" == *"Error:"* ]]; then
+        echo ""
+        return 1
+    fi
+    echo "$val"
+}
+
+# Detect whether a terraform module is present in state (for bool toggles)
+# Usage: _detect_bool_from_state "module_name"  →  prints "true" or "false"
+_detect_bool_from_state() {
+    local module_name="$1"
+    cd "$IAC_DIR"
+    if terraform state list 2>/dev/null | grep -q "module.${module_name}"; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+# Step 0: Configure terraform.tfvars as single source of truth
+configure_tfvars() {
+    print_header "Step 0: Configure terraform.tfvars"
+
+    cd "$IAC_DIR"
+
+    # 1. Auto-detect account and region
+    print_substep "Auto-detecting AWS account and region..."
+    local detected_account
+    detected_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+    local detected_region="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}"
+
+    if [[ -n "$detected_account" ]]; then
+        _write_tfvar "account" "$detected_account"
+        print_success "account = $detected_account"
+    fi
+    if [[ -n "$detected_region" ]]; then
+        _write_tfvar "region" "$detected_region"
+        print_success "region = $detected_region"
+    fi
+
+    # 2. Auto-detect boolean toggles from terraform state
+    print_substep "Detecting feature flags from Terraform state..."
+    if [[ -d "$IAC_DIR/.terraform" ]]; then
+        local detected_waf
+        detected_waf=$(_detect_bool_from_state "waf")
+        _write_tfvar "enable_waf" "$detected_waf" "bare"
+        print_success "enable_waf = $detected_waf (from state)"
+
+        local detected_ga
+        detected_ga=$(_detect_bool_from_state "global_accelerator")
+        _write_tfvar "enable_global_accelerator" "$detected_ga" "bare"
+        print_success "enable_global_accelerator = $detected_ga (from state)"
+
+    else
+        print_warning "Terraform not initialized, skipping state detection"
+    fi
+
+    # 2b. Authentication provider selection (always prompt, show current value as default)
+    local current_cognito
+    current_cognito=$(_read_tfvar "enable_cognito")
+    echo ""
+    print_substep "Authentication provider"
+    if [[ "$current_cognito" == "true" ]]; then
+        echo "  Current: Cognito enabled"
+        echo ""
+        echo "  1) AWS Cognito (current)"
+        echo "  2) Microsoft Entra ID only (disable Cognito)"
+        echo "  3) Both (Cognito + Microsoft)"
+        read -p "Select authentication method [1]: " auth_choice
+        auth_choice="${auth_choice:-1}"
+    elif [[ "$current_cognito" == "false" ]]; then
+        echo "  Current: Cognito disabled (Microsoft only)"
+        echo ""
+        echo "  1) Microsoft Entra ID only (current)"
+        echo "  2) AWS Cognito"
+        echo "  3) Both (Cognito + Microsoft)"
+        read -p "Select authentication method [1]: " auth_choice
+        auth_choice="${auth_choice:-1}"
+        # Remap: 1=keep false, 2=cognito, 3=both
+        case "$auth_choice" in
+            1) auth_choice="microsoft" ;;
+            2) auth_choice="1" ;;
+            3) auth_choice="3" ;;
+            *) auth_choice="microsoft" ;;
+        esac
+    else
+        echo "  1) AWS Cognito (recommended for new deployments)"
+        echo "  2) Microsoft Entra ID only (no Cognito)"
+        echo "  3) Both (Cognito + Microsoft)"
+        read -p "Select authentication method [1]: " auth_choice
+        auth_choice="${auth_choice:-1}"
+    fi
+    case "$auth_choice" in
+        1)
+            _write_tfvar "enable_cognito" "true" "bare"
+            print_success "enable_cognito = true"
+            ;;
+        2|microsoft)
+            _write_tfvar "enable_cognito" "false" "bare"
+            print_success "enable_cognito = false (Microsoft only)"
+            ;;
+        3)
+            _write_tfvar "enable_cognito" "true" "bare"
+            print_success "enable_cognito = true (+ Microsoft via Secrets Manager)"
+            ;;
+        *)
+            # Keep current or default to Cognito
+            if [[ "$current_cognito" == "false" ]]; then
+                _write_tfvar "enable_cognito" "false" "bare"
+                print_success "enable_cognito = false (kept current)"
+            else
+                _write_tfvar "enable_cognito" "true" "bare"
+                print_success "enable_cognito = true"
+            fi
+            ;;
+    esac
+
+    # 3. Confirm/input: frontend_domain, api_domain
+    echo ""
+    print_substep "Domain configuration"
+
+    local existing_fe_domain
+    existing_fe_domain=$(_read_tfvar "frontend_domain")
+    local existing_api_domain
+    existing_api_domain=$(_read_tfvar "api_domain")
+
+    local input_fe_domain
+    if [[ -n "$existing_fe_domain" ]]; then
+        read -p "Frontend domain [$existing_fe_domain]: " input_fe_domain
+        input_fe_domain="${input_fe_domain:-$existing_fe_domain}"
+    else
+        while [[ -z "$input_fe_domain" ]]; do
+            read -p "Frontend domain (e.g. kbp.kolya.fun): " input_fe_domain
+            if [[ -z "$input_fe_domain" ]]; then
+                print_warning "Frontend domain is required"
+            fi
+        done
+    fi
+    _write_tfvar "frontend_domain" "$input_fe_domain"
+
+    local input_api_domain
+    if [[ -n "$existing_api_domain" ]]; then
+        read -p "API domain [$existing_api_domain]: " input_api_domain
+        input_api_domain="${input_api_domain:-$existing_api_domain}"
+    else
+        while [[ -z "$input_api_domain" ]]; do
+            read -p "API domain (e.g. api.kbp.kolya.fun): " input_api_domain
+            if [[ -z "$input_api_domain" ]]; then
+                print_warning "API domain is required"
+            fi
+        done
+    fi
+    _write_tfvar "api_domain" "$input_api_domain"
+
+    # 4. Auto-detect project naming (critical: embedded in all resource names)
+    #    project_name       → deployment_name ("kolya-br-proxy-kolya"), VPC name_prefix, tags
+    #    project_name_alias → cluster_name ("kbr-proxy-eks-us-west-1-kolya"), Karpenter, RDS, WAF, Cognito
+    echo ""
+    print_substep "Project naming detection"
+
+    # --- project_name ---
+    local detected_name=""
+    local name_source=""
+    detected_name=$(_read_tfvar "project_name")
+    if [[ -n "$detected_name" ]]; then
+        name_source="tfvars"
+    fi
+    # Derive from deployment tag in state (pattern: ${project_name}-${workspace})
+    if [[ -z "$detected_name" && -d "$IAC_DIR/.terraform" ]]; then
+        local vpc_id_from_state
+        vpc_id_from_state=$(_tf_output vpc_id || echo "")
+        if [[ -n "$vpc_id_from_state" ]]; then
+            local deployment_tag
+            deployment_tag=$(aws ec2 describe-vpcs --vpc-ids "$vpc_id_from_state" \
+                --query 'Vpcs[0].Tags[?Key==`DeploymentName`].Value' --output text \
+                --region "${detected_region:-$AWS_REGION}" 2>/dev/null || echo "")
+            if [[ -n "$deployment_tag" ]]; then
+                # deployment_name format: ${project_name}-${workspace}
+                local ws
+                ws=$(terraform workspace show 2>/dev/null || echo "")
+                if [[ -n "$ws" ]]; then
+                    detected_name="${deployment_tag%-"$ws"}"
+                    name_source="state (DeploymentName tag)"
+                fi
+            fi
+        fi
+    fi
+
+    if [[ -n "$detected_name" ]]; then
+        print_success "project_name = $detected_name (from $name_source)"
+        print_warning "Used in VPC/deployment naming. Cannot be changed safely after initial deploy."
+        _write_tfvar "project_name" "$detected_name"
+    else
+        print_warning "Could not auto-detect project_name from tfvars or terraform state."
+        print_warning "This value is used in VPC naming, deployment tags, and other resources."
+        print_warning "Entering the wrong value will cause resource conflicts!"
+        local input_name=""
+        while [[ -z "$input_name" ]]; do
+            read -p "Project name (e.g. kolya-br-proxy): " input_name
+            if [[ -z "$input_name" ]]; then
+                print_warning "This field is required."
+            fi
+        done
+        _write_tfvar "project_name" "$input_name"
+    fi
+
+    # --- project_name_alias ---
+    local detected_alias=""
+    local alias_source=""
+    detected_alias=$(_read_tfvar "project_name_alias")
+    if [[ -n "$detected_alias" ]]; then
+        alias_source="tfvars"
+    fi
+    # Derive from EKS cluster name in terraform state (pattern: ${alias}-eks-${region}-${workspace})
+    if [[ -z "$detected_alias" && -d "$IAC_DIR/.terraform" ]]; then
+        local cluster_name_from_state
+        cluster_name_from_state=$(_tf_output cluster_name || echo "")
+        if [[ -n "$cluster_name_from_state" ]]; then
+            detected_alias=$(echo "$cluster_name_from_state" | sed 's/-eks-.*//')
+            alias_source="state (cluster_name)"
+        fi
+    fi
+
+    if [[ -n "$detected_alias" ]]; then
+        print_success "project_name_alias = $detected_alias (from $alias_source)"
+        print_warning "Used in EKS cluster, Karpenter, RDS, WAF, Cognito naming. Cannot be changed safely."
+        _write_tfvar "project_name_alias" "$detected_alias"
+    else
+        print_warning "Could not auto-detect project_name_alias from tfvars or terraform state."
+        print_warning "This value is embedded in EKS cluster name, Karpenter, RDS, WAF, Cognito."
+        print_warning "Entering the wrong value will cause resource conflicts!"
+        local input_alias=""
+        while [[ -z "$input_alias" ]]; do
+            read -p "Project name alias (e.g. kbr-proxy): " input_alias
+            if [[ -z "$input_alias" ]]; then
+                print_warning "This field is required."
+            fi
+        done
+        _write_tfvar "project_name_alias" "$input_alias"
+    fi
+
+    local existing_email_domains
+    existing_email_domains=$(_read_tfvar "cognito_allowed_email_domains")
+    if [[ -n "$existing_email_domains" ]]; then
+        print_info "cognito_allowed_email_domains = $existing_email_domains (keeping existing)"
+    else
+        read -p "Cognito allowed email domains (e.g. example.com) [amazon.com]: " input_email_domains
+        input_email_domains="${input_email_domains:-amazon.com}"
+        # Write as HCL list - need special handling
+        if ! grep -qE "^cognito_allowed_email_domains\s*=" "$TFVARS_FILE" 2>/dev/null; then
+            echo "cognito_allowed_email_domains = [\"${input_email_domains}\"]" >> "$TFVARS_FILE"
+        fi
+    fi
+
+    # 5. Export for subsequent steps
+    export FRONTEND_DOMAIN="$input_fe_domain"
+    export API_DOMAIN="$input_api_domain"
+
+    echo ""
+    print_substep "Current terraform.tfvars:"
+    cat "$TFVARS_FILE"
+    echo ""
+    print_success "Step 0 complete: terraform.tfvars configured"
+}
+
+# Create Cognito admin user (extracted from setup_cognito_post_terraform)
+create_cognito_admin_user() {
+    cd "$IAC_DIR"
+
+    local cognito_enabled
+    cognito_enabled=$(_tf_output cognito_enabled || echo "false")
+    if [[ "$cognito_enabled" != "true" ]]; then
+        return 0
+    fi
+
+    local pool_id
+    pool_id=$(_tf_output cognito_user_pool_id || echo "")
+    local cognito_region
+    cognito_region=$(_tf_output region || echo "$AWS_REGION")
+
+    if [[ -z "$pool_id" ]]; then
+        print_warning "Could not retrieve Cognito User Pool ID. Skipping admin user creation."
+        return 0
+    fi
+
+    # Check if any users exist
+    local user_count
+    user_count=$(aws cognito-idp list-users --user-pool-id "$pool_id" --region "$cognito_region" --query 'Users | length(@)' --output text 2>/dev/null || echo "0")
+
+    if [[ "$user_count" -gt 0 ]]; then
+        print_info "Cognito user pool already has $user_count user(s), skipping admin creation"
+        return 0
+    fi
+
+    print_substep "Cognito user pool is empty. Creating initial admin user..."
+    echo ""
+    local admin_email=""
+    while [[ -z "$admin_email" ]]; do
+        read -p "Admin email: " admin_email
+        if [[ -z "$admin_email" ]]; then
+            print_warning "This field is required."
+        fi
+    done
+
+    local admin_username="${admin_email%%@*}"
+
+    if aws cognito-idp admin-create-user \
+        --user-pool-id "$pool_id" \
+        --username "$admin_username" \
+        --user-attributes Name=email,Value="$admin_email" Name=email_verified,Value=true \
+        --desired-delivery-mediums EMAIL \
+        --region "$cognito_region" \
+        --no-cli-pager &> /dev/null; then
+        print_success "Admin user created (username: $admin_username). Temporary password sent to $admin_email"
+    else
+        print_error "Failed to create admin user. Create manually:"
+        echo "  aws cognito-idp admin-create-user \\"
+        echo "    --user-pool-id $pool_id \\"
+        echo "    --username $admin_username \\"
+        echo "    --user-attributes Name=email,Value=$admin_email Name=email_verified,Value=true \\"
+        echo "    --desired-delivery-mediums EMAIL \\"
+        echo "    --region $cognito_region"
+    fi
+}
+
+# Generate k8s config files (non-interactive, from tfvars + terraform outputs)
+generate_k8s_configs() {
+    local app_dir="$K8S_DIR/application"
+
+    print_substep "Generating k8s configuration files..."
+
+    # Read domains from tfvars
+    local cfg_frontend_domain
+    cfg_frontend_domain=$(_read_tfvar "frontend_domain")
+    local cfg_api_domain
+    cfg_api_domain=$(_read_tfvar "api_domain")
+
+    if [[ -z "$cfg_frontend_domain" || -z "$cfg_api_domain" ]]; then
+        print_error "frontend_domain or api_domain not set in terraform.tfvars. Run Step 0 first."
+        exit 1
+    fi
+
+    cd "$IAC_DIR"
+
+    local cfg_region
+    cfg_region=$(_tf_output region || echo "$AWS_REGION")
+    local cfg_secrets_manager_name
+    cfg_secrets_manager_name=$(_tf_output backend_secrets_manager_name || echo "")
+
+    if [[ -z "$cfg_secrets_manager_name" ]]; then
+        print_error "Secrets Manager name not found in Terraform outputs. Run Step 1 first."
+        exit 1
+    fi
+
+    # If DEPLOY_ENV not set, derive from workspace
+    if [[ -z "$DEPLOY_ENV" ]]; then
+        detect_environment
+    fi
+
+    export FRONTEND_DOMAIN="$cfg_frontend_domain"
+    export API_DOMAIN="$cfg_api_domain"
+    export API_PORT_SUFFIX=""
+    export AWS_REGION="$cfg_region"
+    export KBR_ENV="$DEPLOY_ENV"
+    export SECRETS_MANAGER_SECRET_NAME="$cfg_secrets_manager_name"
+
+    # Get COGNITO_DOMAIN from Terraform output (only relevant when Cognito is enabled)
+    export COGNITO_DOMAIN=""
+    local cognito_flag
+    cognito_flag=$(_read_tfvar "enable_cognito")
+    if [[ "$cognito_flag" == "true" ]]; then
+        COGNITO_DOMAIN=$(_tf_output cognito_domain || echo "")
+        if [[ -z "$COGNITO_DOMAIN" ]]; then
+            COGNITO_DOMAIN=$(echo "$cfg_frontend_domain" | tr '.' '-')
+            print_warning "Could not get Cognito domain from Terraform, using derived: $COGNITO_DOMAIN"
+        fi
+    fi
+
+    envsubst < "$app_dir/backend-configmap.yaml.template" > "$app_dir/backend-configmap.yaml"
+    envsubst < "$app_dir/frontend-configmap.yaml.template" > "$app_dir/frontend-configmap.yaml"
+    print_success "Generated: backend-configmap.yaml, frontend-configmap.yaml"
+
+    envsubst < "$app_dir/secret-store.yaml.template" > "$app_dir/secret-store.yaml"
+    envsubst < "$app_dir/external-secret.yaml.template" > "$app_dir/external-secret.yaml"
+    print_success "Generated: secret-store.yaml, external-secret.yaml"
+
+    print_info "Ingress will be auto-generated during deploy (depends on ESO secret sync)"
+}
+
+# Push secrets to AWS Secrets Manager
+push_secrets_to_sm() {
+    cd "$IAC_DIR"
+
+    local cfg_region
+    cfg_region=$(_tf_output region || echo "$AWS_REGION")
+    local secret_name
+    secret_name=$(_tf_output backend_secrets_manager_name || echo "")
+
+    if [[ -z "$secret_name" ]]; then
+        print_error "Secrets Manager name not found. Run Step 1 first."
+        exit 1
+    fi
+
+    # Read domains from tfvars
+    local cfg_frontend_domain
+    cfg_frontend_domain=$(_read_tfvar "frontend_domain")
+    local cfg_api_domain
+    cfg_api_domain=$(_read_tfvar "api_domain")
+
+    local cfg_account_id
+    cfg_account_id=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
+
+    # Retrieve RDS password
+    local cfg_rds_endpoint
+    cfg_rds_endpoint=$(_tf_output rds_cluster_endpoint || echo "")
+    local cfg_rds_database
+    cfg_rds_database=$(_tf_output rds_cluster_database_name || echo "")
+    local cfg_rds_port
+    cfg_rds_port=$(_tf_output rds_cluster_port || echo "5432")
+
+    local cfg_db_password=""
+    local rds_secret_name
+    rds_secret_name=$(_tf_output rds_secret_name || echo "")
+    if [[ -n "$rds_secret_name" ]]; then
+        cfg_db_password=$(aws secretsmanager get-secret-value --secret-id "$rds_secret_name" --query SecretString --output text 2>/dev/null | jq -r '.password' 2>/dev/null || echo "")
+    fi
+
+    local cfg_database_url=""
+    if [[ -n "$cfg_rds_endpoint" && -n "$cfg_db_password" && -n "$cfg_rds_database" ]]; then
+        cfg_database_url="postgresql+asyncpg://postgres:${cfg_db_password}@${cfg_rds_endpoint}:${cfg_rds_port}/${cfg_rds_database}"
+    fi
+
+    # JWT secret - generate if not already in SM
+    local existing_jwt=""
+    existing_jwt=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."jwt-secret-key" // empty' 2>/dev/null || echo "")
+    local cfg_jwt_secret="${existing_jwt}"
+    if [[ -z "$cfg_jwt_secret" ]]; then
+        cfg_jwt_secret=$(openssl rand -base64 32)
+        print_info "Generated new JWT secret"
+    fi
+
+    # Cognito config from terraform outputs
+    local cfg_cognito_user_pool_id=""
+    local cfg_cognito_client_id=""
+    local cfg_cognito_client_secret=""
+    local cfg_cognito_region="$cfg_region"
+    local cognito_enabled
+    cognito_enabled=$(_tf_output cognito_enabled || echo "false")
+    if [[ "$cognito_enabled" == "true" ]]; then
+        cfg_cognito_user_pool_id=$(_tf_output cognito_user_pool_id || echo "")
+        cfg_cognito_client_id=$(_tf_output cognito_app_client_id || echo "")
+        cfg_cognito_client_secret=$(_tf_output cognito_app_client_secret || echo "")
+    fi
+
+    # Read existing MS config from SM (preserve if present)
+    local cfg_ms_client_id=""
+    local cfg_ms_client_secret=""
+    local cfg_ms_tenant_id=""
+    cfg_ms_client_id=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-client-id" // empty' 2>/dev/null || echo "")
+    cfg_ms_client_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-client-secret" // empty' 2>/dev/null || echo "")
+    cfg_ms_tenant_id=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-tenant-id" // empty' 2>/dev/null || echo "")
+
+    # Read existing cert ARNs from SM (preserve if present)
+    local cfg_frontend_cert_arn=""
+    local cfg_api_cert_arn=""
+    cfg_frontend_cert_arn=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."acm-certificate-frontend-arn" // empty' 2>/dev/null || echo "")
+    cfg_api_cert_arn=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."acm-certificate-api-arn" // empty' 2>/dev/null || echo "")
+
+    # If cert ARNs are missing, ask user
+    if [[ -z "$cfg_frontend_cert_arn" || -z "$cfg_api_cert_arn" ]]; then
+        echo ""
+        print_substep "ACM certificate configuration"
+        aws acm list-certificates --region "${cfg_region}" --output table --no-cli-pager 2>/dev/null || true
+        echo ""
+        read -p "Frontend ACM Certificate ARN: " cfg_frontend_cert_arn
+        read -p "API ACM Certificate ARN: " cfg_api_cert_arn
+    fi
+
+    print_substep "Pushing secrets to AWS Secrets Manager..."
+    local secret_json
+    secret_json=$(jq -n \
+      --arg db_url "$cfg_database_url" \
+      --arg jwt "$cfg_jwt_secret" \
+      --arg ms_client_id "$cfg_ms_client_id" \
+      --arg ms_client_secret "$cfg_ms_client_secret" \
+      --arg ms_tenant_id "$cfg_ms_tenant_id" \
+      --arg cognito_user_pool_id "$cfg_cognito_user_pool_id" \
+      --arg cognito_client_id "$cfg_cognito_client_id" \
+      --arg cognito_client_secret "$cfg_cognito_client_secret" \
+      --arg cognito_region "$cfg_cognito_region" \
+      --arg frontend_cert_arn "$cfg_frontend_cert_arn" \
+      --arg api_cert_arn "$cfg_api_cert_arn" \
+      --arg account_id "$cfg_account_id" \
+      --arg region "$cfg_region" \
+      '{
+        "database-url": $db_url,
+        "jwt-secret-key": $jwt,
+        "aws-access-key-id": "",
+        "aws-secret-access-key": "",
+        "microsoft-client-id": $ms_client_id,
+        "microsoft-client-secret": $ms_client_secret,
+        "microsoft-tenant-id": $ms_tenant_id,
+        "cognito-user-pool-id": $cognito_user_pool_id,
+        "cognito-client-id": $cognito_client_id,
+        "cognito-client-secret": $cognito_client_secret,
+        "cognito-region": $cognito_region,
+        "acm-certificate-frontend-arn": $frontend_cert_arn,
+        "acm-certificate-api-arn": $api_cert_arn,
+        "aws-account-id": $account_id,
+        "aws-region": $region
+      }')
+
+    aws secretsmanager put-secret-value \
+      --secret-id "$secret_name" \
+      --secret-string "$secret_json" \
+      --region "$cfg_region" \
+      --no-cli-pager
+    print_success "Secrets pushed to AWS Secrets Manager: $secret_name"
 }
 
 # Print functions
@@ -75,7 +653,7 @@ print_header() {
 }
 
 print_step() {
-    echo -e "${MAGENTA}▶ Step $1/4: $2${NC}"
+    echo -e "${MAGENTA}▶ Step $1/5: $2${NC}"
 }
 
 print_substep() {
@@ -106,7 +684,8 @@ Kolya BR Proxy - Unified Deployment Script
 Usage: ./deploy-all.sh [options]
 
 Options:
-  --step <1-5>        Run a specific step only
+  --step <0-5>        Run a specific step only
+                      0: Configure terraform.tfvars (single source of truth)
                       1: Deploy Terraform infrastructure
                       2: Deploy Kubernetes infrastructure (Helm)
                       3: Build and push Docker images
@@ -164,8 +743,8 @@ parse_args() {
         case $1 in
             --step)
                 SPECIFIC_STEP="$2"
-                if [[ ! "$SPECIFIC_STEP" =~ ^[1-5]$ ]]; then
-                    print_error "Invalid step number: $SPECIFIC_STEP (must be 1-5)"
+                if [[ ! "$SPECIFIC_STEP" =~ ^[0-5]$ ]]; then
+                    print_error "Invalid step number: $SPECIFIC_STEP (must be 0-5)"
                     exit 1
                 fi
                 shift 2
@@ -274,9 +853,6 @@ check_aws_credentials() {
     fi
 
     print_info "Region: $AWS_REGION"
-
-    # Build common Terraform -var flags
-    _build_tf_var_flags
 }
 
 # Verify Terraform backend state is correct
@@ -389,120 +965,6 @@ verify_terraform_state() {
     else
         print_success "Terraform state verified ($state_count resources)"
     fi
-}
-
-# Post-Terraform Cognito setup: configure callback URLs and create initial admin user
-setup_cognito_post_terraform() {
-    cd "$IAC_DIR"
-
-    # Check if Cognito is enabled
-    local cognito_enabled=$(terraform output -raw cognito_enabled 2>/dev/null || echo "false")
-    if [[ "$cognito_enabled" != "true" ]]; then
-        return 0
-    fi
-
-    print_header "Cognito Post-Setup"
-    print_info "Self-registration is disabled. All users must be created by an admin via AWS CLI."
-
-    # Retrieve Cognito details from Terraform
-    local pool_id=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
-    local client_id=$(terraform output -raw cognito_app_client_id 2>/dev/null || echo "")
-    local cognito_region=$(terraform output -raw region 2>/dev/null || echo "$AWS_REGION")
-
-    if [[ -z "$pool_id" || -z "$client_id" ]]; then
-        print_warning "Could not retrieve Cognito details from Terraform outputs. Skipping post-setup."
-        return 0
-    fi
-
-    print_success "Cognito User Pool: $pool_id"
-    print_success "Cognito Client ID: $client_id"
-
-    # --- Callback URLs ---
-    echo ""
-    print_substep "Cognito callback URL configuration"
-
-    echo "Enter the frontend domain so callback URLs can be configured on the Cognito app client."
-    echo ""
-    local post_frontend_domain=""
-    while [[ -z "$post_frontend_domain" ]]; do
-        read -p "Frontend domain (e.g. kbp.kolya.fun): " post_frontend_domain
-        if [[ -z "$post_frontend_domain" ]]; then
-            print_warning "This field is required."
-        fi
-    done
-
-    local cognito_callback="https://${post_frontend_domain}/auth/cognito/callback"
-    local cognito_logout="https://${post_frontend_domain}/"
-    if aws cognito-idp update-user-pool-client \
-        --user-pool-id "$pool_id" \
-        --client-id "$client_id" \
-        --callback-urls "$cognito_callback" "http://localhost:9000/auth/cognito/callback" \
-        --logout-urls "$cognito_logout" "http://localhost:9000/" \
-        --allowed-o-auth-flows code \
-        --allowed-o-auth-scopes email openid profile \
-        --allowed-o-auth-flows-user-pool-client \
-        --supported-identity-providers COGNITO \
-        --region "$cognito_region" \
-        --no-cli-pager 2>&1; then
-        print_success "Cognito callback URLs configured: $cognito_callback"
-    else
-        print_warning "Failed to update Cognito callback URLs. Please configure manually."
-    fi
-
-    # --- Initial admin user ---
-    echo ""
-    print_substep "Initial admin user"
-    echo "The Cognito user pool is empty after creation."
-    echo "Provide an admin email to create the first user (a temporary password will be emailed)."
-    echo ""
-    local post_admin_email=""
-    while [[ -z "$post_admin_email" ]]; do
-        read -p "Admin email: " post_admin_email
-        if [[ -z "$post_admin_email" ]]; then
-            print_warning "This field is required. The first admin user is needed to log in."
-        fi
-    done
-
-    # Derive username from email (part before @) since user pool uses email as alias
-    local post_admin_username="${post_admin_email%%@*}"
-
-    # Check if user already exists
-    if aws cognito-idp admin-get-user \
-        --user-pool-id "$pool_id" \
-        --username "$post_admin_username" \
-        --region "$cognito_region" &> /dev/null; then
-        print_warning "User $post_admin_username already exists in Cognito, skipping creation"
-    else
-        if aws cognito-idp admin-create-user \
-            --user-pool-id "$pool_id" \
-            --username "$post_admin_username" \
-            --user-attributes Name=email,Value="$post_admin_email" Name=email_verified,Value=true \
-            --desired-delivery-mediums EMAIL \
-            --region "$cognito_region" \
-            --no-cli-pager &> /dev/null; then
-            print_success "Admin user created (username: $post_admin_username). A temporary password has been sent to $post_admin_email"
-            print_info "On first login, you will be prompted to set a permanent password."
-            echo ""
-            print_info "To create additional users later:"
-            echo "  aws cognito-idp admin-create-user \\"
-            echo "    --user-pool-id $pool_id \\"
-            echo "    --username <username> \\"
-            echo "    --user-attributes Name=email,Value=<email> Name=email_verified,Value=true \\"
-            echo "    --desired-delivery-mediums EMAIL \\"
-            echo "    --region $cognito_region"
-        else
-            print_error "Failed to create admin user. You can create one manually:"
-            echo "  aws cognito-idp admin-create-user \\"
-            echo "    --user-pool-id $pool_id \\"
-            echo "    --username $post_admin_username \\"
-            echo "    --user-attributes Name=email,Value=$post_admin_email Name=email_verified,Value=true \\"
-            echo "    --desired-delivery-mediums EMAIL \\"
-            echo "    --region $cognito_region"
-        fi
-    fi
-
-    echo ""
-    print_success "Cognito post-setup complete!"
 }
 
 # Step 1: Deploy Terraform
@@ -655,9 +1117,17 @@ deploy_terraform() {
         exit 0
     fi
 
+    # Ensure account/region are in tfvars
+    if [[ -n "$AWS_ACCOUNT_ID" ]]; then
+        _write_tfvar "account" "$AWS_ACCOUNT_ID"
+    fi
+    if [[ -n "$AWS_REGION" ]]; then
+        _write_tfvar "region" "$AWS_REGION"
+    fi
+
     # Terraform plan
     print_substep "Generating Terraform execution plan..."
-    if ! terraform plan $TF_VAR_FLAGS -var="enable_global_accelerator=false" -var="enable_waf=false" -out=tfplan; then
+    if ! terraform plan -out=tfplan; then
         print_error "Terraform plan failed"
         exit 1
     fi
@@ -691,8 +1161,8 @@ deploy_terraform() {
     print_info "Fetching Terraform outputs..."
     terraform output
 
-    # Post-Terraform Cognito setup
-    setup_cognito_post_terraform
+    # Optionally create initial Cognito admin user (first-time deploy)
+    create_cognito_admin_user
 }
 
 # Step 2: Deploy Kubernetes infrastructure
@@ -705,7 +1175,7 @@ deploy_k8s_infrastructure() {
     # Configure kubectl
     print_substep "Configuring kubectl..."
     cd "$IAC_DIR"
-    local cluster_name=$(terraform output -raw cluster_name 2>/dev/null)
+    local cluster_name=$(_tf_output cluster_name || echo "")
 
     if [[ -z "$cluster_name" ]]; then
         print_error "Cannot get cluster name, please complete step 1 first"
@@ -810,18 +1280,11 @@ build_and_push_images() {
     local frontend_tag="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com/kolya-br-proxy-frontend:$(date +%Y%m%d-%H%M%S)"
 
     # Collect domain names for frontend build args (VITE_* are compiled at build time)
-    local fe_domain="${FRONTEND_DOMAIN:-}"
-    local api_domain="${API_DOMAIN:-}"
+    local fe_domain="${FRONTEND_DOMAIN:-$(_read_tfvar "frontend_domain")}"
+    local api_domain="${API_DOMAIN:-$(_read_tfvar "api_domain")}"
     if [[ -z "$fe_domain" || -z "$api_domain" ]]; then
-        # Try reading from existing cluster configmaps
-        fe_domain=$(kubectl get configmap frontend-config -n kbp -o jsonpath='{.data.VITE_MICROSOFT_REDIRECT_URI}' 2>/dev/null | sed 's|https://||;s|/auth/microsoft/callback||')
-        api_domain=$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_ALLOWED_ORIGINS}' 2>/dev/null | sed 's|.*,https://||;s|:[0-9]*$||')
-    fi
-    if [[ -z "$fe_domain" || -z "$api_domain" ]]; then
-        # Ask user for domain names
-        echo ""
-        read -p "  Frontend domain (e.g. kbp.kolya.fun): " fe_domain
-        read -p "  API domain (e.g. api.kbp.kolya.fun): " api_domain
+        print_error "frontend_domain or api_domain not set. Run './deploy-all.sh --step 0' first."
+        exit 1
     fi
     print_info "Frontend build args: API=https://$api_domain, Frontend=$fe_domain"
 
@@ -859,383 +1322,6 @@ detect_environment() {
     fi
 }
 
-# Configuration wizard for first-time setup
-# Collects all required values and generates secrets.yaml, configmaps, and ingress files
-run_config_wizard() {
-    local app_dir="$K8S_DIR/application"
-
-    print_header "Configuration Wizard"
-    echo "Please provide the following configuration values (leave blank for defaults where noted)"
-    echo ""
-
-    # --- Terraform outputs ---
-    print_substep "Fetching configuration from Terraform..."
-    local cfg_region="$AWS_REGION"
-    local cfg_rds_endpoint=""
-    local cfg_rds_database=""
-    local cfg_rds_port="5432"
-    local cfg_secrets_manager_name=""
-    local terraform_available=false
-
-    if [[ -d "$IAC_DIR" ]]; then
-        cd "$IAC_DIR"
-        if terraform output region &> /dev/null; then
-            terraform_available=true
-            cfg_region=$(terraform output -raw region 2>/dev/null || echo "$AWS_REGION")
-            cfg_rds_endpoint=$(terraform output -raw rds_cluster_endpoint 2>/dev/null || echo "")
-            cfg_rds_database=$(terraform output -raw rds_cluster_database_name 2>/dev/null || echo "")
-            cfg_rds_port=$(terraform output -raw rds_cluster_port 2>/dev/null || echo "5432")
-            cfg_secrets_manager_name=$(terraform output -raw backend_secrets_manager_name 2>/dev/null || echo "")
-
-            print_success "Retrieved from Terraform:"
-            echo "  AWS Region: $cfg_region"
-            [[ -n "$cfg_rds_endpoint" ]] && echo "  RDS Endpoint: $cfg_rds_endpoint"
-            [[ -n "$cfg_rds_database" ]] && echo "  RDS Database: $cfg_rds_database"
-            [[ -n "$cfg_rds_port" ]] && echo "  RDS Port: $cfg_rds_port"
-            [[ -n "$cfg_secrets_manager_name" ]] && echo "  Secrets Manager: $cfg_secrets_manager_name"
-        fi
-    fi
-
-    if [[ "$terraform_available" == "false" ]]; then
-        print_warning "Terraform outputs not available, manual input required"
-        read -p "AWS Region: " cfg_region
-        read -p "RDS Endpoint: " cfg_rds_endpoint
-        read -p "RDS Database: " cfg_rds_database
-        read -p "RDS Port [5432]: " cfg_rds_port
-        cfg_rds_port="${cfg_rds_port:-5432}"
-        read -p "Secrets Manager Secret Name: " cfg_secrets_manager_name
-    fi
-
-    # --- AWS Account ID ---
-    print_substep "Getting AWS Account ID..."
-    local cfg_account_id
-    cfg_account_id=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
-    if [[ -n "$cfg_account_id" ]]; then
-        print_success "AWS Account ID: $cfg_account_id"
-    else
-        print_warning "Could not auto-detect AWS Account ID"
-        read -p "Enter AWS Account ID: " cfg_account_id
-    fi
-
-    # --- Domain names ---
-    echo ""
-    print_substep "Domain configuration"
-    echo ""
-    echo "Please enter your domain names:"
-    echo ""
-
-    # Ensure stdin is available
-    exec < /dev/tty
-
-    read -p "Frontend domain (e.g. kbp.kolya.fun): " cfg_frontend_domain
-    read -p "API domain (e.g. api.kbp.kolya.fun): " cfg_api_domain
-
-    if [[ -z "$cfg_frontend_domain" || -z "$cfg_api_domain" ]]; then
-        print_error "Domain names cannot be empty"
-        exit 1
-    fi
-
-    # --- Database password ---
-    echo ""
-    print_substep "Database configuration"
-
-    # Try to get password from Terraform output (Secrets Manager)
-    local cfg_db_password=""
-    if [[ "$terraform_available" == "true" ]]; then
-        cd "$IAC_DIR"
-        local secret_name=$(terraform output -raw rds_secret_name 2>/dev/null || echo "")
-        if [[ -n "$secret_name" ]]; then
-            print_info "Retrieving RDS password from AWS Secrets Manager..."
-            cfg_db_password=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '.password' 2>/dev/null || echo "")
-            if [[ -n "$cfg_db_password" ]]; then
-                print_success "Retrieved RDS password from Secrets Manager"
-            else
-                print_warning "Failed to retrieve password from Secrets Manager"
-                read -sp "Enter RDS database password: " cfg_db_password
-                echo ""
-            fi
-        else
-            print_warning "Secrets Manager name not found in Terraform outputs"
-            read -sp "Enter RDS database password: " cfg_db_password
-            echo ""
-        fi
-    else
-        read -sp "Enter RDS database password: " cfg_db_password
-        echo ""
-    fi
-
-    # --- JWT Secret ---
-    echo ""
-    print_substep "JWT configuration"
-    echo "JWT Secret Key (leave blank to auto-generate):"
-    read -p "> " cfg_jwt_secret
-    if [[ -z "$cfg_jwt_secret" ]]; then
-        cfg_jwt_secret=$(openssl rand -base64 32)
-        print_success "Generated random JWT Secret: ${cfg_jwt_secret:0:20}..."
-    fi
-
-    # --- Auth provider selection (default: Cognito) ---
-    echo ""
-    print_substep "Authentication Provider"
-
-    # Check if Cognito is enabled in Terraform
-    local cognito_enabled=false
-    local cfg_cognito_user_pool_id=""
-    local cfg_cognito_client_id=""
-    local cfg_cognito_client_secret=""
-    local cfg_cognito_region="$cfg_region"
-
-    if [[ "$terraform_available" == "true" ]]; then
-        cd "$IAC_DIR"
-        cognito_enabled=$(terraform output -raw cognito_enabled 2>/dev/null || echo "false")
-
-        if [[ "$cognito_enabled" == "true" ]]; then
-            print_info "Retrieving Cognito configuration from Terraform..."
-            cfg_cognito_user_pool_id=$(terraform output -raw cognito_user_pool_id 2>/dev/null || echo "")
-            cfg_cognito_client_id=$(terraform output -raw cognito_app_client_id 2>/dev/null || echo "")
-            cfg_cognito_client_secret=$(terraform output -raw cognito_app_client_secret 2>/dev/null || echo "")
-            cfg_cognito_region="$cfg_region"
-
-            if [[ -n "$cfg_cognito_user_pool_id" && -n "$cfg_cognito_client_id" && -n "$cfg_cognito_client_secret" ]]; then
-                print_success "Retrieved Cognito configuration from Terraform"
-                echo "  User Pool ID: $cfg_cognito_user_pool_id"
-                echo "  Client ID: $cfg_cognito_client_id"
-                echo "  Region: $cfg_cognito_region"
-            else
-                print_warning "Failed to retrieve complete Cognito configuration"
-                cognito_enabled=false
-            fi
-        fi
-    fi
-
-    # Ask about additional auth providers
-    local cfg_auth_choice="1"  # Default to Cognito
-    local cfg_ms_client_id=""
-    local cfg_ms_client_secret=""
-    local cfg_ms_tenant_id=""
-
-    if [[ "$cognito_enabled" == "true" ]]; then
-        echo ""
-        echo "Cognito is configured. Do you want to add Microsoft Entra ID?"
-        echo "  1) Use Cognito only (default)"
-        echo "  2) Add Microsoft Entra ID (both providers)"
-        read -p "Select [1/2]: " cfg_auth_choice
-        cfg_auth_choice="${cfg_auth_choice:-1}"
-
-        if [[ "$cfg_auth_choice" == "2" ]]; then
-            cfg_auth_choice="3"  # Both providers
-            echo ""
-            print_substep "Microsoft Entra ID configuration"
-            read -p "Microsoft Client ID: " cfg_ms_client_id
-            read -sp "Microsoft Client Secret: " cfg_ms_client_secret
-            echo ""
-            read -p "Microsoft Tenant ID: " cfg_ms_tenant_id
-        fi
-    else
-        echo "  1) AWS Cognito (manual configuration)"
-        echo "  2) Microsoft Entra ID"
-        echo "  3) Both"
-        read -p "Select authentication method [1/2/3]: " cfg_auth_choice
-        cfg_auth_choice="${cfg_auth_choice:-1}"
-
-        if [[ "$cfg_auth_choice" == "2" || "$cfg_auth_choice" == "3" ]]; then
-            echo ""
-            print_substep "Microsoft Entra ID configuration"
-            read -p "Microsoft Client ID: " cfg_ms_client_id
-            read -sp "Microsoft Client Secret: " cfg_ms_client_secret
-            echo ""
-            read -p "Microsoft Tenant ID: " cfg_ms_tenant_id
-        fi
-
-        if [[ "$cfg_auth_choice" == "1" || "$cfg_auth_choice" == "3" ]]; then
-            echo ""
-            print_substep "AWS Cognito configuration"
-            read -p "Cognito User Pool ID: " cfg_cognito_user_pool_id
-            read -p "Cognito Client ID: " cfg_cognito_client_id
-            read -sp "Cognito Client Secret: " cfg_cognito_client_secret
-            echo ""
-            read -p "Cognito Region (blank to use ${cfg_region}): " cfg_cognito_region
-            cfg_cognito_region="${cfg_cognito_region:-$cfg_region}"
-        fi
-    fi
-
-    # --- ACM certificate ARNs ---
-    echo ""
-    print_substep "ACM certificate configuration"
-    echo "Listing certificates..."
-    aws acm list-certificates --region "${cfg_region}" --output table --no-cli-pager 2>/dev/null || true
-    echo ""
-    read -p "Frontend ACM Certificate ARN: " cfg_frontend_cert_arn
-    read -p "API ACM Certificate ARN: " cfg_api_cert_arn
-
-    # --- Build database URL ---
-    local cfg_database_url=""
-    if [[ -n "$cfg_rds_endpoint" && -n "$cfg_db_password" && -n "$cfg_rds_database" ]]; then
-        cfg_database_url="postgresql+asyncpg://postgres:${cfg_db_password}@${cfg_rds_endpoint}:${cfg_rds_port}/${cfg_rds_database}"
-        print_success "Generated database URL from Terraform outputs"
-    else
-        echo ""
-        read -p "Enter full database URL: " cfg_database_url
-    fi
-
-    # --- Final confirmation ---
-    echo ""
-    print_header "Configuration Summary - Please Review"
-    echo ""
-    echo "=== AWS Configuration ==="
-    echo "  AWS Region: $cfg_region"
-    echo "  AWS Account ID: $cfg_account_id"
-    echo ""
-    echo "=== Domain Configuration ==="
-    echo "  Frontend Domain: $cfg_frontend_domain"
-    echo "  API Domain: $cfg_api_domain"
-    echo ""
-    echo "=== Database Configuration ==="
-    echo "  RDS Endpoint: $cfg_rds_endpoint"
-    echo "  RDS Database: $cfg_rds_database"
-    echo "  RDS Port: $cfg_rds_port"
-    echo "  Database URL: postgresql+asyncpg://postgres:****@${cfg_rds_endpoint}:${cfg_rds_port}/${cfg_rds_database}"
-    echo ""
-    echo "=== Security Configuration ==="
-    echo "  JWT Secret: ${cfg_jwt_secret:0:20}... (truncated)"
-    echo ""
-    echo "=== Authentication Configuration ==="
-    if [[ "$cfg_auth_choice" == "1" ]]; then
-        echo "  Provider: AWS Cognito only"
-    elif [[ "$cfg_auth_choice" == "2" ]]; then
-        echo "  Provider: Microsoft Entra ID only"
-    else
-        echo "  Provider: Both (Cognito + Microsoft)"
-    fi
-
-    if [[ -n "$cfg_ms_client_id" ]]; then
-        echo ""
-        echo "  Microsoft Entra ID:"
-        echo "    Client ID: $cfg_ms_client_id"
-        echo "    Client Secret: ${cfg_ms_client_secret:0:10}... (truncated)"
-        echo "    Tenant ID: $cfg_ms_tenant_id"
-    fi
-
-    if [[ -n "$cfg_cognito_user_pool_id" ]]; then
-        echo ""
-        echo "  AWS Cognito:"
-        echo "    User Pool ID: $cfg_cognito_user_pool_id"
-        echo "    Client ID: $cfg_cognito_client_id"
-        echo "    Client Secret: ${cfg_cognito_client_secret:0:10}... (truncated)"
-        echo "    Region: $cfg_cognito_region"
-    fi
-
-    echo ""
-    echo "=== SSL Certificate Configuration ==="
-    echo "  Frontend Certificate ARN: $cfg_frontend_cert_arn"
-    echo "  API Certificate ARN: $cfg_api_cert_arn"
-    echo ""
-    echo "=== Deployment Environment ==="
-    echo "  Environment: $DEPLOY_ENV"
-    echo ""
-    print_warning "The following files will be generated:"
-    echo "  - Secrets → AWS Secrets Manager (via ESO)"
-    echo "  - application/backend-configmap.yaml"
-    echo "  - application/frontend-configmap.yaml"
-    echo "  - application/backend-deployment.yaml ($DEPLOY_ENV resources)"
-    echo "  - application/frontend-deployment.yaml ($DEPLOY_ENV resources)"
-    echo "  - application/hpa-backend.yaml ($DEPLOY_ENV replicas)"
-    echo "  - application/hpa-frontend.yaml ($DEPLOY_ENV replicas)"
-    echo "  - application/ingress-frontend.yaml"
-    echo "  - application/ingress-api.yaml"
-    echo ""
-    read -p "Confirm and generate configuration files? (yes/no): " confirm_config
-    if [[ "$confirm_config" != "yes" ]]; then
-        print_error "Configuration cancelled"
-        exit 1
-    fi
-
-    # --- Push secrets to AWS Secrets Manager ---
-    print_substep "Pushing secrets to AWS Secrets Manager..."
-    local secret_name="${cfg_secrets_manager_name}"
-    if [[ -z "$secret_name" ]]; then
-        print_error "Secrets Manager name not found. Run 'terraform apply' (Step 1) first."
-        exit 1
-    fi
-    local secret_json
-    secret_json=$(jq -n \
-      --arg db_url "$cfg_database_url" \
-      --arg jwt "$cfg_jwt_secret" \
-      --arg ms_client_id "$cfg_ms_client_id" \
-      --arg ms_client_secret "$cfg_ms_client_secret" \
-      --arg ms_tenant_id "$cfg_ms_tenant_id" \
-      --arg cognito_user_pool_id "$cfg_cognito_user_pool_id" \
-      --arg cognito_client_id "$cfg_cognito_client_id" \
-      --arg cognito_client_secret "$cfg_cognito_client_secret" \
-      --arg cognito_region "$cfg_cognito_region" \
-      --arg frontend_cert_arn "$cfg_frontend_cert_arn" \
-      --arg api_cert_arn "$cfg_api_cert_arn" \
-      --arg account_id "$cfg_account_id" \
-      --arg region "$cfg_region" \
-      '{
-        "database-url": $db_url,
-        "jwt-secret-key": $jwt,
-        "aws-access-key-id": "",
-        "aws-secret-access-key": "",
-        "microsoft-client-id": $ms_client_id,
-        "microsoft-client-secret": $ms_client_secret,
-        "microsoft-tenant-id": $ms_tenant_id,
-        "cognito-user-pool-id": $cognito_user_pool_id,
-        "cognito-client-id": $cognito_client_id,
-        "cognito-client-secret": $cognito_client_secret,
-        "cognito-region": $cognito_region,
-        "acm-certificate-frontend-arn": $frontend_cert_arn,
-        "acm-certificate-api-arn": $api_cert_arn,
-        "aws-account-id": $account_id,
-        "aws-region": $region
-      }')
-
-    aws secretsmanager put-secret-value \
-      --secret-id "$secret_name" \
-      --secret-string "$secret_json" \
-      --region "$cfg_region" \
-      --no-cli-pager
-    print_success "Secrets pushed to AWS Secrets Manager: $secret_name"
-
-    # --- Generate ConfigMaps from templates ---
-    print_substep "Generating ConfigMaps..."
-    local cfg_kbr_env="$DEPLOY_ENV"
-    export FRONTEND_DOMAIN="$cfg_frontend_domain"
-    export API_DOMAIN="$cfg_api_domain"
-    export API_PORT_SUFFIX=""  # Set to ":8443" by Step 5 when Global Accelerator is enabled
-    export AWS_REGION="$cfg_region"
-    export KBR_ENV="$cfg_kbr_env"
-    export SECRETS_MANAGER_SECRET_NAME="$secret_name"
-
-    # Get COGNITO_DOMAIN from Terraform output or construct from project naming convention
-    if [[ "$terraform_available" == "true" ]]; then
-        cd "$IAC_DIR"
-        export COGNITO_DOMAIN=$(terraform output -raw cognito_domain 2>/dev/null || echo "")
-    fi
-    if [[ -z "$COGNITO_DOMAIN" ]]; then
-        # Fallback: derive from frontend domain (replace dots with hyphens)
-        export COGNITO_DOMAIN=$(echo "$cfg_frontend_domain" | tr '.' '-')
-        print_warning "Could not get Cognito domain from Terraform, using derived: $COGNITO_DOMAIN"
-    fi
-    print_info "Cognito domain: $COGNITO_DOMAIN"
-
-    envsubst < "$app_dir/backend-configmap.yaml.template" > "$app_dir/backend-configmap.yaml"
-    envsubst < "$app_dir/frontend-configmap.yaml.template" > "$app_dir/frontend-configmap.yaml"
-    print_success "Generated: application/backend-configmap.yaml"
-    print_success "Generated: application/frontend-configmap.yaml"
-
-    envsubst < "$app_dir/secret-store.yaml.template" > "$app_dir/secret-store.yaml"
-    envsubst < "$app_dir/external-secret.yaml.template" > "$app_dir/external-secret.yaml"
-    print_success "Generated: application/secret-store.yaml"
-    print_success "Generated: application/external-secret.yaml"
-
-    # Ingress files will be auto-generated during deploy.sh after ESO syncs the k8s secret
-    print_info "Ingress 配置将在部署时自动生成（依赖 ESO 同步 k8s secret）"
-
-    echo ""
-    print_success "Configuration wizard complete!"
-}
-
 # Step 4: Deploy application to EKS
 deploy_application() {
     print_step "4" "Deploy Application to EKS"
@@ -1251,39 +1337,21 @@ deploy_application() {
 
     cd "$K8S_DIR"
 
-    # Always check and confirm configuration with user
-    print_info "Checking application configuration..."
+    # Generate k8s configs from tfvars (non-interactive)
+    generate_k8s_configs
 
-    local has_config=true
-    if [[ ! -f "application/external-secret.yaml" ]]; then
-        print_warning "external-secret.yaml not found"
-        has_config=false
-    fi
-    if [[ ! -f "application/backend-configmap.yaml" || ! -f "application/frontend-configmap.yaml" ]]; then
-        print_warning "ConfigMaps not found"
-        has_config=false
-    fi
-
-    if [[ "$has_config" == "true" ]]; then
-        print_success "Configuration files found"
-        echo ""
-        print_warning "Do you want to use existing configuration or regenerate?"
-        echo "  y) Use existing configuration (skip wizard)"
-        echo "  n) Run configuration wizard to regenerate (default)"
-        echo ""
-        read -p "Use existing configuration? (y/N): " -n 1 -r
-        echo ""
-        echo ""
-
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            print_success "Using existing configuration files"
+    # Push secrets if not yet present
+    local secret_name
+    secret_name=$(cd "$IAC_DIR" && _tf_output backend_secrets_manager_name || echo "")
+    if [[ -n "$secret_name" ]]; then
+        local existing_secret
+        existing_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null || echo "")
+        if [[ -z "$existing_secret" || "$existing_secret" == "{}" ]]; then
+            print_info "Secrets Manager is empty, pushing secrets..."
+            push_secrets_to_sm
         else
-            print_info "Starting configuration wizard..."
-            run_config_wizard
+            print_success "Secrets already present in Secrets Manager"
         fi
-    else
-        print_info "Configuration files missing, starting wizard..."
-        run_config_wizard
     fi
 
     # Always generate Deployment and HPA from templates (env-aware resources)
@@ -1356,16 +1424,19 @@ deploy_application() {
     # Auto-enable WAF now that ALBs are ready
     print_substep "Auto-enabling WAF (ALBs are ready)..."
     cd "$IAC_DIR"
-    if terraform apply $TF_VAR_FLAGS -var="enable_waf=true" -target=module.waf -auto-approve; then
+    _write_tfvar "enable_waf" "true" "bare"
+    if terraform apply -target=module.waf -auto-approve; then
         print_success "WAF enabled successfully"
     else
         print_warning "WAF auto-enable failed. You can retry manually:"
-        echo "  cd $IAC_DIR && terraform apply $TF_VAR_FLAGS -var=\"enable_waf=true\" -target=module.waf -auto-approve"
+        echo "  cd $IAC_DIR && terraform apply -target=module.waf -auto-approve"
     fi
 
-    # Get domain names from configmap
-    local frontend_domain=$(kubectl get configmap frontend-config -n kbp -o jsonpath='{.data.VITE_MICROSOFT_REDIRECT_URI}' 2>/dev/null | sed 's|https://||;s|/auth/microsoft/callback||')
-    local api_domain=$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_ALLOWED_ORIGINS}' 2>/dev/null | sed 's|https://[^,]*,https://||;s|:[0-9]*$||')
+    # Get domain names from tfvars
+    local frontend_domain
+    frontend_domain=$(_read_tfvar "frontend_domain")
+    local api_domain
+    api_domain=$(_read_tfvar "api_domain")
 
     if [[ -z "$frontend_domain" || -z "$api_domain" ]]; then
         print_warning "Could not determine domain names from configmaps"
@@ -1468,12 +1539,14 @@ EOF
     fi
 }
 
-# Helper: read current configmap values from the cluster
+# Helper: read current config values from tfvars and terraform outputs
 _read_configmap_env_vars() {
-    export FRONTEND_DOMAIN=$(kubectl get configmap frontend-config -n kbp -o jsonpath='{.data.VITE_MICROSOFT_REDIRECT_URI}' 2>/dev/null | sed 's|https://||;s|/auth/microsoft/callback||')
-    export API_DOMAIN=$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_ALLOWED_ORIGINS}' 2>/dev/null | sed 's|https://[^,]*,https://||;s|:[0-9]*$||')
+    export FRONTEND_DOMAIN=$(_read_tfvar "frontend_domain")
+    export API_DOMAIN=$(_read_tfvar "api_domain")
+
+    # These still come from cluster configmaps or terraform outputs as fallback
     export KBR_ENV=$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_ENV}' 2>/dev/null)
-    export AWS_REGION=$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_AWS_REGION}' 2>/dev/null)
+    export AWS_REGION="${AWS_REGION:-$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_AWS_REGION}' 2>/dev/null)}"
     export COGNITO_DOMAIN=$(kubectl get configmap backend-config -n kbp -o jsonpath='{.data.KBR_COGNITO_DOMAIN}' 2>/dev/null)
 
     if [[ -z "$FRONTEND_DOMAIN" || -z "$API_DOMAIN" ]]; then
@@ -1523,7 +1596,7 @@ deploy_global_accelerator() {
 
     # Detect current GA status from terraform state
     local ga_currently_enabled=false
-    local ga_dns=$(terraform output -raw global_accelerator_dns_name 2>/dev/null || echo "")
+    local ga_dns=$(_tf_output global_accelerator_dns_name || echo "")
     if [[ -n "$ga_dns" && "$ga_dns" != "" ]]; then
         ga_currently_enabled=true
     fi
@@ -1546,16 +1619,12 @@ deploy_global_accelerator() {
         # --- Disable GA ---
         print_header "Disabling Global Accelerator"
 
-        # Preserve current WAF state by checking if WAF resources exist in terraform state
-        local waf_enabled="false"
-        if terraform state list 2>/dev/null | grep -q "module.waf"; then
-            waf_enabled="true"
-        fi
-        print_info "Preserving WAF state: enable_waf=$waf_enabled"
+        # Write to tfvars (WAF state is already persisted there)
+        _write_tfvar "enable_global_accelerator" "false" "bare"
 
         # Terraform plan & apply
         print_substep "Running Terraform to destroy Global Accelerator..."
-        terraform plan $TF_VAR_FLAGS -var="enable_global_accelerator=false" -var="enable_waf=$waf_enabled" -out=tfplan-ga
+        terraform plan -out=tfplan-ga
         if [[ $? -ne 0 ]]; then
             print_error "Terraform plan failed"
             rm -f tfplan-ga
@@ -1601,9 +1670,9 @@ deploy_global_accelerator() {
 
         # Verify ALBs exist
         print_substep "Verifying ALBs exist..."
-        local ga_frontend_alb_name=$(terraform output -raw ga_frontend_alb_name 2>/dev/null || echo "kolya-br-proxy-frontend-alb")
-        local ga_api_alb_name=$(terraform output -raw ga_api_alb_name 2>/dev/null || echo "kolya-br-proxy-api-alb")
-        local ga_region=$(terraform output -raw region 2>/dev/null || echo "$AWS_REGION")
+        local ga_frontend_alb_name=$(_tf_output ga_frontend_alb_name || echo "kolya-br-proxy-frontend-alb")
+        local ga_api_alb_name=$(_tf_output ga_api_alb_name || echo "kolya-br-proxy-api-alb")
+        local ga_region=$(_tf_output region || echo "$AWS_REGION")
         local frontend_alb_arn=$(aws elbv2 describe-load-balancers \
             --names "$ga_frontend_alb_name" \
             --region "$ga_region" \
@@ -1641,14 +1710,10 @@ deploy_global_accelerator() {
         local current_workspace=$(terraform workspace show 2>/dev/null || echo "default")
         print_info "Terraform workspace: $current_workspace"
 
-        # Preserve current WAF state by checking if WAF resources exist in terraform state
-        local waf_enabled="false"
-        if terraform state list 2>/dev/null | grep -q "module.waf"; then
-            waf_enabled="true"
-        fi
-        print_info "Preserving WAF state: enable_waf=$waf_enabled"
+        # Write to tfvars (WAF state is already persisted there)
+        _write_tfvar "enable_global_accelerator" "true" "bare"
 
-        terraform plan $TF_VAR_FLAGS -var="enable_global_accelerator=true" -var="enable_waf=$waf_enabled" -out=tfplan-ga
+        terraform plan -out=tfplan-ga
         if [[ $? -ne 0 ]]; then
             print_error "Terraform plan failed"
             rm -f tfplan-ga
@@ -1672,7 +1737,7 @@ deploy_global_accelerator() {
 
         # Show results
         echo ""
-        ga_dns=$(terraform output -raw global_accelerator_dns_name 2>/dev/null || echo "N/A")
+        ga_dns=$(_tf_output global_accelerator_dns_name || echo "N/A")
         local ga_ips=$(terraform output -json global_accelerator_static_ips 2>/dev/null || echo "[]")
 
         print_success "Global Accelerator deployed!"
@@ -1711,9 +1776,9 @@ show_deployment_summary() {
     echo ""
 
     # Get key information
-    local cluster_name=$(terraform output -raw cluster_name 2>/dev/null || echo "N/A")
-    local vpc_id=$(terraform output -raw vpc_id 2>/dev/null || echo "N/A")
-    local rds_endpoint=$(terraform output -raw rds_cluster_endpoint 2>/dev/null || echo "N/A")
+    local cluster_name=$(_tf_output cluster_name || echo "N/A")
+    local vpc_id=$(_tf_output vpc_id || echo "N/A")
+    local rds_endpoint=$(_tf_output rds_cluster_endpoint || echo "N/A")
 
     print_info "Infrastructure info:"
     echo "  EKS Cluster: $cluster_name"
@@ -1747,6 +1812,11 @@ main() {
         echo ""
 
         case $SPECIFIC_STEP in
+            0)
+                check_dependencies
+                check_aws_credentials
+                configure_tfvars
+                ;;
             1)
                 check_dependencies
                 check_aws_credentials
@@ -1791,6 +1861,7 @@ main() {
     if [[ "$SKIP_CONFIRMATION" == "false" ]]; then
         echo ""
         print_warning "About to run the full deployment flow, including:"
+        echo "  0️⃣  Configure terraform.tfvars"
         echo "  1️⃣  Terraform - AWS infrastructure"
         echo "  2️⃣  Helm - Kubernetes infrastructure"
         echo "  3️⃣  Docker - Build and push images"
@@ -1808,6 +1879,7 @@ main() {
     fi
 
     # Execute all steps
+    configure_tfvars
     deploy_terraform
     deploy_k8s_infrastructure
     build_and_push_images

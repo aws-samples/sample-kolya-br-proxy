@@ -71,6 +71,7 @@ No resources.
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
 | <a name="input_account"></a> [account](#input\_account) | AWS account | `string` | n/a | yes |
+| <a name="input_api_domain"></a> [api\_domain](#input\_api\_domain) | API domain (e.g. api.kbp.kolya.fun) | `string` | `""` | no |
 | <a name="input_cognito_access_token_validity"></a> [cognito\_access\_token\_validity](#input\_cognito\_access\_token\_validity) | Cognito access token validity in minutes | `number` | `60` | no |
 | <a name="input_cognito_allowed_email_domains"></a> [cognito\_allowed\_email\_domains](#input\_cognito\_allowed\_email\_domains) | List of allowed email domains for Cognito user registration (e.g., ['example.com', 'company.com']) | `list(string)` | <pre>[<br/>  "amazon.com"<br/>]</pre> | no |
 | <a name="input_cognito_callback_urls"></a> [cognito\_callback\_urls](#input\_cognito\_callback\_urls) | List of allowed callback URLs for Cognito OAuth | `list(string)` | <pre>[<br/>  "http://localhost:9000/auth/cognito/callback"<br/>]</pre> | no |
@@ -81,6 +82,7 @@ No resources.
 | <a name="input_enable_cognito"></a> [enable\_cognito](#input\_enable\_cognito) | Enable AWS Cognito for user authentication | `bool` | `true` | no |
 | <a name="input_enable_global_accelerator"></a> [enable\_global\_accelerator](#input\_enable\_global\_accelerator) | Enable AWS Global Accelerator for reduced latency | `bool` | `false` | no |
 | <a name="input_enable_waf"></a> [enable\_waf](#input\_enable\_waf) | Enable AWS WAF for rate limiting and security protection on ALBs | `bool` | `false` | no |
+| <a name="input_frontend_domain"></a> [frontend\_domain](#input\_frontend\_domain) | Frontend domain (e.g. kbp.kolya.fun) | `string` | `""` | no |
 | <a name="input_ga_api_alb_name"></a> [ga\_api\_alb\_name](#input\_ga\_api\_alb\_name) | Name of the API ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
 | <a name="input_ga_frontend_alb_name"></a> [ga\_frontend\_alb\_name](#input\_ga\_frontend\_alb\_name) | Name of the frontend ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
 | <a name="input_project_name"></a> [project\_name](#input\_project\_name) | The name of the project | `string` | `"kolya-br-proxy"` | no |
@@ -97,6 +99,7 @@ No resources.
 
 | Name | Description |
 |------|-------------|
+| <a name="output_api_domain"></a> [api\_domain](#output\_api\_domain) | API domain |
 | <a name="output_backend_secrets_manager_name"></a> [backend\_secrets\_manager\_name](#output\_backend\_secrets\_manager\_name) | Name of the Secrets Manager secret for backend |
 | <a name="output_cluster_arn"></a> [cluster\_arn](#output\_cluster\_arn) | EKS cluster ARN |
 | <a name="output_cluster_endpoint"></a> [cluster\_endpoint](#output\_cluster\_endpoint) | Endpoint for EKS control plane |
@@ -112,6 +115,7 @@ No resources.
 | <a name="output_cognito_user_pool_domain_url"></a> [cognito\_user\_pool\_domain\_url](#output\_cognito\_user\_pool\_domain\_url) | Full URL of the Cognito User Pool domain |
 | <a name="output_cognito_user_pool_id"></a> [cognito\_user\_pool\_id](#output\_cognito\_user\_pool\_id) | ID of the Cognito User Pool |
 | <a name="output_eks_nodes_security_group_id"></a> [eks\_nodes\_security\_group\_id](#output\_eks\_nodes\_security\_group\_id) | ID of the EKS nodes security group |
+| <a name="output_frontend_domain"></a> [frontend\_domain](#output\_frontend\_domain) | Frontend domain |
 | <a name="output_global_accelerator_dns_name"></a> [global\_accelerator\_dns\_name](#output\_global\_accelerator\_dns\_name) | DNS name of the Global Accelerator |
 | <a name="output_global_accelerator_enabled"></a> [global\_accelerator\_enabled](#output\_global\_accelerator\_enabled) | Whether Global Accelerator is enabled |
 | <a name="output_global_accelerator_static_ips"></a> [global\_accelerator\_static\_ips](#output\_global\_accelerator\_static\_ips) | Static IP addresses of the Global Accelerator |

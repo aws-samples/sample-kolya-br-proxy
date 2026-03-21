@@ -34,6 +34,54 @@ AWS_REGION="${AWS_REGION:-}"
 AWS_ACCOUNT_ID=""
 TF_WORKSPACE=""
 
+# Path to terraform.tfvars
+TFVARS_FILE="$IAC_DIR/terraform.tfvars"
+
+# Read a single value from terraform.tfvars
+_read_tfvar() {
+    local key="$1"
+    if [[ ! -f "$TFVARS_FILE" ]]; then
+        echo ""
+        return
+    fi
+    local raw
+    raw=$(awk -v k="$key" '$1 == k && $2 == "=" { $1=""; $2=""; sub(/^[[:space:]]+/, ""); print; exit }' "$TFVARS_FILE")
+    if [[ "$raw" == \"*\" ]]; then
+        raw="${raw#\"}"
+        raw="${raw%\"}"
+    fi
+    echo "$raw"
+}
+
+# Write/update a single key-value pair in terraform.tfvars (idempotent)
+_write_tfvar() {
+    local key="$1"
+    local value="$2"
+    local type="${3:-string}"
+
+    if [[ ! -f "$TFVARS_FILE" ]]; then
+        touch "$TFVARS_FILE"
+    fi
+
+    local new_value
+    if [[ "$type" == "bare" ]]; then
+        new_value="$value"
+    else
+        new_value="\"${value}\""
+    fi
+
+    if grep -qE "^${key}\s*=" "$TFVARS_FILE" 2>/dev/null; then
+        local tmpfile
+        tmpfile=$(mktemp)
+        awk -v k="$key" -v v="$new_value" '
+            $1 == k && $2 == "=" { print k " = " v; next }
+            { print }
+        ' "$TFVARS_FILE" > "$tmpfile" && mv "$tmpfile" "$TFVARS_FILE"
+    else
+        echo "${key} = ${new_value}" >> "$TFVARS_FILE"
+    fi
+}
+
 # Print functions
 print_banner() {
     echo ""
@@ -221,12 +269,59 @@ verify_aws_identity() {
     echo ""
 }
 
+# Disable WAF and Global Accelerator via Terraform BEFORE deleting K8s/ALBs.
+# These modules have data "aws_lb" lookups that fail if ALBs are gone.
+disable_waf_and_ga() {
+    print_header "Pre-cleanup: Disable WAF & Global Accelerator"
+
+    cd "$IAC_DIR"
+
+    local needs_apply=false
+
+    # Check if WAF is enabled
+    if terraform state list 2>/dev/null | grep -q "module.waf"; then
+        print_substep "WAF is enabled, disabling..."
+        _write_tfvar "enable_waf" "false" "bare"
+        needs_apply=true
+    else
+        print_info "WAF not in state, skipping"
+    fi
+
+    # Check if GA is enabled
+    if terraform state list 2>/dev/null | grep -q "module.global_accelerator"; then
+        print_substep "Global Accelerator is enabled, disabling..."
+        _write_tfvar "enable_global_accelerator" "false" "bare"
+        needs_apply=true
+    else
+        print_info "Global Accelerator not in state, skipping"
+    fi
+
+    if [[ "$needs_apply" == "true" ]]; then
+        print_substep "Applying Terraform to remove WAF/GA (so ALBs can be safely deleted)..."
+        if terraform apply -auto-approve; then
+            print_success "WAF/GA removed successfully"
+        else
+            print_warning "Terraform apply failed. Attempting state removal as fallback..."
+            # Fallback: remove from state directly so destroy doesn't try to read ALBs
+            terraform state rm 'module.waf' 2>/dev/null || true
+            terraform state rm 'module.global_accelerator' 2>/dev/null || true
+            print_warning "Removed WAF/GA from state. Some AWS resources may need manual cleanup."
+        fi
+    else
+        print_success "WAF and GA already disabled, nothing to do"
+    fi
+}
+
 # Check if EKS cluster exists and clean up k8s resources if so
 cleanup_k8s_resources() {
     print_header "Checking EKS Cluster"
 
     local NAMESPACE="kbp"
-    local CLUSTER_NAME="kbr-proxy-eks-${AWS_REGION}-${TF_WORKSPACE}"
+    # Derive cluster name from project_name_alias (same pattern as main.tf)
+    local alias
+    alias=$(_read_tfvar "project_name_alias")
+    alias="${alias:-kbr-proxy}"
+    local CLUSTER_NAME="${alias}-eks-${AWS_REGION}-${TF_WORKSPACE}"
 
     # Check if EKS cluster exists
     print_substep "Checking for EKS cluster: $CLUSTER_NAME ..."
@@ -334,9 +429,9 @@ cleanup_k8s_resources() {
     print_success "Kubernetes resources cleanup complete"
 }
 
-# Configure Terraform backend and workspace, then destroy
-run_terraform_destroy() {
-    print_header "Terraform Destroy"
+# Initialize Terraform backend and select workspace (shared by disable_waf_and_ga + destroy)
+init_terraform() {
+    print_header "Terraform Initialization"
 
     cd "$IAC_DIR"
 
@@ -410,32 +505,38 @@ run_terraform_destroy() {
     fi
     print_success "Workspace '$TF_WORKSPACE' exists"
 
-    local selected_workspace="$TF_WORKSPACE"
-
-    if [[ "$selected_workspace" != "$current_workspace" ]]; then
-        print_substep "Switching to workspace: $selected_workspace"
-        terraform workspace select "$selected_workspace"
-        print_success "Switched to workspace: $selected_workspace"
+    if [[ "$TF_WORKSPACE" != "$current_workspace" ]]; then
+        print_substep "Switching to workspace: $TF_WORKSPACE"
+        terraform workspace select "$TF_WORKSPACE"
+        print_success "Switched to workspace: $TF_WORKSPACE"
     fi
 
-    # 4. Build TF var flags
-    local tf_var_flags="-var=account=${AWS_ACCOUNT_ID} -var=region=${AWS_REGION}"
+    # 4. Ensure account/region are in tfvars
+    _write_tfvar "account" "$AWS_ACCOUNT_ID"
+    _write_tfvar "region" "$AWS_REGION"
+}
 
-    # 5. Show plan for destroy
+# Destroy remaining Terraform resources
+run_terraform_destroy() {
+    print_header "Terraform Destroy"
+
+    cd "$IAC_DIR"
+
+    # Show plan for destroy
     print_substep "Generating destroy plan..."
     echo ""
-    if ! terraform plan $tf_var_flags -destroy; then
+    if ! terraform plan -destroy; then
         print_error "Terraform destroy plan failed"
         exit 1
     fi
 
-    # 6. Final confirmation
+    # Final confirmation
     echo ""
     echo -e "${RED}════════════════════════════════════════════════════════════════${NC}"
     echo -e "${RED}  WARNING: This will PERMANENTLY destroy all resources!${NC}"
     echo -e "${RED}  Account:   $AWS_ACCOUNT_ID${NC}"
     echo -e "${RED}  Region:    $AWS_REGION${NC}"
-    echo -e "${RED}  Workspace: $selected_workspace${NC}"
+    echo -e "${RED}  Workspace: $TF_WORKSPACE${NC}"
     echo -e "${RED}════════════════════════════════════════════════════════════════${NC}"
     echo ""
     read -p "Type 'destroy' to confirm: " destroy_confirm
@@ -444,9 +545,9 @@ run_terraform_destroy() {
         exit 0
     fi
 
-    # 7. Execute destroy
+    # Execute destroy
     print_substep "Destroying resources..."
-    if ! terraform destroy $tf_var_flags -auto-approve; then
+    if ! terraform destroy -auto-approve; then
         print_error "Terraform destroy failed"
         exit 1
     fi
@@ -455,7 +556,7 @@ run_terraform_destroy() {
     print_success "All resources destroyed successfully"
     print_info "Account: $AWS_ACCOUNT_ID"
     print_info "Region: $AWS_REGION"
-    print_info "Workspace: $selected_workspace"
+    print_info "Workspace: $TF_WORKSPACE"
 }
 
 # Main
@@ -463,8 +564,10 @@ main() {
     parse_args "$@"
     print_banner
     verify_aws_identity
-    cleanup_k8s_resources
-    run_terraform_destroy
+    init_terraform              # Init backend + select workspace (needed by all subsequent steps)
+    disable_waf_and_ga          # Terraform apply to remove WAF/GA (their data sources need ALBs alive)
+    cleanup_k8s_resources       # Delete K8s resources (Ingress → ALBs get destroyed here)
+    run_terraform_destroy       # Destroy remaining infrastructure
 }
 
 main "$@"

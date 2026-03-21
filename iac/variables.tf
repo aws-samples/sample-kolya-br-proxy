@@ -1,3 +1,15 @@
+variable "frontend_domain" {
+  description = "Frontend domain (e.g. kbp.kolya.fun)"
+  type        = string
+  default     = ""
+}
+
+variable "api_domain" {
+  description = "API domain (e.g. api.kbp.kolya.fun)"
+  type        = string
+  default     = ""
+}
+
 variable "project_name" {
   description = "The name of the project"
   type        = string

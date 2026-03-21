@@ -5,24 +5,29 @@
 account = "612674025488"
 region  = "us-west-2"
 
+# Domain configuration (used by Cognito callback URLs and deploy scripts)
+frontend_domain = "kbp.kolya.fun"
+api_domain      = "api.kbp.kolya.fun"
+
 # Enable Cognito authentication
 enable_cognito = true
 
-# Cognito OAuth callback URLs
-# Add all URLs where users can be redirected after authentication
-cognito_callback_urls = [
-  "http://localhost:9000/auth/cognito/callback",           # Local development
-  "https://kbp.kolya.fun/auth/cognito/callback"            # Production
-]
-
-# Cognito logout URLs
-# Add all URLs where users can be redirected after logout
-cognito_logout_urls = [
-  "http://localhost:9000",                                  # Local development
-  "https://kbp.kolya.fun"                                   # Production
-]
+# Cognito callback URLs are auto-derived from frontend_domain when set.
+# Only override these if you need custom callback URLs:
+# cognito_callback_urls = [
+#   "http://localhost:9000/auth/cognito/callback",
+#   "https://kbp.kolya.fun/auth/cognito/callback"
+# ]
+# cognito_logout_urls = [
+#   "http://localhost:9000",
+#   "https://kbp.kolya.fun"
+# ]
 
 # Token validity settings (optional, defaults shown)
 cognito_access_token_validity  = 60    # minutes
 cognito_id_token_validity      = 60    # minutes
 cognito_refresh_token_validity = 30    # days
+
+# Feature toggles (auto-detected from state by Step 0)
+# enable_waf                  = false
+# enable_global_accelerator   = false

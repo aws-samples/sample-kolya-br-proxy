@@ -1,3 +1,14 @@
+# Domain Outputs
+output "frontend_domain" {
+  description = "Frontend domain"
+  value       = var.frontend_domain
+}
+
+output "api_domain" {
+  description = "API domain"
+  value       = var.api_domain
+}
+
 # General Outputs
 output "region" {
   description = "AWS region"
