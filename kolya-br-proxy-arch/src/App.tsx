@@ -379,19 +379,38 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
       <div>
         <h3 style={{ color: COLORS.amber, marginBottom: 8 }}>Infrastructure — Terraform + EKS</h3>
         <p style={{ color: COLORS.textMuted, marginBottom: 12, fontSize: 13 }}>
-          AWS 账号 612674025488 / us-west-2。IaC 由 Terraform 管理。
+          IaC 由 Terraform 管理，<code>terraform.tfvars</code> 是所有配置的唯一来源。
         </p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <Card color={COLORS.amber} title="terraform.tfvars — 单一配置来源">
+            account / region — AWS 账号和区域<br/>
+            frontend_domain / api_domain — 域名<br/>
+            project_name / project_name_alias — 资源命名<br/>
+            enable_waf / enable_global_accelerator — 功能开关<br/>
+            enable_cognito — 认证方式选择<br/>
+            cognito_allowed_email_domains — 邮箱白名单<br/>
+            <span style={{ color: COLORS.amber, fontSize: 10 }}>所有步骤和脚本统一从此文件读取配置</span>
+          </Card>
+          <Card color={COLORS.amber} title="deploy-all.sh — 部署流程">
+            Step 0 — configure_tfvars（检测/写入配置）<br/>
+            Step 1 — Terraform init + plan + apply<br/>
+            Step 2 — Helm charts（ALB Controller 等）<br/>
+            Step 3 — Docker 构建推送到 ECR<br/>
+            Step 4 — K8s 应用部署 + 自动启用 WAF<br/>
+            Step 5 — Global Accelerator 开关<br/>
+            <span style={{ color: COLORS.amber, fontSize: 10 }}>支持 --step N 单步执行，--yes 跳过确认</span>
+          </Card>
           <Card color={COLORS.amber} title="Terraform 模块">
             vpc — VPC、子网、NAT GW<br/>
             eks-karpenter — 节点自动扩缩<br/>
             eks-addons — ALB controller、CoreDNS<br/>
             cognito — User Pool & App Client<br/>
             rds-aurora-postgresql — DB 集群<br/>
+            waf — Web Application Firewall<br/>
             global-accelerator — Anycast IP
           </Card>
           <Card color={COLORS.amber} title="Kubernetes 资源">
-            Namespace: kolya-br-proxy<br/>
+            Namespace: kbp<br/>
             Backend Deployment + HPA<br/>
             Frontend Deployment + HPA<br/>
             ConfigMaps · Secrets · Services<br/>
@@ -407,12 +426,20 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
             External Secrets Operator 同步密钥<br/>
             AWS Secrets Manager → K8s Secrets<br/>
             refreshInterval: 1h 自动刷新<br/>
-            deploy-all.sh 推送密钥到 Secrets Manager
+            deploy-all.sh Step 4 推送密钥到 SM
+          </Card>
+          <Card color={COLORS.amber} title="destroy.sh — 销毁流程">
+            1. 验证 AWS 身份 + 确认目标<br/>
+            2. Init Terraform + 选择 workspace<br/>
+            3. 禁用 WAF/GA（避免 ALB 依赖）<br/>
+            4. 清理 K8s 资源（Ingress → ALB）<br/>
+            5. terraform destroy 销毁基础设施<br/>
+            <span style={{ color: COLORS.red, fontSize: 10 }}>K8s 资源必须在 Terraform 前删除</span>
           </Card>
           <Card color={COLORS.amber} title="镜像构建">
             build-and-push.sh → ECR<br/>
-            push-to-ecr.sh 推送镜像<br/>
-            deploy-all.sh 一键部署<br/>
+            域名从 terraform.tfvars 读取<br/>
+            deploy-all.sh Step 3 一键构建推送<br/>
             k8s/deploy.sh 更新 Deployment
           </Card>
         </div>
@@ -438,9 +465,9 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
           </Card>
           <Card color={COLORS.red} title="Cognito">
             OAuth2 / OIDC 用户池<br/>
-            支持社交身份联合登录<br/>
-            发放 JWT access / refresh token<br/>
-            Terraform 模块管理 User Pool
+            由 enable_cognito 开关控制（tfvars）<br/>
+            callback URLs 从 frontend_domain 自动派生<br/>
+            Step 0 选择认证方式（Cognito / Microsoft / Both）
           </Card>
           <Card color={COLORS.red} title="EKS">
             托管 Kubernetes 控制平面<br/>
@@ -463,7 +490,7 @@ function archDetail(navigateTo: (page: PageKey, phase?: TranslationPhase) => voi
             所有密钥的单一事实来源<br/>
             ESO 通过 Pod Identity 认证访问<br/>
             refreshInterval: 1h 自动同步<br/>
-            deploy-all.sh 推送密钥
+            deploy-all.sh Step 4 推送密钥（保留已有值）
           </Card>
           <Card color={COLORS.red} title="Global Accelerator">
             Anycast IP 全球接入<br/>

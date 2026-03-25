@@ -7,8 +7,8 @@
 ## 前置条件
 
 - 已配置 AWS CLI 和相应凭证
-- Cognito User Pool ID: `us-west-2_IrobBcDpA`
-- AWS 区域: `us-west-2`
+- Cognito User Pool ID: 通过 `terraform output cognito_user_pool_id` 获取（格式：`us-west-2_AbCdEfGhI`）
+- AWS 区域: 从 `iac/terraform.tfvars` 的 `region` 字段获取
 
 ## 用户管理操作
 
@@ -18,10 +18,10 @@
 
 ```bash
 aws cognito-idp admin-create-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
   --user-attributes Name=email,Value=user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 **执行后会发生：**
@@ -34,8 +34,8 @@ aws cognito-idp admin-create-user \
 
 ```bash
 aws cognito-idp list-users \
-  --user-pool-id us-west-2_IrobBcDpA \
-  --region us-west-2
+  --user-pool-id <YOUR_USER_POOL_ID> \
+  --region <YOUR_REGION>
 ```
 
 ### 3. 重置用户密码
@@ -44,9 +44,9 @@ aws cognito-idp list-users \
 
 ```bash
 aws cognito-idp admin-reset-user-password \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 4. 直接设置永久密码（不发送邮件）
@@ -55,47 +55,47 @@ aws cognito-idp admin-reset-user-password \
 
 ```bash
 aws cognito-idp admin-set-user-password \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
   --password "NewPassword@123" \
   --permanent \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 5. 删除用户
 
 ```bash
 aws cognito-idp admin-delete-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 6. 禁用用户账户
 
 ```bash
 aws cognito-idp admin-disable-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 7. 启用用户账户
 
 ```bash
 aws cognito-idp admin-enable-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 8. 查看用户详情
 
 ```bash
 aws cognito-idp admin-get-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ## 密码策略
@@ -118,7 +118,7 @@ cognito_allowed_email_domains = ["example.com", "yourcompany.com"]
 ```
 
 更新允许的域名：
-1. 编辑 `iac-612674025488-us-west-2/terraform.tfvars`
+1. 编辑 `iac/terraform.tfvars`
 2. 运行 `terraform apply -target=module.cognito`
 
 ## 用户注册流程
