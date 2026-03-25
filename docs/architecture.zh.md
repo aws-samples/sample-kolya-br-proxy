@@ -374,11 +374,11 @@ graph TD
 
 ## 5. 基础设施架构
 
-基础设施使用 Terraform 定义（`iac-612674025488-us-west-2/`）。它配置 VPC、带有 Karpenter 自动扩缩的 EKS 集群、Aurora PostgreSQL、Redis 分布式限流，以及可选的 Global Accelerator。密钥通过 AWS Secrets Manager + External Secrets Operator（ESO）管理。
+基础设施使用 Terraform 定义（`iac/`）。所有配置集中在 `iac/terraform.tfvars` 作为唯一来源（账号、区域、域名、功能开关）。`deploy-all.sh` 脚本编排完整部署流程（Steps 0-5），`destroy.sh` 处理安全销毁。它配置 VPC、带有 Karpenter 自动扩缩的 EKS 集群、Aurora PostgreSQL、Redis 分布式限流，以及可选的 WAF / Global Accelerator。密钥通过 AWS Secrets Manager + External Secrets Operator（ESO）管理。
 
 ```mermaid
 graph TD
-    subgraph AWS_Region ["AWS Region (us-west-2)"]
+    subgraph AWS_Region ["AWS Region"]
         subgraph VPC ["VPC Module"]
             subgraph Public_Subnets ["Public Subnets"]
                 ALB["Application Load<br/>Balancer (ALB)<br/>(动态创建)"]
@@ -427,7 +427,7 @@ graph TD
 | AWS Secrets Manager | 所有密钥的单一事实来源（数据库凭证、JWT 密钥、OAuth 客户端密钥等） |
 | External Secrets Operator（ESO） | 运行在集群内，监听 `ExternalSecret` CRD，从 AWS Secrets Manager 同步密钥到 K8s Secrets |
 | Pod Identity | ESO 通过 EKS Pod Identity 认证 AWS Secrets Manager（无需静态 AWS 凭证） |
-| `deploy-all.sh` | 部署时通过 `aws secretsmanager put-secret-value` 推送密钥到 AWS Secrets Manager |
+| `deploy-all.sh` Step 4 | 通过 `aws secretsmanager put-secret-value` 推送密钥（保留已有值） |
 
 **同步行为：**
 - `refreshInterval: 1h` -- ESO 每小时重新从 Secrets Manager 拉取密钥
@@ -445,6 +445,41 @@ graph TD
 | 降级策略 | Redis 不可用时，每个 Pod 回退到本地内存 `LocalTokenBucket`（按 Pod 限流，而非跳过限流） |
 | 访问方式 | 后端 Pod 通过 Kubernetes Service DNS 连接（`redis.kbp.svc.cluster.local`） |
 
+### 配置：`terraform.tfvars`
+
+所有部署配置集中在 `iac/terraform.tfvars`。`deploy-all.sh` 和 `destroy.sh` 均从此文件读取和写入。
+
+| 键 | 说明 |
+|------|------|
+| `account` / `region` | AWS 账号 ID 和目标区域 |
+| `frontend_domain` / `api_domain` | 域名（如 `kbp.kolya.fun`、`api.kbp.kolya.fun`） |
+| `project_name` / `project_name_alias` | 资源命名（部分资源用全名，部分用别名） |
+| `enable_waf` | WAF 开关（Step 4 ALB 就绪后自动启用） |
+| `enable_global_accelerator` | Global Accelerator 开关（Step 5） |
+| `enable_cognito` | 认证方式开关（Step 0 选择） |
+| `cognito_allowed_email_domains` | Cognito 邮箱域名白名单 |
+
+### 部署流水线：`deploy-all.sh`
+
+| 步骤 | 命令 | 功能 |
+|------|------|------|
+| 0 | `--step 0` | 自动检测账号/区域、选择认证方式、配置域名 → 写入 `terraform.tfvars` |
+| 1 | `--step 1` | `terraform init` + `plan` + `apply`（VPC、EKS、RDS、Cognito 等） |
+| 2 | `--step 2` | 部署 Helm charts（ALB Controller、Karpenter、Metrics Server） |
+| 3 | `--step 3` | 构建 Docker 镜像推送到 ECR（域名从 tfvars 读取） |
+| 4 | `--step 4` | 部署 K8s 应用（从 tfvars 生成配置、推送密钥到 SM、自动启用 WAF） |
+| 5 | `--step 5` | 启用/禁用 Global Accelerator |
+
+### 销毁流程：`destroy.sh`
+
+1. 验证 AWS 身份，确认目标（账号、区域、workspace）
+2. 初始化 Terraform，选择 workspace
+3. 通过 `terraform apply` 禁用 WAF/GA（其 `data "aws_lb"` 查找需要 ALB 存在）
+4. 清理 K8s 资源（先删 Ingress → 触发 ALB 删除，再删 ExternalSecrets、命名空间）
+5. `terraform destroy` 销毁剩余基础设施
+
+> **重要：** K8s 资源（特别是 Ingress/ALB）必须在 `terraform destroy` 前删除，否则 ALB 和 target group 会阻塞 Terraform。
+
 ### Terraform 模块
 
 | 模块 | 源路径 | 用途 |
@@ -453,6 +488,8 @@ graph TD
 | `rds_aurora_postgresql` | `./modules/rds-aurora-postgresql` | Aurora PostgreSQL 含加密、备份、监控 |
 | `eks_karpenter` | `./modules/eks-karpenter` | EKS 集群 + Karpenter 节点自动扩缩 |
 | `eks_addons` | `./modules/eks-addons` | Karpenter Helm chart、AWS LB 控制器 |
+| `cognito` | `./modules/cognito` | Cognito User Pool & App Client（callback URLs 从 `frontend_domain` 自动派生） |
+| `waf` | `./modules/waf` | Web Application Firewall（ALB 就绪后自动启用） |
 | `global_accelerator` | `./modules/global-accelerator` | 可选 GA 用于全球边缘路由 |
 
 ### 环境差异
@@ -471,7 +508,7 @@ graph TD
 
 ## 6. 认证流程
 
-系统支持两种 OAuth 认证方式：**AWS Cognito**（默认）和 **Microsoft Entra ID**。不支持本地用户名/密码认证。管理面板使用 JWT（访问令牌 + 刷新令牌），而 OpenAI 兼容网关使用 API 密钥（`kbr_` 前缀）。
+系统支持两种 OAuth 认证方式：**AWS Cognito** 和 **Microsoft Entra ID**（通过 `deploy-all.sh --step 0` 选择）。不支持本地用户名/密码认证。管理面板使用 JWT（访问令牌 + 刷新令牌），而 OpenAI 兼容网关使用 API 密钥（`kbr_` 前缀）。Cognito 回调 URL 从 `terraform.tfvars` 中的 `frontend_domain` 自动派生。
 
 ### 6.1 OAuth 流程（Cognito / Microsoft）
 

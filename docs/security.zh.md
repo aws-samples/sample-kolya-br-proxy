@@ -468,7 +468,7 @@ WAF WebACL 关联到两个 ALB（由 Kubernetes ALB Controller 创建，Terrafor
 
 ### 基础设施配置
 
-**Terraform 模块**：`iac-612674025488-us-west-2/modules/waf/`
+**Terraform 模块**：`iac/modules/waf/`
 
 | 文件 | 内容 |
 |------|------|
@@ -477,7 +477,7 @@ WAF WebACL 关联到两个 ALB（由 Kubernetes ALB Controller 创建，Terrafor
 | `variables.tf` | ALB 名称、限流阈值、项目元数据 |
 | `outputs.tf` | WebACL ARN、ID |
 
-**根模块变量**（`iac-612674025488-us-west-2/variables.tf`）：
+**根模块变量**（`iac/variables.tf`）：
 
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|-------|------|
@@ -593,9 +593,9 @@ deploy-all.sh
 
 | 文件 | 职责 |
 |------|------|
-| `iac-612674025488-us-west-2/modules/waf/main.tf` | AWS WAF WebACL 定义（限流 + 托管规则）和 ALB 关联 |
-| `iac-612674025488-us-west-2/modules/waf/data.tf` | 按名称自动发现 ALB |
-| `iac-612674025488-us-west-2/modules/waf/variables.tf` | WAF 配置变量（限流阈值、ALB 名称） |
+| `iac/modules/waf/main.tf` | AWS WAF WebACL 定义（限流 + 托管规则）和 ALB 关联 |
+| `iac/modules/waf/data.tf` | 按名称自动发现 ALB |
+| `iac/modules/waf/variables.tf` | WAF 配置变量（限流阈值、ALB 名称） |
 | `backend/app/middleware/security.py` | SecurityMiddleware（Origin/Referer/自定义头验证 + 安全响应头） |
 | `backend/main.py` | CORS 中间件配置、SecurityMiddleware 注册 |
 | `backend/app/core/config.py` | `ALLOWED_ORIGINS` 配置和生产环境校验 |

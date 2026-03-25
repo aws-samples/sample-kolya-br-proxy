@@ -372,11 +372,11 @@ The `MainLayout.vue` renders a persistent left drawer with these menu items: Das
 
 ## 5. Infrastructure Architecture
 
-Infrastructure is defined in Terraform (`iac-612674025488-us-west-2/`). It provisions a VPC, EKS cluster with Karpenter autoscaling, Aurora PostgreSQL, Redis for distributed rate limiting, and optional Global Accelerator. Secrets are managed via AWS Secrets Manager with External Secrets Operator (ESO) syncing them into Kubernetes.
+Infrastructure is defined in Terraform (`iac/`). All configuration is centralized in `iac/terraform.tfvars` as the single source of truth (account, region, domains, feature toggles). The `deploy-all.sh` script orchestrates the full deployment in 6 steps (0-5), while `destroy.sh` handles safe teardown. It provisions a VPC, EKS cluster with Karpenter autoscaling, Aurora PostgreSQL, Redis for distributed rate limiting, and optional WAF / Global Accelerator. Secrets are managed via AWS Secrets Manager with External Secrets Operator (ESO) syncing them into Kubernetes.
 
 ```mermaid
 graph TD
-    subgraph AWS_Region ["AWS Region (us-west-2)"]
+    subgraph AWS_Region ["AWS Region"]
         subgraph VPC ["VPC Module"]
             subgraph Public_Subnets ["Public Subnets"]
                 ALB["Application Load<br/>Balancer (ALB)<br/>(dynamically created)"]
@@ -425,7 +425,7 @@ Secrets are stored in **AWS Secrets Manager** and automatically synced to Kubern
 | AWS Secrets Manager | Single source of truth for all secrets (DB credentials, JWT keys, OAuth client secrets, etc.) |
 | External Secrets Operator (ESO) | Runs in-cluster, watches `ExternalSecret` CRDs, and syncs secrets from AWS Secrets Manager to K8s Secrets |
 | Pod Identity | ESO authenticates to AWS Secrets Manager via EKS Pod Identity (no static AWS credentials) |
-| `deploy-all.sh` | Pushes secrets to AWS Secrets Manager via `aws secretsmanager put-secret-value` during deployment |
+| `deploy-all.sh` Step 4 | Pushes secrets to AWS Secrets Manager via `aws secretsmanager put-secret-value` (preserves existing values) |
 
 **Sync behavior:**
 - `refreshInterval: 1h` -- ESO re-fetches secrets from Secrets Manager every hour
@@ -443,6 +443,41 @@ A **Redis standalone** instance runs in the `kbp` (kolya-br-proxy) namespace to 
 | Fallback | If Redis is unavailable, each Pod falls back to a local in-memory `LocalTokenBucket` (per-Pod rate limiting, not skip) |
 | Access | Backend Pods connect via Kubernetes Service DNS (`redis.kbp.svc.cluster.local`) |
 
+### Configuration: `terraform.tfvars`
+
+All deployment configuration is centralized in `iac/terraform.tfvars`. Both `deploy-all.sh` and `destroy.sh` read from and write to this file.
+
+| Key | Description |
+|---|---|
+| `account` / `region` | AWS account ID and target region |
+| `frontend_domain` / `api_domain` | Domain names (e.g. `kbp.kolya.fun`, `api.kbp.kolya.fun`) |
+| `project_name` / `project_name_alias` | Resource naming (some resources use full name, others use alias) |
+| `enable_waf` | WAF toggle (auto-enabled after ALBs are ready in Step 4) |
+| `enable_global_accelerator` | Global Accelerator toggle (Step 5) |
+| `enable_cognito` | Authentication provider toggle (Step 0 selection) |
+| `cognito_allowed_email_domains` | Email domain whitelist for Cognito |
+
+### Deployment Pipeline: `deploy-all.sh`
+
+| Step | Command | What It Does |
+|---|---|---|
+| 0 | `--step 0` | Auto-detect account/region, select auth provider, configure domains → write `terraform.tfvars` |
+| 1 | `--step 1` | `terraform init` + `plan` + `apply` (VPC, EKS, RDS, Cognito, etc.) |
+| 2 | `--step 2` | Deploy Helm charts (ALB Controller, Karpenter, Metrics Server) |
+| 3 | `--step 3` | Build Docker images, push to ECR (domains read from tfvars) |
+| 4 | `--step 4` | Deploy K8s app (generate configs from tfvars, push secrets to SM, auto-enable WAF) |
+| 5 | `--step 5` | Toggle Global Accelerator on/off |
+
+### Teardown: `destroy.sh`
+
+1. Verify AWS identity and confirm target (account, region, workspace)
+2. Initialize Terraform and select workspace
+3. Disable WAF/GA via `terraform apply` (their `data "aws_lb"` lookups require ALBs to exist)
+4. Clean up K8s resources (Ingress first → triggers ALB deletion, then ExternalSecrets, namespace)
+5. `terraform destroy` to remove all remaining infrastructure
+
+> **Important:** K8s resources (especially Ingress/ALB) must be deleted before `terraform destroy`, otherwise ALBs and target groups will block Terraform.
+
 ### Terraform Modules
 
 | Module | Source Path | Purpose |
@@ -451,6 +486,8 @@ A **Redis standalone** instance runs in the `kbp` (kolya-br-proxy) namespace to 
 | `rds_aurora_postgresql` | `./modules/rds-aurora-postgresql` | Aurora PostgreSQL with encryption, backups, monitoring |
 | `eks_karpenter` | `./modules/eks-karpenter` | EKS cluster + Karpenter for node autoscaling |
 | `eks_addons` | `./modules/eks-addons` | Karpenter Helm chart, AWS LB Controller |
+| `cognito` | `./modules/cognito` | Cognito User Pool & App Client (callback URLs auto-derived from `frontend_domain`) |
+| `waf` | `./modules/waf` | Web Application Firewall (auto-enabled after ALBs are ready) |
 | `global_accelerator` | `./modules/global-accelerator` | Optional GA for global edge routing |
 
 ### Environment Differences
@@ -469,7 +506,7 @@ A **Redis standalone** instance runs in the `kbp` (kolya-br-proxy) namespace to 
 
 ## 6. Authentication Flow
 
-The system supports two OAuth authentication methods: **AWS Cognito** (default) and **Microsoft Entra ID**. There is no local username/password authentication. The admin dashboard uses JWT (access + refresh tokens), while the OpenAI-compatible gateway uses API keys (`kbr_` prefix).
+The system supports two OAuth authentication methods: **AWS Cognito** and **Microsoft Entra ID** (selectable during `deploy-all.sh --step 0`). There is no local username/password authentication. The admin dashboard uses JWT (access + refresh tokens), while the OpenAI-compatible gateway uses API keys (`kbr_` prefix). Cognito callback URLs are automatically derived from `frontend_domain` in `terraform.tfvars`.
 
 ### 6.1 OAuth Flow (Cognito / Microsoft)
 

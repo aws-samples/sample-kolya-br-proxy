@@ -7,8 +7,8 @@ This guide explains how administrators can manage users in AWS Cognito User Pool
 ## Prerequisites
 
 - AWS CLI configured with appropriate credentials
-- Cognito User Pool ID: `us-west-2_IrobBcDpA`
-- AWS Region: `us-west-2`
+- Cognito User Pool ID: get from `terraform output cognito_user_pool_id` (format: `us-west-2_AbCdEfGhI`)
+- AWS Region: from `iac/terraform.tfvars` (`region` field)
 
 ## User Management Operations
 
@@ -18,10 +18,10 @@ Create a new user and Cognito will automatically send a temporary password to th
 
 ```bash
 aws cognito-idp admin-create-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
   --user-attributes Name=email,Value=user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 **What happens:**
@@ -34,8 +34,8 @@ aws cognito-idp admin-create-user \
 
 ```bash
 aws cognito-idp list-users \
-  --user-pool-id us-west-2_IrobBcDpA \
-  --region us-west-2
+  --user-pool-id <YOUR_USER_POOL_ID> \
+  --region <YOUR_REGION>
 ```
 
 ### 3. Reset User Password
@@ -44,9 +44,9 @@ If a user forgets their password, send them a new temporary password:
 
 ```bash
 aws cognito-idp admin-reset-user-password \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 4. Set Permanent Password (Without Email)
@@ -55,47 +55,47 @@ Set a permanent password directly without sending email:
 
 ```bash
 aws cognito-idp admin-set-user-password \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
   --password "NewPassword@123" \
   --permanent \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 5. Delete User
 
 ```bash
 aws cognito-idp admin-delete-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 6. Disable User Account
 
 ```bash
 aws cognito-idp admin-disable-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 7. Enable User Account
 
 ```bash
 aws cognito-idp admin-enable-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### 8. Get User Details
 
 ```bash
 aws cognito-idp admin-get-user \
-  --user-pool-id us-west-2_IrobBcDpA \
+  --user-pool-id <YOUR_USER_POOL_ID> \
   --username user@example.com \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ## Password Policy
@@ -118,7 +118,7 @@ cognito_allowed_email_domains = ["example.com", "yourcompany.com"]
 ```
 
 To update allowed domains:
-1. Edit `iac-612674025488-us-west-2/terraform.tfvars`
+1. Edit `iac/terraform.tfvars`
 2. Run `terraform apply -target=module.cognito`
 
 ## User Registration Flow

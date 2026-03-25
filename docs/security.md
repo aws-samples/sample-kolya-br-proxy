@@ -468,7 +468,7 @@ The WAF WebACL is associated with two ALBs (created by Kubernetes ALB Controller
 
 ### Infrastructure Configuration
 
-**Terraform module**: `iac-612674025488-us-west-2/modules/waf/`
+**Terraform module**: `iac/modules/waf/`
 
 | File | Contents |
 |------|----------|
@@ -477,7 +477,7 @@ The WAF WebACL is associated with two ALBs (created by Kubernetes ALB Controller
 | `variables.tf` | ALB names, rate limit thresholds, project metadata |
 | `outputs.tf` | WebACL ARN, ID |
 
-**Root module variables** (`iac-612674025488-us-west-2/variables.tf`):
+**Root module variables** (`iac/variables.tf`):
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
@@ -593,9 +593,9 @@ deploy-all.sh
 
 | File | Responsibility |
 |------|---------------|
-| `iac-612674025488-us-west-2/modules/waf/main.tf` | AWS WAF WebACL definition (rate limiting + managed rules) and ALB association |
-| `iac-612674025488-us-west-2/modules/waf/data.tf` | ALB auto-discovery by name |
-| `iac-612674025488-us-west-2/modules/waf/variables.tf` | WAF configuration variables (rate limits, ALB names) |
+| `iac/modules/waf/main.tf` | AWS WAF WebACL definition (rate limiting + managed rules) and ALB association |
+| `iac/modules/waf/data.tf` | ALB auto-discovery by name |
+| `iac/modules/waf/variables.tf` | WAF configuration variables (rate limits, ALB names) |
 | `backend/app/middleware/security.py` | SecurityMiddleware (Origin/Referer/custom header validation + security response headers) |
 | `backend/main.py` | CORS middleware configuration, SecurityMiddleware registration |
 | `backend/app/core/config.py` | `ALLOWED_ORIGINS` configuration and production validation |
