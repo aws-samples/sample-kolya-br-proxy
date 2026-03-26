@@ -58,10 +58,10 @@
 
 ```mermaid
 graph LR
-    Client["Client<br/>(Cursor / Claude Code / SDK)"] -->|OpenAI or Anthropic API| Backend["Backend<br/>FastAPI"]
-    Frontend["Frontend<br/>Vue 3 + Quasar"] -->|Admin API| Backend
-    Backend -->|InvokeModel<br/>(Claude)| Bedrock["AWS Bedrock"]
-    Backend -->|Converse API<br/>(Nova, DeepSeek, etc.)| Bedrock
+    Client["Client (Cursor / Claude Code / SDK)"] -->|OpenAI or Anthropic API| Backend["Backend (FastAPI)"]
+    Frontend["Frontend (Vue 3 + Quasar)"] -->|Admin API| Backend
+    Backend -->|InvokeModel - Claude| Bedrock["AWS Bedrock"]
+    Backend -->|Converse API - Nova / DeepSeek| Bedrock
     Backend -->|asyncpg| DB[(PostgreSQL)]
     Backend -.->|Cache + Rate Limit| Redis[(Redis)]
     subgraph AWS EKS
