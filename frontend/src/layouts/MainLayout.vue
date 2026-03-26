@@ -13,7 +13,9 @@
 
         <q-toolbar-title>
           <div class="row items-center">
-            <q-icon name="cloud" size="sm" class="q-mr-sm" />
+            <q-avatar size="28px" class="q-mr-sm">
+              <img src="~assets/kbp.png" alt="KBP" />
+            </q-avatar>
             <span class="title-text">Kolya BR Proxy</span>
           </div>
         </q-toolbar-title>

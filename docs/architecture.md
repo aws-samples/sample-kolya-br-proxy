@@ -1,6 +1,6 @@
 # Architecture
 
-Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway that provides OpenAI-compatible API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.).
+Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway that provides both OpenAI-compatible and Anthropic Messages API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.).
 
 ---
 
@@ -25,6 +25,7 @@ The system follows a classic three-tier architecture: a Vue 3 frontend served by
 graph LR
     subgraph Clients ["Client Applications"]
         OAI["OpenAI SDK / Client Libraries"]
+        Anthropic_SDK["Anthropic SDK / Client Libraries"]
         Browser["Admin Dashboard<br/>(Browser)"]
     end
 
@@ -51,7 +52,8 @@ graph LR
         Bedrock["AWS Bedrock<br/>(Claude, Nova, DeepSeek,<br/>Mistral, Llama)"]
     end
 
-    OAI -->|"HTTPS /v1/*"| ALB
+    OAI -->|"HTTPS /v1/chat/*"| ALB
+    Anthropic_SDK -->|"HTTPS /v1/messages"| ALB
     Browser -->|"HTTPS /*"| ALB
     ALB -->|"Frontend routes"| Nginx
     ALB -->|"API routes"| Uvicorn
@@ -66,7 +68,9 @@ graph LR
 
 | Decision | Rationale |
 |---|---|
-| OpenAI-compatible API | Drop-in replacement; clients only change `base_url` and `api_key` |
+| Dual API compatibility | OpenAI-compatible (`/v1/chat/completions`) and Anthropic Messages API (`/v1/messages`); clients only change `base_url` and `api_key` |
+| Configurable API key prefix | Keys default to `kbr_` prefix; `sk-ant-api03` prefix available for Claude Code / Anthropic SDK compatibility |
+| Strip thinking blocks from history | Bedrock doesn't support adaptive signature-only thinking blocks, so they are removed from conversation history before forwarding |
 | Singleton `BedrockClient` | One shared aioboto3 session + connection pool per process |
 | Asyncio semaphore (50) | Back-pressure to match connection pool size; prevents request queuing |
 | JWT for dashboard, API keys for gateway | Separate auth concerns; API keys are long-lived, JWTs are short-lived |
@@ -93,9 +97,14 @@ graph TD
             Models_EP["/admin/models<br/>model management"]
         end
 
-        subgraph V1_Sub ["Gateway Endpoints (OpenAI-compatible)"]
-            Chat_EP["/v1/chat/completions<br/>streaming + non-streaming"]
-            Models_List["/v1/models<br/>list available models"]
+        subgraph V1_Sub ["Gateway Endpoints"]
+            subgraph OpenAI_Sub ["OpenAI-compatible"]
+                Chat_EP["/v1/chat/completions<br/>streaming + non-streaming"]
+                Models_List["/v1/models<br/>list available models"]
+            end
+            subgraph Anthropic_Sub ["Anthropic Messages API"]
+                Messages_EP["/v1/messages<br/>streaming + non-streaming"]
+            end
         end
 
         Admin --> Admin_Sub
@@ -113,6 +122,8 @@ graph TD
         BedrockSvc["BedrockClient<br/>(singleton, semaphore=50)"]
         ReqTranslator["RequestTranslator<br/>(OpenAI -> Bedrock)"]
         ResTranslator["ResponseTranslator<br/>(Bedrock -> OpenAI)"]
+        AnthReqTranslator["AnthropicRequestTranslator<br/>(Anthropic -> Bedrock)"]
+        AnthResTranslator["AnthropicResponseTranslator<br/>(Bedrock -> Anthropic)"]
         TokenSvc["TokenService<br/>(validate, CRUD)"]
         AuthSvc["AuthService<br/>(OAuth user creation)"]
         RefreshSvc["RefreshTokenService<br/>(token rotation)"]
@@ -506,7 +517,7 @@ All deployment configuration is centralized in `iac/terraform.tfvars`. Both `dep
 
 ## 6. Authentication Flow
 
-The system supports two OAuth authentication methods: **AWS Cognito** and **Microsoft Entra ID** (selectable during `deploy-all.sh --step 0`). There is no local username/password authentication. The admin dashboard uses JWT (access + refresh tokens), while the OpenAI-compatible gateway uses API keys (`kbr_` prefix). Cognito callback URLs are automatically derived from `frontend_domain` in `terraform.tfvars`.
+The system supports two OAuth authentication methods: **AWS Cognito** and **Microsoft Entra ID** (selectable during `deploy-all.sh --step 0`). There is no local username/password authentication. The admin dashboard uses JWT (access + refresh tokens), while the gateway APIs use API keys (`kbr_` prefix) -- via `Authorization: Bearer` for OpenAI-compatible endpoints or `x-api-key` header for Anthropic endpoints. Both auth methods validate the same `kbr_` tokens. Cognito callback URLs are automatically derived from `frontend_domain` in `terraform.tfvars`.
 
 ### 6.1 OAuth Flow (Cognito / Microsoft)
 
@@ -541,15 +552,27 @@ sequenceDiagram
 
 ### 6.2 API Key Authentication (Gateway)
 
+The same `kbr_` API keys work for both OpenAI-compatible and Anthropic endpoints. The only difference is the header format:
+
+- **OpenAI path**: `Authorization: Bearer kbr_xxx` (extracted from Bearer token)
+- **Anthropic path**: `x-api-key: kbr_xxx` (extracted from `x-api-key` header)
+
+Both paths use the same validation logic (Redis cache → DB fallback).
+
 ```mermaid
 sequenceDiagram
-    participant Client as OpenAI Client
+    participant Client as API Client<br/>(OpenAI or Anthropic SDK)
     participant BE as Backend (FastAPI)
     participant Redis as Redis (optional)
     participant DB as PostgreSQL
 
-    Client->>BE: POST /v1/chat/completions<br/>Authorization: Bearer kbr_xxx...
-    BE->>BE: Extract token from Bearer header
+    alt OpenAI-compatible endpoint
+        Client->>BE: POST /v1/chat/completions<br/>Authorization: Bearer kbr_xxx...
+        BE->>BE: Extract token from Bearer header
+    else Anthropic endpoint
+        Client->>BE: POST /v1/messages<br/>x-api-key: kbr_xxx...
+        BE->>BE: Extract token from x-api-key header
+    end
 
     alt Redis available
         BE->>Redis: Check token cache (SHA256 hash)
@@ -572,7 +595,7 @@ sequenceDiagram
 | Property | JWT Access Token | JWT Refresh Token | API Key (`kbr_`) |
 |---|---|---|---|
 | Lifetime | 30 minutes | 7 days | Until expiry or revocation |
-| Used by | Admin dashboard | Admin dashboard (refresh) | OpenAI-compatible clients |
+| Used by | Admin dashboard | Admin dashboard (refresh) | OpenAI / Anthropic clients |
 | Storage | localStorage | HttpOnly cookie (`kbr_refresh_token`, Path=/admin/auth) | Client configuration |
 | Validation | JWT decode + signature | DB lookup (hash + family) | DB lookup (SHA256 hash) |
 | Rotation | On refresh | On each use (new token issued) | Manual |
@@ -581,9 +604,12 @@ sequenceDiagram
 
 ## 7. Request Processing Flow
 
-This section details the full lifecycle of a `/v1/chat/completions` request, from token validation through Bedrock invocation to usage recording.
+This section details the full lifecycle of gateway requests. The proxy supports two API paths:
 
-### 7.1 Sequence Diagram
+- **OpenAI path** (`/v1/chat/completions`): Full translation between OpenAI and Bedrock formats
+- **Anthropic path** (`/v1/messages`): Near-passthrough since Bedrock InvokeModel natively uses Anthropic Messages API format
+
+### 7.1 OpenAI Path Sequence Diagram
 
 ```mermaid
 sequenceDiagram
@@ -668,9 +694,75 @@ sequenceDiagram
     BG->>DB: INSERT INTO usage_records
 ```
 
-### 7.2 Request/Response Translation
+### 7.2 Anthropic Path Sequence Diagram
 
-The proxy performs a three-phase translation: OpenAI format → internal `BedrockRequest` → Bedrock API call, and the reverse for responses. For Anthropic models, the request is sent as an Anthropic Messages API body via `invoke_model`. For non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.), the request is converted to Converse API format via `converse`/`converse_stream`. This includes message conversion, tool call mapping, parameter translation, Bedrock extension pass-through, and automatic fixes (effort wrapping, max_tokens adjustment).
+The Anthropic path is a near-passthrough: since Bedrock's InvokeModel API natively accepts Anthropic Messages API format, minimal translation is needed. Key differences from the OpenAI path:
+
+- Auth via `x-api-key` header instead of `Authorization: Bearer`
+- Thinking blocks are preserved in responses (OpenAI path skips them)
+- Streaming uses Anthropic SSE format (`event: type\ndata: {json}\n\n`) instead of OpenAI format (`data: {json}\n\n`)
+
+```mermaid
+sequenceDiagram
+    participant Client as Anthropic Client
+    participant MW as Middleware Stack
+    participant Msg as messages.py endpoint
+    participant Deps as deps.py (DI)
+    participant TokenSvc as TokenService
+    participant DB as PostgreSQL
+    participant Translator as AnthropicRequestTranslator /<br/>AnthropicResponseTranslator
+    participant Bedrock as BedrockClient<br/>(semaphore=50)
+    participant AWS as AWS Bedrock API
+    participant BG as BackgroundTaskManager
+
+    Client->>MW: POST /v1/messages<br/>x-api-key: kbr_xxx
+    MW->>MW: SecurityMiddleware + CORS
+    MW->>Msg: Route to handler
+
+    Msg->>Deps: Depends(get_current_token_from_api_key)
+    Deps->>TokenSvc: validate_token(kbr_xxx)
+    TokenSvc->>DB: SELECT by token_hash
+    DB-->>TokenSvc: APIToken
+    TokenSvc-->>Msg: Validated APIToken
+
+    Msg->>Msg: Quota check + model access check
+
+    Msg->>Translator: to_bedrock_with_passthrough(request)
+    Note over Translator: Near 1:1 mapping,<br/>preserves cache_control
+    Translator-->>Msg: Raw dict for invoke_model
+
+    alt Streaming (stream=true)
+        Msg->>Bedrock: invoke_stream(model, request)
+        Bedrock->>AWS: invoke_model_with_response_stream(body)
+        loop Stream events
+            AWS-->>Bedrock: Anthropic SSE event
+            Bedrock-->>Msg: BedrockStreamEvent
+        end
+        Msg->>Translator: bedrock_stream_to_anthropic_events(event)
+        Translator-->>Msg: Anthropic SSE formatted string
+        Msg-->>Client: event: content_block_delta\ndata: {...}\n\n
+        Msg-->>Client: event: message_stop\ndata: {...}\n\n
+    else Non-streaming
+        Msg->>Bedrock: invoke(model, request)
+        Bedrock->>AWS: invoke_model(body)
+        AWS-->>Bedrock: Anthropic Messages API JSON
+        Bedrock-->>Msg: BedrockResponse
+        Msg->>Translator: bedrock_to_anthropic(response)
+        Translator-->>Msg: AnthropicMessagesResponse
+        Msg-->>Client: JSON response
+    end
+
+    Msg->>BG: background: record_usage(...)
+```
+
+### 7.3 Request/Response Translation
+
+The proxy performs translation between client API formats and Bedrock:
+
+- **OpenAI path**: Three-phase translation (OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI). Includes message conversion, tool call mapping, parameter translation, and automatic fixes.
+- **Anthropic path**: Near-passthrough (Anthropic → raw dict → `invoke_model`). Minimal translation since Bedrock natively uses Anthropic Messages API format for Claude models. Preserves `cache_control` markers and thinking blocks.
+
+For non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.), both paths use the Converse API via `converse`/`converse_stream`.
 
 For the complete translation pipeline documentation, see **[Request Translation](request-translation.md)**.
 

@@ -1360,19 +1360,19 @@ deploy_application() {
     export AWS_REGION
     print_substep "Generating Deployment and HPA ($DEPLOY_ENV resources)..."
     if [[ "$DEPLOY_ENV" == "prod" ]]; then
-        export BACKEND_CPU_REQUEST="200m"  BACKEND_CPU_LIMIT="1000m"
+        export BACKEND_CPU_REQUEST="500m"  BACKEND_CPU_LIMIT="1000m"
         export BACKEND_MEMORY_REQUEST="512Mi"  BACKEND_MEMORY_LIMIT="1024Mi"
-        export FRONTEND_CPU_REQUEST="100m"  FRONTEND_CPU_LIMIT="500m"
-        export FRONTEND_MEMORY_REQUEST="256Mi"  FRONTEND_MEMORY_LIMIT="512Mi"
-        export BACKEND_HPA_MIN="2"  BACKEND_HPA_MAX="10"
-        export FRONTEND_HPA_MIN="2"  FRONTEND_HPA_MAX="5"
-    else
-        export BACKEND_CPU_REQUEST="100m"  BACKEND_CPU_LIMIT="500m"
-        export BACKEND_MEMORY_REQUEST="256Mi"  BACKEND_MEMORY_LIMIT="512Mi"
         export FRONTEND_CPU_REQUEST="50m"  FRONTEND_CPU_LIMIT="200m"
         export FRONTEND_MEMORY_REQUEST="128Mi"  FRONTEND_MEMORY_LIMIT="256Mi"
-        export BACKEND_HPA_MIN="1"  BACKEND_HPA_MAX="10"
-        export FRONTEND_HPA_MIN="1"  FRONTEND_HPA_MAX="5"
+        export BACKEND_HPA_MIN="2"  BACKEND_HPA_MAX="8"
+        export FRONTEND_HPA_MIN="1"  FRONTEND_HPA_MAX="2"
+    else
+        export BACKEND_CPU_REQUEST="250m"  BACKEND_CPU_LIMIT="500m"
+        export BACKEND_MEMORY_REQUEST="384Mi"  BACKEND_MEMORY_LIMIT="768Mi"
+        export FRONTEND_CPU_REQUEST="30m"  FRONTEND_CPU_LIMIT="100m"
+        export FRONTEND_MEMORY_REQUEST="64Mi"  FRONTEND_MEMORY_LIMIT="128Mi"
+        export BACKEND_HPA_MIN="1"  BACKEND_HPA_MAX="5"
+        export FRONTEND_HPA_MIN="1"  FRONTEND_HPA_MAX="2"
     fi
     envsubst < "$app_dir/backend-deployment.yaml.template" > "$app_dir/backend-deployment.yaml"
     envsubst < "$app_dir/frontend-deployment.yaml.template" > "$app_dir/frontend-deployment.yaml"

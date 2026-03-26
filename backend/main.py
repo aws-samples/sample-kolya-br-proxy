@@ -8,13 +8,14 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.database import init_db
 from app.api.v1.router import gateway_router
+from app.api.anthropic.router import anthropic_router
 from app.api.admin.router import admin_router
 from app.api.health import health_router
 from app.middleware.security import SecurityMiddleware
@@ -103,7 +104,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="Kolya BR Proxy",
-        description="AI Gateway service providing OpenAI-compatible access to AWS Bedrock Claude models",
+        description="AI Gateway service providing OpenAI and Anthropic compatible access to AWS Bedrock models",
         version="1.0.0",
         docs_url="/docs" if settings.DEBUG else None,
         redoc_url="/redoc" if settings.DEBUG else None,
@@ -139,12 +140,32 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(gateway_router, prefix="/v1", tags=["ai-gateway"])
+    app.include_router(anthropic_router, prefix="/v1", tags=["anthropic-api"])
     app.include_router(admin_router, prefix="/admin", tags=["admin"])
+
+    def _is_anthropic_request(request: Request) -> bool:
+        """Check if request targets Anthropic API endpoints."""
+        return request.url.path.rstrip("/").endswith(
+            "/messages"
+        ) and request.headers.get("x-api-key")
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Global exception handler for unhandled errors."""
         logger.error(f"Unhandled exception: {exc}", exc_info=True)
+
+        if _is_anthropic_request(request):
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "Internal server error",
+                    },
+                },
+            )
+
         return JSONResponse(
             status_code=500,
             content={
@@ -166,6 +187,19 @@ def create_app() -> FastAPI:
         """Handle validation errors with detailed logging."""
         logger.error(f"Validation error: {exc.errors()}")
         logger.error(f"Request body: {exc.body}")
+
+        if _is_anthropic_request(request):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": f"Validation error: {exc.errors()}",
+                    },
+                },
+            )
+
         return JSONResponse(
             status_code=422,
             content={
@@ -173,6 +207,40 @@ def create_app() -> FastAPI:
                     "message": "Validation error",
                     "type": "invalid_request_error",
                     "details": exc.errors(),
+                }
+            },
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc):
+        """Handle HTTP exceptions with format-aware error responses."""
+        if _is_anthropic_request(request):
+            error_type_map = {
+                400: "invalid_request_error",
+                401: "authentication_error",
+                403: "permission_error",
+                404: "not_found_error",
+                429: "rate_limit_error",
+                500: "api_error",
+            }
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": error_type_map.get(exc.status_code, "api_error"),
+                        "message": exc.detail,
+                    },
+                },
+            )
+
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "message": exc.detail,
+                    "type": "error",
+                    "code": str(exc.status_code),
                 }
             },
         )

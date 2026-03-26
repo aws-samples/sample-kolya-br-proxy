@@ -1,10 +1,11 @@
 # API Reference
 
-Kolya BR Proxy exposes three API groups:
+Kolya BR Proxy exposes four API groups:
 
 | Group | Prefix | Auth | Purpose |
 |-------|--------|------|---------|
-| Gateway API | `/v1` | Bearer API Token | OpenAI-compatible chat completions |
+| Gateway API (OpenAI) | `/v1` | `Authorization: Bearer` | OpenAI-compatible chat completions |
+| Gateway API (Anthropic) | `/v1` | `x-api-key` header | Anthropic Messages API compatible |
 | Admin API | `/admin` | Bearer JWT | User management, tokens, usage, audit |
 | Health API | `/health` | None | Load balancer probes |
 
@@ -201,6 +202,223 @@ for chunk in stream:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
 
+---
+
+## 1b. Gateway API (Anthropic Messages API Compatible)
+
+All Anthropic-compatible endpoints require an API key in the `x-api-key` header:
+
+```
+x-api-key: kbr_<your_token>
+```
+
+> The same `kbr_` API key works for both OpenAI and Anthropic endpoints. The proxy routes based on the endpoint path and authentication header format.
+
+### POST /v1/messages
+
+Create a message. Accepts Anthropic Messages API format requests and proxies them to AWS Bedrock. Supports thinking, tool use, prompt caching, and all Anthropic-native features.
+
+**Request body** (`AnthropicMessagesRequest`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | *required* | Bedrock model ID (e.g. `global.anthropic.claude-sonnet-4-5-20250929-v1:0`) |
+| `messages` | array | *required* | Array of message objects (role: `user` or `assistant`) |
+| `max_tokens` | integer | *required* | Maximum tokens to generate |
+| `system` | string \| array | null | System prompt (string or array of content blocks with optional `cache_control`) |
+| `temperature` | float | null | Sampling temperature (0.0 - 1.0) |
+| `top_p` | float | null | Nucleus sampling (0.0 - 1.0) |
+| `top_k` | integer | null | Top-K sampling |
+| `stop_sequences` | array | null | Stop sequences |
+| `stream` | boolean | `false` | Enable SSE streaming |
+| `tools` | array | null | Tool definitions (Anthropic format) |
+| `tool_choice` | object | null | Tool selection strategy |
+| `metadata` | object | null | Request metadata |
+| `thinking` | object | null | Extended thinking config (`{"type": "enabled"/"adaptive"/"disabled", "budget_tokens": N}`) |
+
+**Message content blocks**:
+
+```json
+{"type": "text", "text": "Hello!"}
+{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+{"type": "tool_use", "id": "toolu_...", "name": "get_weather", "input": {"city": "London"}}
+{"type": "tool_result", "tool_use_id": "toolu_...", "content": "Sunny, 22C"}
+```
+
+#### Non-streaming example
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: kbr_your_token_here" \
+  -d '{
+    "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+**Response** (`AnthropicMessagesResponse`):
+
+```json
+{
+  "id": "msg_abc123...",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {"type": "text", "text": "Hello! How can I help you?"}
+  ],
+  "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 8
+  }
+}
+```
+
+#### Streaming example
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: kbr_your_token_here" \
+  -d '{
+    "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+**Streaming response** (SSE `text/event-stream`, Anthropic format):
+
+```
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_...","type":"message","role":"assistant","content":[],"model":"...","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":8}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+#### Extended thinking example
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: kbr_your_token_here" \
+  -d '{
+    "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "max_tokens": 8192,
+    "thinking": {"type": "enabled", "budget_tokens": 4096},
+    "messages": [{"role": "user", "content": "Solve this step by step: 15 * 27 + 33"}]
+  }'
+```
+
+The proxy supports three thinking types:
+- `"enabled"` - Full extended thinking with visible thinking blocks
+- `"adaptive"` - Adaptive thinking (signature-only mode)
+- `"disabled"` - No extended thinking
+
+> **Note**: When sending conversation history that includes `thinking` or `redacted_thinking` content blocks, the proxy automatically strips these blocks before forwarding to Bedrock, since Bedrock doesn't support adaptive signature-only thinking blocks in conversation history.
+
+#### Claude Code CLI compatibility
+
+To use the proxy with the Claude Code CLI or Anthropic SDK, create a token with the `sk-ant-api03` prefix:
+
+```bash
+curl -X POST http://localhost:8000/admin/tokens \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <jwt_token>" \
+  -d '{
+    "name": "Claude Code Token",
+    "prefix": "sk-ant-api03",
+    "quota_usd": 50.00
+  }'
+```
+
+Then configure your environment:
+
+```bash
+export ANTHROPIC_BASE_URL="https://your-api-domain"
+export ANTHROPIC_API_KEY="sk-ant-api03_xxxxxxx"  # pragma: allowlist secret
+export CLAUDE_MODEL="us.anthropic.claude-sonnet-4-5-20250514-v1:0"
+```
+
+For persistent configuration, add to `~/.claude/settings.json`:
+
+```json
+{
+  "model": "us.anthropic.claude-sonnet-4-5-20250514-v1:0",
+  "smallModel": "your-haiku-model-id",
+  "largeModel": "your-opus-model-id"
+}
+```
+
+#### Error responses (Anthropic format)
+
+```json
+{
+  "type": "error",
+  "error": {
+    "type": "authentication_error",
+    "message": "Invalid or expired API key"
+  }
+}
+```
+
+| Status | Error Type | Meaning |
+|--------|-----------|---------|
+| 400 | `invalid_request_error` | Invalid request (bad model name, malformed body) |
+| 401 | `authentication_error` | Missing or invalid API key |
+| 403 | `permission_error` | Token lacks access to requested model |
+| 429 | `rate_limit_error` | Token quota exceeded |
+| 500 | `api_error` | Internal server error |
+
+#### Anthropic SDK usage
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    api_key="kbr_your_token_here",  # pragma: allowlist secret
+    base_url="http://localhost:8000/v1",
+)
+
+message = client.messages.create(
+    model="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(message.content[0].text)
+
+# Streaming
+with client.messages.stream(
+    model="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+```
+
+---
+
 ### GET /v1/models
 
 List models the current token has access to. Returns OpenAI-compatible model list.
@@ -365,7 +583,8 @@ Create a new API token.
   "name": "My API Key",
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": 100.00,
-  "allowed_ips": ["192.168.1.0/24"]
+  "allowed_ips": ["192.168.1.0/24"],
+  "prefix": "kbr"
 }
 ```
 
@@ -375,6 +594,7 @@ Create a new API token.
 | `expires_at` | datetime | no | Expiration timestamp |
 | `quota_usd` | decimal | no | Usage quota in USD |
 | `allowed_ips` | array | no | IP allowlist (CIDR) |
+| `prefix` | string | no | Token prefix (default: `"kbr"`). Use `"sk-ant-api03"` for Claude Code / Anthropic SDK compatibility |
 
 **Response** (201): `TokenWithKeyResponse` -- includes the plain token value. This is the only time the plain token is returned.
 
@@ -383,6 +603,7 @@ Create a new API token.
   "id": "uuid",
   "name": "My API Key",
   "token": "kbr_abc123...",
+  "key_prefix": "kbr",
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": "100.00",
   "used_usd": "0.00",

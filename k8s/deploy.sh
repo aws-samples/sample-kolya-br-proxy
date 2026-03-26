@@ -181,32 +181,32 @@ init_config() {
     print_info "根据环境 ($KBR_ENV) 设置资源配额..."
     if [[ "$KBR_ENV" == "prod" ]]; then
         # 生产环境 — 更大的资源配额
-        export BACKEND_CPU_REQUEST="200m"
+        export BACKEND_CPU_REQUEST="500m"
         export BACKEND_CPU_LIMIT="1000m"
         export BACKEND_MEMORY_REQUEST="512Mi"
         export BACKEND_MEMORY_LIMIT="1024Mi"
-        export FRONTEND_CPU_REQUEST="100m"
-        export FRONTEND_CPU_LIMIT="500m"
-        export FRONTEND_MEMORY_REQUEST="256Mi"
-        export FRONTEND_MEMORY_LIMIT="512Mi"
-        export BACKEND_HPA_MIN="2"
-        export BACKEND_HPA_MAX="10"
-        export FRONTEND_HPA_MIN="2"
-        export FRONTEND_HPA_MAX="5"
-    else
-        # 非生产环境
-        export BACKEND_CPU_REQUEST="100m"
-        export BACKEND_CPU_LIMIT="500m"
-        export BACKEND_MEMORY_REQUEST="256Mi"
-        export BACKEND_MEMORY_LIMIT="512Mi"
         export FRONTEND_CPU_REQUEST="50m"
         export FRONTEND_CPU_LIMIT="200m"
         export FRONTEND_MEMORY_REQUEST="128Mi"
         export FRONTEND_MEMORY_LIMIT="256Mi"
-        export BACKEND_HPA_MIN="1"
-        export BACKEND_HPA_MAX="10"
+        export BACKEND_HPA_MIN="2"
+        export BACKEND_HPA_MAX="8"
         export FRONTEND_HPA_MIN="1"
-        export FRONTEND_HPA_MAX="5"
+        export FRONTEND_HPA_MAX="2"
+    else
+        # 非生产环境
+        export BACKEND_CPU_REQUEST="250m"
+        export BACKEND_CPU_LIMIT="500m"
+        export BACKEND_MEMORY_REQUEST="384Mi"
+        export BACKEND_MEMORY_LIMIT="768Mi"
+        export FRONTEND_CPU_REQUEST="30m"
+        export FRONTEND_CPU_LIMIT="100m"
+        export FRONTEND_MEMORY_REQUEST="64Mi"
+        export FRONTEND_MEMORY_LIMIT="128Mi"
+        export BACKEND_HPA_MIN="1"
+        export BACKEND_HPA_MAX="5"
+        export FRONTEND_HPA_MIN="1"
+        export FRONTEND_HPA_MAX="2"
     fi
 
     # 生成 ConfigMap

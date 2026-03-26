@@ -37,7 +37,7 @@
           <template v-slot:body-cell-key="props">
             <q-td :props="props">
               <div class="row items-center no-wrap">
-                <span class="text-mono">kbr_••••••••</span>
+                <span class="text-mono">{{ props.row.key_prefix }}_••••••••</span>
                 <q-btn
                   flat
                   dense

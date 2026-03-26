@@ -5,7 +5,7 @@ Provides dependency injection for database sessions, current user, and token val
 
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,6 +143,100 @@ async def get_current_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired API token",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return token
+
+
+async def get_current_token_flexible(
+    request: Request,
+    token_service: TokenService = Depends(get_token_service),
+) -> APIToken:
+    """
+    Validate API token from either Authorization: Bearer or x-api-key header.
+
+    Supports both OpenAI-style (Bearer) and Anthropic-style (x-api-key) auth,
+    enabling endpoints like /v1/models to work with both clients.
+    """
+    # Try x-api-key first (Anthropic SDK / Claude Code)
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        # Fall back to Authorization: Bearer (OpenAI SDK)
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            api_key = auth_header[7:]
+
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key. Provide via Authorization: Bearer or x-api-key header.",
+        )
+
+    # Validate token (same logic as other auth deps)
+    try:
+        from app.core.redis import get_redis, RedisCache
+        from app.services.token_cache import CachedTokenService
+
+        redis_client = await get_redis()
+        cache = RedisCache(redis_client)
+        cached_service = CachedTokenService(token_service.db, cache)
+        token = await cached_service.validate_token_cached(plain_token=api_key)
+    except Exception:
+        token = await token_service.validate_token(plain_token=api_key)
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+        )
+
+    return token
+
+
+async def get_current_token_from_api_key(
+    x_api_key: str = Header(..., alias="x-api-key"),
+    token_service: TokenService = Depends(get_token_service),
+) -> APIToken:
+    """
+    Validate API token from x-api-key header (Anthropic SDK format).
+
+    Anthropic SDK sends the token via x-api-key header instead of
+    Authorization: Bearer.
+
+    Args:
+        x_api_key: API key from x-api-key header
+        token_service: Token service instance
+
+    Returns:
+        Valid APIToken object
+
+    Raises:
+        HTTPException: If token is invalid or access is denied
+    """
+    plain_token = x_api_key
+
+    # Try to use cached validation if Redis is available
+    try:
+        from app.core.redis import get_redis, RedisCache
+        from app.services.token_cache import CachedTokenService
+
+        redis_client = await get_redis()
+        cache = RedisCache(redis_client)
+        cached_service = CachedTokenService(token_service.db, cache)
+
+        token = await cached_service.validate_token_cached(
+            plain_token=plain_token,
+        )
+    except Exception:
+        # Fallback to non-cached validation if Redis unavailable
+        token = await token_service.validate_token(
+            plain_token=plain_token,
+        )
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
         )
 
     return token

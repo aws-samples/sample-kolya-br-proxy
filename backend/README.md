@@ -1,6 +1,6 @@
 # Kolya BR Proxy -- Backend
 
-FastAPI-based OpenAI-compatible API gateway that proxies requests to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.).
+FastAPI-based API gateway that proxies requests to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.). Supports both OpenAI-compatible and Anthropic Messages API formats.
 
 ## Tech Stack
 
@@ -36,6 +36,8 @@ app/
 │   ├── v1/endpoints/      # Gateway API (OpenAI-compatible)
 │   │   ├── chat.py        #   POST /v1/chat/completions
 │   │   └── models.py      #   GET  /v1/models
+│   ├── anthropic/endpoints/ # Anthropic Messages API
+│   │   └── messages.py    #   POST /v1/messages
 │   ├── admin/endpoints/   # Admin API (JWT auth)
 │   │   ├── auth.py        #   Login, OAuth, refresh, profile
 │   │   ├── tokens.py      #   API token CRUD
@@ -43,11 +45,14 @@ app/
 │   │   ├── usage.py       #   Usage statistics
 │   │   └── audit.py       #   Audit logs
 │   ├── health.py          # Health probes
-│   └── deps.py            # Dependency injection
+│   └── deps.py            # Dependency injection (Bearer + x-api-key)
 ├── core/                  # Config, database, security
 ├── models/                # SQLAlchemy models
-├── schemas/               # Pydantic schemas (OpenAI + Bedrock)
+├── schemas/               # Pydantic schemas (OpenAI + Anthropic + Bedrock)
 ├── services/              # Business logic
+│   ├── translator.py      #   OpenAI <-> Bedrock translation
+│   ├── anthropic_translator.py # Anthropic <-> Bedrock translation
+│   └── bedrock.py         #   AWS Bedrock client
 └── middleware/             # Security middleware
 ```
 

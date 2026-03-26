@@ -1,6 +1,11 @@
 # Request Translation Pipeline
 
-How Kolya BR Proxy translates OpenAI-format requests into AWS Bedrock API calls, and converts responses back. Anthropic models use the InvokeModel API (native Messages API format), while non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.) use the Converse API.
+How Kolya BR Proxy translates requests into AWS Bedrock API calls, and converts responses back. The proxy supports two client-facing API formats:
+
+- **OpenAI-compatible** (`POST /v1/chat/completions`) -- requires format translation
+- **Anthropic Messages API** (`POST /v1/messages`) -- near-passthrough to Bedrock InvokeModel
+
+Anthropic models use the InvokeModel API (native Messages API format), while non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.) use the Converse API.
 
 ---
 
@@ -12,10 +17,11 @@ How Kolya BR Proxy translates OpenAI-format requests into AWS Bedrock API calls,
 4. [Phase 2b: BedrockRequest → Converse API (Non-Anthropic Models)](#4-phase-2b-bedrockrequest--converse-api-non-anthropic-models)
 5. [Phase 3: Response → BedrockResponse → OpenAI](#5-phase-3-response--bedrockresponse--openai)
 6. [Streaming Event Translation](#6-streaming-event-translation)
-7. [Bedrock Extension Pass-through](#7-bedrock-extension-pass-through)
-8. [Effort Parameter Auto-transform](#8-effort-parameter-auto-transform)
-9. [Automatic Fixes](#9-automatic-fixes)
-10. [Unsupported Parameters](#10-unsupported-parameters)
+7. [Anthropic Messages API Path (Near-Passthrough)](#7-anthropic-messages-api-path-near-passthrough)
+8. [Bedrock Extension Pass-through](#8-bedrock-extension-pass-through)
+9. [Effort Parameter Auto-transform](#9-effort-parameter-auto-transform)
+10. [Automatic Fixes](#10-automatic-fixes)
+11. [Unsupported Parameters](#11-unsupported-parameters)
 
 ---
 
@@ -396,7 +402,124 @@ message_delta  ──▶  output_tokens  (captured near stream end)
 
 ---
 
-## 7. Bedrock Extension Pass-through
+## 7. Anthropic Messages API Path (Near-Passthrough)
+
+**Files**: `backend/app/api/anthropic/endpoints/messages.py`, `backend/app/services/anthropic_translator.py`
+
+When clients use the Anthropic Messages API (`POST /v1/messages` with `x-api-key` header), the translation is minimal because Bedrock's InvokeModel API for Anthropic models natively uses the Messages API format.
+
+### 7.1 Data Flow
+
+```mermaid
+sequenceDiagram
+    participant Client as Anthropic Client
+    participant Msg as messages.py
+    participant AT as AnthropicTranslator
+    participant BC as BedrockClient
+    participant AWS as AWS Bedrock
+
+    Client->>Msg: POST /v1/messages<br/>(x-api-key: kbr_xxx)
+    Msg->>AT: to_bedrock(request)
+    AT-->>Msg: BedrockRequest (near 1:1)
+
+    Msg->>BC: invoke(model, bedrock_request)
+    BC->>BC: _build_anthropic_body(request)
+    BC->>AWS: invoke_model(body=JSON)
+    AWS-->>BC: Anthropic Messages API JSON
+    BC-->>Msg: BedrockResponse
+
+    Msg->>AT: bedrock_to_anthropic(response)
+    AT-->>Msg: AnthropicMessagesResponse
+    Msg-->>Client: Anthropic JSON response
+```
+
+### 7.2 Key Differences from OpenAI Path
+
+| Aspect | OpenAI Path | Anthropic Path |
+|--------|------------|----------------|
+| Auth | `Authorization: Bearer` | `x-api-key` header |
+| Request translation | Complex (role mapping, tool format conversion) | Near-passthrough (same format as Bedrock) |
+| `thinking` blocks | Skipped in response | Preserved in response |
+| `stop_reason` | Mapped to `finish_reason` (`end_turn` → `stop`) | Passed through as-is |
+| Streaming format | `data: {json}\n\n` + `data: [DONE]\n\n` | `event: type\ndata: {json}\n\n` |
+| Error format | `{"error": {"message": "...", "type": "..."}}` | `{"type": "error", "error": {"type": "...", "message": "..."}}` |
+| `cache_control` | Via `bedrock_auto_cache` or `X-Bedrock-Auto-Cache` | Native support (passed through directly) |
+
+### 7.3 Thinking Block Stripping in Conversation History
+
+When using the Anthropic Messages API path with extended thinking enabled, the proxy automatically strips `thinking` and `redacted_thinking` content blocks from conversation history messages before sending to Bedrock.
+
+**Why this is necessary:**
+- Bedrock's InvokeModel API doesn't support adaptive thinking mode's signature-only thinking blocks (blocks with just `type: "thinking"` but no content)
+- The model generates fresh thinking on each turn based on the current context
+- Historical thinking blocks from previous turns are not needed and would cause validation errors
+
+**What gets stripped:**
+```json
+// Original message in conversation history
+{
+  "role": "assistant",
+  "content": [
+    {"type": "thinking", "thinking": "Previous reasoning..."},
+    {"type": "text", "text": "Here's my response"}
+  ]
+}
+
+// After stripping (sent to Bedrock)
+{
+  "role": "assistant",
+  "content": [
+    {"type": "text", "text": "Here's my response"}
+  ]
+}
+```
+
+This stripping only applies to historical messages in the `messages` array. Current turn thinking (generated by Bedrock) is preserved in responses.
+
+### 7.4 Adaptive Thinking Mode
+
+The `thinking.type` parameter supports three values:
+
+| Value | Behavior |
+|-------|----------|
+| `"enabled"` | Extended thinking is always used (requires `budget_tokens`) |
+| `"disabled"` | No extended thinking |
+| `"adaptive"` | Model decides whether to use extended thinking based on query complexity |
+
+Example request with adaptive thinking:
+
+```json
+{
+  "model": "claude-opus-4",
+  "max_tokens": 4096,
+  "messages": [...],
+  "thinking": {
+    "type": "adaptive",
+    "budget_tokens": 10000
+  }
+}
+```
+
+In adaptive mode, the model automatically engages extended thinking for complex queries while responding directly for simpler ones. The `budget_tokens` sets the maximum allowed for thinking when the model chooses to use it.
+
+### 7.5 Streaming Event Mapping
+
+The Anthropic path converts `BedrockStreamEvent` back to Anthropic SSE format, which is essentially the inverse of `_anthropic_event_to_bedrock()`:
+
+| BedrockStreamEvent | Anthropic SSE Event | Key Differences from OpenAI |
+|---|---|---|
+| `message_start` | `event: message_start` | Full message object (not just usage) |
+| `content_block_start` | `event: content_block_start` | Includes thinking blocks |
+| `content_block_delta` (text) | `event: content_block_delta` (text_delta) | Native delta format |
+| `content_block_delta` (partial_json) | `event: content_block_delta` (input_json_delta) | Native format |
+| `content_block_delta` (thinking) | `event: content_block_delta` (thinking_delta) | **Preserved** (OpenAI skips) |
+| `content_block_stop` | `event: content_block_stop` | Direct mapping |
+| `message_delta` | `event: message_delta` | `stop_reason` preserved (no mapping) |
+| `message_stop` | `event: message_stop` | No `[DONE]` marker |
+
+---
+
+## 8. Bedrock Extension Pass-through
 
 The full lifecycle of a `bedrock_additional_model_request_fields` value:
 
@@ -432,7 +555,7 @@ invoke_model(body=json.dumps(body))
 
 ---
 
-## 8. Effort Parameter Auto-transform (Anthropic Models Only)
+## 9. Effort Parameter Auto-transform (Anthropic Models Only)
 
 Anthropic's `effort` parameter requires special handling on Bedrock:
 
@@ -479,7 +602,7 @@ The `_build_anthropic_body()` method in `bedrock.py` transforms it to:
 
 ---
 
-## 9. Automatic Fixes
+## 10. Automatic Fixes
 
 ### 9.1 max_tokens vs budget_tokens
 
@@ -501,7 +624,7 @@ If temperature is not set → top_p is passed through
 
 ---
 
-## 10. Unsupported Parameters
+## 11. Unsupported Parameters
 
 These OpenAI/Bedrock parameters are **warned and ignored** when using `invoke_model` (Anthropic models):
 
@@ -520,8 +643,11 @@ These OpenAI/Bedrock parameters are **warned and ignored** when using `invoke_mo
 
 | File | Role in Translation |
 |---|---|
-| `api/v1/endpoints/chat.py` | Entry point; extracts `X-Bedrock-*` headers; orchestrates stream/non-stream flow |
+| `api/v1/endpoints/chat.py` | OpenAI entry point; extracts `X-Bedrock-*` headers; orchestrates stream/non-stream flow |
+| `api/anthropic/endpoints/messages.py` | Anthropic entry point; `x-api-key` auth; Anthropic SSE streaming |
 | `services/translator.py` | `RequestTranslator`: OpenAI → BedrockRequest; `ResponseTranslator`: BedrockResponse → OpenAI |
+| `services/anthropic_translator.py` | `AnthropicRequestTranslator`: Anthropic → BedrockRequest; `AnthropicResponseTranslator`: BedrockResponse → Anthropic |
 | `services/bedrock.py` | `_build_anthropic_body()`: BedrockRequest → Anthropic JSON (Anthropic models); `_build_converse_params()`: BedrockRequest → Converse API params (non-Anthropic); `_anthropic_event_to_bedrock()` / `_converse_stream_event_to_bedrock()`: stream event mapping |
 | `schemas/openai.py` | OpenAI request/response Pydantic models |
+| `schemas/anthropic.py` | Anthropic Messages API request/response/streaming Pydantic models |
 | `schemas/bedrock.py` | Internal Bedrock Pydantic models (BedrockRequest, BedrockResponse, BedrockStreamEvent) |

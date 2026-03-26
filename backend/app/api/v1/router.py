@@ -20,9 +20,10 @@ async def gateway_root():
     return {
         "message": "Kolya BR Proxy - AI Gateway API",
         "version": "1.0.0",
-        "compatible_with": "OpenAI API v1",
+        "compatible_with": ["OpenAI API v1", "Anthropic Messages API"],
         "endpoints": {
             "chat_completions": "/v1/chat/completions",
+            "messages": "/v1/messages",
             "models": "/v1/models",
         },
     }

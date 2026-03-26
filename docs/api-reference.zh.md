@@ -1,10 +1,11 @@
 # API 参考
 
-Kolya BR Proxy 提供三组 API：
+Kolya BR Proxy 提供四组 API：
 
 | 分组 | 前缀 | 认证方式 | 用途 |
 |------|------|----------|------|
-| Gateway API | `/v1` | Bearer API Token | OpenAI 兼容的聊天补全 |
+| Gateway API (OpenAI) | `/v1` | `Authorization: Bearer` | OpenAI 兼容的聊天补全 |
+| Gateway API (Anthropic) | `/v1` | `x-api-key` 请求头 | Anthropic Messages API 兼容 |
 | Admin API | `/admin` | Bearer JWT | 用户管理、令牌、用量、审计 |
 | Health API | `/health` | 无 | 负载均衡器探针 |
 
@@ -67,7 +68,7 @@ Authorization: Bearer kbr_<your_token>
 }
 ```
 
-`effort` 参数（`low` / `medium` / `high`）控制模型的思考深度。网关会自动将其包装到 `output_config.effort` 中，并注入所需的 `anthropic_beta` 标志。当设置了 `thinking.budget_tokens` 时，`max_tokens` 会自动调整以满足 `max_tokens > budget_tokens` 的约束。
+`thinking.type` 支持 `"enabled"`、`"disabled"` 或 `"adaptive"` 三种模式。`effort` 参数（`low` / `medium` / `high`）控制模型的思考深度。网关会自动将其包装到 `output_config.effort` 中，并注入所需的 `anthropic_beta` 标志。当设置了 `thinking.budget_tokens` 时，`max_tokens` 会自动调整以满足 `max_tokens > budget_tokens` 的约束。
 
 > 同时设置请求头和请求体时，请求头优先。
 
@@ -200,6 +201,211 @@ for chunk in stream:
     if chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="", flush=True)
 ```
+
+---
+
+## 1b. Gateway API（Anthropic Messages API 兼容）
+
+所有 Anthropic 兼容端点需要在 `x-api-key` 请求头中携带 API Key：
+
+```
+x-api-key: kbr_<your_token>
+```
+
+> 同一个 `kbr_` API Key 可同时用于 OpenAI 和 Anthropic 端点。代理根据端点路径和认证头格式自动路由。
+
+### POST /v1/messages
+
+创建消息。接受 Anthropic Messages API 格式的请求，转发至 AWS Bedrock。支持扩展思考（thinking）、工具调用、提示缓存等所有 Anthropic 原生功能。
+
+**请求体** (`AnthropicMessagesRequest`)：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `model` | string | *必填* | Bedrock 模型 ID（如 `global.anthropic.claude-sonnet-4-5-20250929-v1:0`） |
+| `messages` | array | *必填* | 消息对象数组（role: `user` 或 `assistant`） |
+| `max_tokens` | integer | *必填* | 最大生成 token 数 |
+| `system` | string \| array | null | 系统提示（字符串或含可选 `cache_control` 的内容块数组） |
+| `temperature` | float | null | 采样温度（0.0 - 1.0） |
+| `top_p` | float | null | 核采样（0.0 - 1.0） |
+| `top_k` | integer | null | Top-K 采样 |
+| `stop_sequences` | array | null | 停止序列 |
+| `stream` | boolean | `false` | 启用 SSE 流式输出 |
+| `tools` | array | null | 工具定义（Anthropic 格式） |
+| `tool_choice` | object | null | 工具选择策略 |
+| `metadata` | object | null | 请求元数据 |
+| `thinking` | object | null | 扩展思考配置。支持 `type: "enabled"`、`"disabled"` 或 `"adaptive"`。示例：`{"type": "enabled", "budget_tokens": N}` |
+
+**消息内容块类型**：
+
+```json
+{"type": "text", "text": "Hello!"}
+{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "..."}}
+{"type": "tool_use", "id": "toolu_...", "name": "get_weather", "input": {"city": "London"}}
+{"type": "tool_result", "tool_use_id": "toolu_...", "content": "晴，22°C"}
+```
+
+#### 非流式示例
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: kbr_your_token_here" \
+  -d '{
+    "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+**响应** (`AnthropicMessagesResponse`)：
+
+```json
+{
+  "id": "msg_abc123...",
+  "type": "message",
+  "role": "assistant",
+  "content": [
+    {"type": "text", "text": "Hello! How can I help you?"}
+  ],
+  "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 8
+  }
+}
+```
+
+#### 流式示例
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: kbr_your_token_here" \
+  -d '{
+    "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+**流式响应**（SSE `text/event-stream`，Anthropic 格式）：
+
+```
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_...","type":"message","role":"assistant","content":[],"model":"...","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":8}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+#### 扩展思考示例
+
+```bash
+curl -X POST http://localhost:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: kbr_your_token_here" \
+  -d '{
+    "model": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "max_tokens": 8192,
+    "thinking": {"type": "enabled", "budget_tokens": 4096},
+    "messages": [{"role": "user", "content": "请逐步解题：15 * 27 + 33"}]
+  }'
+```
+
+**Thinking Block 处理**：
+
+当使用 `thinking.type: "adaptive"` 时，对话历史中可能包含 `thinking` 或 `redacted_thinking` 类型的内容块（signature-only thinking blocks）。代理会自动剥离这些块后再发送到 Bedrock，因为 Bedrock 的 Converse API 不支持 adaptive 模式的 thinking blocks。这确保了与 Claude Code 等客户端的兼容性。
+
+#### 错误响应（Anthropic 格式）
+
+```json
+{
+  "type": "error",
+  "error": {
+    "type": "authentication_error",
+    "message": "Invalid or expired API key"
+  }
+}
+```
+
+| 状态码 | 错误类型 | 含义 |
+|--------|----------|------|
+| 400 | `invalid_request_error` | 请求无效（错误的模型名称、格式错误的请求体） |
+| 401 | `authentication_error` | 缺少或无效的 API Key |
+| 403 | `permission_error` | Token 无权访问请求的模型 |
+| 429 | `rate_limit_error` | Token 配额已用尽 |
+| 500 | `api_error` | 服务器内部错误 |
+
+#### Anthropic SDK 调用方式
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    api_key="kbr_your_token_here",  # pragma: allowlist secret
+    base_url="http://localhost:8000/v1",
+)
+
+message = client.messages.create(
+    model="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(message.content[0].text)
+
+# 流式输出
+with client.messages.stream(
+    model="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+```
+
+#### 配合 Claude Code CLI 使用
+
+本代理完全兼容 Claude Code CLI。创建 token 时设置 `prefix: "sk-ant-api03"` 即可生成与官方 Anthropic API 格式一致的密钥。
+
+**环境变量配置**：
+
+```bash
+export ANTHROPIC_BASE_URL="https://your-api-domain"
+export ANTHROPIC_API_KEY="sk-ant-api03_xxxxxxx"  # pragma: allowlist secret
+export CLAUDE_MODEL="us.anthropic.claude-sonnet-4-5-20250514-v1:0"
+```
+
+**~/.claude/settings.json 配置示例**：
+
+```json
+{
+  "model": "us.anthropic.claude-sonnet-4-5-20250514-v1:0",
+  "smallModel": "your-haiku-model-id",
+  "largeModel": "your-opus-model-id"
+}
+```
+
+配置完成后，Claude Code CLI 会自动使用本代理访问 Bedrock 模型，提供与官方 API 一致的使用体验。
+
+---
 
 ### GET /v1/models
 
@@ -365,7 +571,8 @@ Authorization: Bearer <jwt_access_token>
   "name": "My API Key",
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": 100.00,
-  "allowed_ips": ["192.168.1.0/24"]
+  "allowed_ips": ["192.168.1.0/24"],
+  "prefix": "kbr"
 }
 ```
 
@@ -375,6 +582,7 @@ Authorization: Bearer <jwt_access_token>
 | `expires_at` | datetime | 否 | 过期时间 |
 | `quota_usd` | decimal | 否 | 使用配额（美元） |
 | `allowed_ips` | array | 否 | IP 白名单（CIDR） |
+| `prefix` | string | 否 | Token 前缀（默认: `"kbr"`）。可设为 `"sk-ant-api03"` 生成与 Claude Code / Anthropic SDK 兼容的 token |
 
 **响应** (201)：`TokenWithKeyResponse` -- 包含明文 Token 值。这是唯一一次返回明文 Token。
 
@@ -383,6 +591,7 @@ Authorization: Bearer <jwt_access_token>
   "id": "uuid",
   "name": "My API Key",
   "token": "kbr_abc123...",
+  "key_prefix": "kbr",
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": "100.00",
   "used_usd": "0.00",

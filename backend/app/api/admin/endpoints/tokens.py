@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user_from_jwt, get_token_service
 from app.core.database import get_db
+from app.core.security import decrypt_token
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.models.user import User
@@ -72,6 +73,7 @@ class TokenResponse(BaseModel):
 
     id: str
     name: str
+    key_prefix: str = "sk-ant-api03"
     expires_at: datetime | None
     quota_usd: str | None
     used_usd: str
@@ -105,6 +107,18 @@ async def calculate_token_used_usd(token: APIToken, db: AsyncSession) -> Decimal
     return result.scalar()
 
 
+def _extract_key_prefix(token: APIToken) -> str:
+    """Extract the key prefix from the encrypted token."""
+    try:
+        if token.encrypted_token:
+            plain = decrypt_token(token.encrypted_token)
+            if "_" in plain:
+                return plain.split("_", 1)[0]
+    except Exception:
+        pass
+    return "sk-ant-api03"
+
+
 def build_token_response(token: APIToken, used_usd: Decimal) -> TokenResponse:
     """Build TokenResponse with calculated used_usd."""
     token.calculate_used_usd(used_usd)
@@ -112,6 +126,7 @@ def build_token_response(token: APIToken, used_usd: Decimal) -> TokenResponse:
     return TokenResponse(
         id=str(token.id),
         name=token.name,
+        key_prefix=_extract_key_prefix(token),
         expires_at=token.expires_at,
         quota_usd=str(token.quota_usd) if token.quota_usd else None,
         used_usd=str(used_usd),

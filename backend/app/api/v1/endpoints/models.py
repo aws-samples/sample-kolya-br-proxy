@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_token, get_current_user_from_jwt
+from app.api.deps import get_current_token_flexible, get_current_user_from_jwt
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model import Model
@@ -77,14 +77,14 @@ class BedrockModelListResponse(BaseModel):
 
 @router.get("/models")
 async def list_models(
-    token: APIToken = Depends(get_current_token),
+    token: APIToken = Depends(get_current_token_flexible),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List models available to the current API token (OpenAI compatible).
+    List models available to the current API token.
 
-    Returns models in OpenAI format: {"object": "list", "data": [...]}.
-    Only returns models that the token has been granted access to.
+    Supports both OpenAI-style (Authorization: Bearer) and Anthropic-style
+    (x-api-key) authentication. Returns models in OpenAI format.
     """
     try:
         # Query models associated with this token

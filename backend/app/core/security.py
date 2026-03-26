@@ -65,12 +65,12 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def generate_api_token(prefix: str = "kbr") -> str:
+def generate_api_token(prefix: str = "sk-ant-api03") -> str:
     """
     Generate a secure API token.
 
     Format: {prefix}_{random_string}
-    Example: kbr_abc123def456...
+    Example: sk-ant-api03_abc123def456...
 
     Args:
         prefix: Token prefix for identification

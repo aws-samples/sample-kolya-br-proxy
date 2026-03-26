@@ -36,5 +36,5 @@ spec:
     cpu: "${limits_cpu}"
     memory: ${limits_memory}
   disruption:
-    consolidationPolicy: WhenEmpty
-    consolidateAfter: 30s
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 60s

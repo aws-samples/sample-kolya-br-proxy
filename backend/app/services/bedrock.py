@@ -500,9 +500,17 @@ class BedrockClient:
                 parts = []
                 for part in msg.content:
                     if isinstance(part, BedrockContentPart):
-                        parts.append(part.model_dump(exclude_none=True))
+                        p = part.model_dump(exclude_none=True)
                     else:
-                        parts.append(part)
+                        p = dict(part) if isinstance(part, dict) else part
+                    # Strip thinking/redacted_thinking blocks from history —
+                    # Bedrock doesn't support adaptive signature-only thinking blocks
+                    if isinstance(p, dict) and p.get("type") in (
+                        "thinking",
+                        "redacted_thinking",
+                    ):
+                        continue
+                    parts.append(p)
                 messages.append({"role": msg.role, "content": parts})
 
         body: dict = {

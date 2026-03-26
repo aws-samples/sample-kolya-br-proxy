@@ -1,6 +1,6 @@
 # 架构文档
 
-Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）的 AI 网关。
+Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 和 Anthropic Messages API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）的 AI 网关。
 
 ---
 
@@ -25,6 +25,7 @@ Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 访问 AWS B
 graph LR
     subgraph Clients ["Client Applications"]
         OAI["OpenAI SDK / Client Libraries"]
+        Anthropic_SDK["Anthropic SDK / Client Libraries"]
         Browser["Admin Dashboard<br/>(Browser)"]
     end
 
@@ -51,7 +52,8 @@ graph LR
         Bedrock["AWS Bedrock<br/>(Claude, Nova, DeepSeek,<br/>Mistral, Llama)"]
     end
 
-    OAI -->|"HTTPS /v1/*"| ALB
+    OAI -->|"HTTPS /v1/chat/*"| ALB
+    Anthropic_SDK -->|"HTTPS /v1/messages"| ALB
     Browser -->|"HTTPS /*"| ALB
     ALB -->|"Frontend routes"| Nginx
     ALB -->|"API routes"| Uvicorn
@@ -66,7 +68,9 @@ graph LR
 
 | 决策 | 理由 |
 |------|------|
-| OpenAI 兼容 API | 直接替换；客户端只需修改 `base_url` 和 `api_key` |
+| 双 API 兼容 | OpenAI 兼容（`/v1/chat/completions`）和 Anthropic Messages API（`/v1/messages`）；客户端只需修改 `base_url` 和 `api_key` |
+| 可配置 API 密钥前缀 | 默认 `kbr_` 前缀；可选 `sk-ant-api03` 前缀以兼容 Claude Code / Anthropic SDK |
+| 剥离历史 thinking blocks | Bedrock 不支持 adaptive 模式的 signature-only thinking blocks，发送前自动从对话历史中移除 |
 | 单例 `BedrockClient` | 每进程一个共享 aioboto3 会话 + 连接池 |
 | 异步信号量 (50) | 反压匹配连接池大小；防止请求排队 |
 | 面板用 JWT，网关用 API 密钥 | 分离认证关注点；API 密钥长期有效，JWT 短期有效 |
@@ -93,9 +97,14 @@ graph TD
             Models_EP["/admin/models<br/>model management"]
         end
 
-        subgraph V1_Sub ["Gateway Endpoints (OpenAI-compatible)"]
-            Chat_EP["/v1/chat/completions<br/>streaming + non-streaming"]
-            Models_List["/v1/models<br/>list available models"]
+        subgraph V1_Sub ["Gateway Endpoints"]
+            subgraph OpenAI_Sub ["OpenAI-compatible"]
+                Chat_EP["/v1/chat/completions<br/>streaming + non-streaming"]
+                Models_List["/v1/models<br/>list available models"]
+            end
+            subgraph Anthropic_Sub ["Anthropic Messages API"]
+                Messages_EP["/v1/messages<br/>streaming + non-streaming"]
+            end
         end
 
         Admin --> Admin_Sub
@@ -113,6 +122,8 @@ graph TD
         BedrockSvc["BedrockClient<br/>(singleton, semaphore=50)"]
         ReqTranslator["RequestTranslator<br/>(OpenAI -> Bedrock)"]
         ResTranslator["ResponseTranslator<br/>(Bedrock -> OpenAI)"]
+        AnthReqTranslator["AnthropicRequestTranslator<br/>(Anthropic -> Bedrock)"]
+        AnthResTranslator["AnthropicResponseTranslator<br/>(Bedrock -> Anthropic)"]
         TokenSvc["TokenService<br/>(validate, CRUD)"]
         AuthSvc["AuthService<br/>(OAuth user creation)"]
         RefreshSvc["RefreshTokenService<br/>(token rotation)"]
@@ -508,7 +519,7 @@ graph TD
 
 ## 6. 认证流程
 
-系统支持两种 OAuth 认证方式：**AWS Cognito** 和 **Microsoft Entra ID**（通过 `deploy-all.sh --step 0` 选择）。不支持本地用户名/密码认证。管理面板使用 JWT（访问令牌 + 刷新令牌），而 OpenAI 兼容网关使用 API 密钥（`kbr_` 前缀）。Cognito 回调 URL 从 `terraform.tfvars` 中的 `frontend_domain` 自动派生。
+系统支持两种 OAuth 认证方式：**AWS Cognito** 和 **Microsoft Entra ID**（通过 `deploy-all.sh --step 0` 选择）。不支持本地用户名/密码认证。管理面板使用 JWT（访问令牌 + 刷新令牌），而网关 API 使用 API 密钥（`kbr_` 前缀）—— OpenAI 兼容端点通过 `Authorization: Bearer` 传递，Anthropic 端点通过 `x-api-key` 头传递。两种认证方式验证相同的 `kbr_` 令牌。Cognito 回调 URL 从 `terraform.tfvars` 中的 `frontend_domain` 自动派生。
 
 ### 6.1 OAuth 流程（Cognito / Microsoft）
 
@@ -543,15 +554,27 @@ sequenceDiagram
 
 ### 6.2 API 密钥认证（网关）
 
+相同的 `kbr_` API 密钥同时适用于 OpenAI 兼容和 Anthropic 端点，唯一区别是请求头格式：
+
+- **OpenAI 路径**：`Authorization: Bearer kbr_xxx`（从 Bearer token 提取）
+- **Anthropic 路径**：`x-api-key: kbr_xxx`（从 `x-api-key` 头提取）
+
+两条路径使用相同的验证逻辑（Redis 缓存 → 数据库降级）。
+
 ```mermaid
 sequenceDiagram
-    participant Client as OpenAI Client
+    participant Client as API Client<br/>(OpenAI or Anthropic SDK)
     participant BE as Backend (FastAPI)
     participant Redis as Redis (optional)
     participant DB as PostgreSQL
 
-    Client->>BE: POST /v1/chat/completions<br/>Authorization: Bearer kbr_xxx...
-    BE->>BE: Extract token from Bearer header
+    alt OpenAI 兼容端点
+        Client->>BE: POST /v1/chat/completions<br/>Authorization: Bearer kbr_xxx...
+        BE->>BE: Extract token from Bearer header
+    else Anthropic 端点
+        Client->>BE: POST /v1/messages<br/>x-api-key: kbr_xxx...
+        BE->>BE: Extract token from x-api-key header
+    end
 
     alt Redis available
         BE->>Redis: Check token cache (SHA256 hash)
@@ -574,7 +597,7 @@ sequenceDiagram
 | 属性 | JWT 访问令牌 | JWT 刷新令牌 | API 密钥 (`kbr_`) |
 |------|-------------|-------------|-------------------|
 | 有效期 | 30 分钟 | 7 天 | 直到过期或撤销 |
-| 使用者 | 管理面板 | 管理面板（刷新） | OpenAI 兼容客户端 |
+| 使用者 | 管理面板 | 管理面板（刷新） | OpenAI / Anthropic 客户端 |
 | 存储 | localStorage | HttpOnly cookie (`kbr_refresh_token`, Path=/admin/auth) | 客户端配置 |
 | 验证 | JWT 解码 + 签名 | 数据库查找（哈希 + 族群） | 数据库查找（SHA256 哈希） |
 | 轮换 | 刷新时 | 每次使用（签发新令牌） | 手动 |
@@ -583,9 +606,12 @@ sequenceDiagram
 
 ## 7. 请求处理流程
 
-本节详细描述 `/v1/chat/completions` 请求的完整生命周期，从令牌验证到 Bedrock 调用再到使用量记录。
+本节详细描述网关请求的完整生命周期。代理支持两条 API 路径：
 
-### 7.1 时序图
+- **OpenAI 路径**（`/v1/chat/completions`）：在 OpenAI 和 Bedrock 格式之间进行完整转换
+- **Anthropic 路径**（`/v1/messages`）：近乎直通，因为 Bedrock InvokeModel 原生使用 Anthropic Messages API 格式
+
+### 7.1 OpenAI 路径时序图
 
 ```mermaid
 sequenceDiagram
@@ -670,9 +696,75 @@ sequenceDiagram
     BG->>DB: INSERT INTO usage_records
 ```
 
-### 7.2 请求/响应转换
+### 7.2 Anthropic 路径时序图
 
-代理执行三阶段转换：OpenAI 格式 → 内部 `BedrockRequest` → Bedrock API 调用，响应反向转换。对于 Anthropic 模型，请求以 Anthropic Messages API 格式通过 `invoke_model` 发送。对于非 Anthropic 模型（Nova、DeepSeek、Mistral、Llama 等），请求转换为 Converse API 格式通过 `converse`/`converse_stream` 发送。包括消息转换、工具调用映射、参数翻译、Bedrock 扩展参数透传，以及自动修正（effort 包装、max_tokens 调整）。
+Anthropic 路径是近乎直通的：由于 Bedrock 的 InvokeModel API 原生接受 Anthropic Messages API 格式，只需极少转换。与 OpenAI 路径的关键区别：
+
+- 通过 `x-api-key` 头认证，而非 `Authorization: Bearer`
+- 响应中保留 thinking blocks（OpenAI 路径会跳过它们）
+- 流式使用 Anthropic SSE 格式（`event: type\ndata: {json}\n\n`）而非 OpenAI 格式（`data: {json}\n\n`）
+
+```mermaid
+sequenceDiagram
+    participant Client as Anthropic Client
+    participant MW as Middleware Stack
+    participant Msg as messages.py endpoint
+    participant Deps as deps.py (DI)
+    participant TokenSvc as TokenService
+    participant DB as PostgreSQL
+    participant Translator as AnthropicRequestTranslator /<br/>AnthropicResponseTranslator
+    participant Bedrock as BedrockClient<br/>(semaphore=50)
+    participant AWS as AWS Bedrock API
+    participant BG as BackgroundTaskManager
+
+    Client->>MW: POST /v1/messages<br/>x-api-key: kbr_xxx
+    MW->>MW: SecurityMiddleware + CORS
+    MW->>Msg: Route to handler
+
+    Msg->>Deps: Depends(get_current_token_from_api_key)
+    Deps->>TokenSvc: validate_token(kbr_xxx)
+    TokenSvc->>DB: SELECT by token_hash
+    DB-->>TokenSvc: APIToken
+    TokenSvc-->>Msg: Validated APIToken
+
+    Msg->>Msg: 配额检查 + 模型访问检查
+
+    Msg->>Translator: to_bedrock_with_passthrough(request)
+    Note over Translator: 近 1:1 映射，<br/>保留 cache_control
+    Translator-->>Msg: invoke_model 原始字典
+
+    alt Streaming (stream=true)
+        Msg->>Bedrock: invoke_stream(model, request)
+        Bedrock->>AWS: invoke_model_with_response_stream(body)
+        loop 流式事件
+            AWS-->>Bedrock: Anthropic SSE 事件
+            Bedrock-->>Msg: BedrockStreamEvent
+        end
+        Msg->>Translator: bedrock_stream_to_anthropic_events(event)
+        Translator-->>Msg: Anthropic SSE 格式化字符串
+        Msg-->>Client: event: content_block_delta\ndata: {...}\n\n
+        Msg-->>Client: event: message_stop\ndata: {...}\n\n
+    else Non-streaming
+        Msg->>Bedrock: invoke(model, request)
+        Bedrock->>AWS: invoke_model(body)
+        AWS-->>Bedrock: Anthropic Messages API JSON
+        Bedrock-->>Msg: BedrockResponse
+        Msg->>Translator: bedrock_to_anthropic(response)
+        Translator-->>Msg: AnthropicMessagesResponse
+        Msg-->>Client: JSON 响应
+    end
+
+    Msg->>BG: background: record_usage(...)
+```
+
+### 7.3 请求/响应转换
+
+代理在客户端 API 格式和 Bedrock 之间执行转换：
+
+- **OpenAI 路径**：三阶段转换（OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI）。包括消息转换、工具调用映射、参数翻译和自动修正。
+- **Anthropic 路径**：近乎直通（Anthropic → 原始字典 → `invoke_model`）。由于 Bedrock 原生使用 Anthropic Messages API 格式处理 Claude 模型，只需极少转换。保留 `cache_control` 标记和 thinking blocks。
+
+对于非 Anthropic 模型（Nova、DeepSeek、Mistral、Llama 等），两条路径都通过 `converse`/`converse_stream` 使用 Converse API。
 
 完整的转换管线文档请参阅 **[请求转换管线](request-translation.zh.md)**。
 
