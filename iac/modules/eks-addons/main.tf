@@ -117,9 +117,24 @@ resource "aws_eks_pod_identity_association" "backend_bedrock" {
   role_arn        = aws_iam_role.backend_bedrock.arn
 }
 
+# KMS CMK for Secrets Manager encryption
+resource "aws_kms_key" "secrets" {
+  description             = "CMK for ${local.resource_prefix} Secrets Manager secrets"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  tags = var.default_tags
+}
+
+resource "aws_kms_alias" "secrets" {
+  name          = "alias/${local.resource_prefix}-secrets"
+  target_key_id = aws_kms_key.secrets.key_id
+}
+
 # AWS Secrets Manager secret for backend secrets (managed by External Secrets Operator)
 resource "aws_secretsmanager_secret" "backend_secrets" {
-  name = "${local.resource_prefix}-backend-secrets"
+  name       = "${local.resource_prefix}-backend-secrets"
+  kms_key_id = aws_kms_key.secrets.arn
 
   tags = var.default_tags
 }

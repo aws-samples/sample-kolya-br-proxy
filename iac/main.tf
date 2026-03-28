@@ -50,7 +50,7 @@ module "rds_aurora_postgresql" {
   # Security settings (configurable for different environments)
   storage_encrypted                   = true
   kms_key_id                          = ""
-  iam_database_authentication_enabled = false
+  iam_database_authentication_enabled = true
   deletion_protection                 = local.workspace == "prod" ? true : false
 
   # Backup settings (minimum 1 day required by AWS)
@@ -70,8 +70,8 @@ module "rds_aurora_postgresql" {
   # Monitoring settings (only for production)
   monitoring_interval = local.workspace == "prod" ? 60 : 0
 
-  # Performance Insights settings (only for production)
-  performance_insights_enabled = local.workspace == "prod" ? true : false
+  # Performance Insights settings (required for compliance)
+  performance_insights_enabled = true
 
   # Tags
   default_tags = local.default_tags

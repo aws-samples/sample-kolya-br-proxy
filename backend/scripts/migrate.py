@@ -45,7 +45,7 @@ async def check_and_stamp():
     async with engine.connect() as conn:
         # 1. Acquire advisory lock (blocks other Pods)
         logger.info("Acquiring migration advisory lock...")
-        await conn.execute(text(f"SELECT pg_advisory_lock({MIGRATION_LOCK_ID})"))
+        await conn.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": MIGRATION_LOCK_ID})
         logger.info("Lock acquired")
 
         try:
@@ -93,7 +93,7 @@ async def check_and_stamp():
 
             await conn.commit()
         finally:
-            await conn.execute(text(f"SELECT pg_advisory_unlock({MIGRATION_LOCK_ID})"))
+            await conn.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": MIGRATION_LOCK_ID})
             logger.info("Migration lock released")
 
     await engine.dispose()

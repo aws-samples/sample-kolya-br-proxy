@@ -54,6 +54,7 @@ resource "aws_secretsmanager_secret" "aurora_postgresql_password" {
   name                    = "${local.resource_prefix}-aurora-postgres-pwd"
   description             = "Master password for Aurora PostgreSQL cluster ${local.cluster_identifier}"
   recovery_window_in_days = 0
+  kms_key_id              = var.kms_key_id != "" ? var.kms_key_id : null
   tags                    = var.default_tags
 }
 

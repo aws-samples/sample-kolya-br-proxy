@@ -2,6 +2,8 @@ architecture: standalone
 auth:
   enabled: false
 master:
+  nodeSelector:
+    karpenter.sh/nodepool: common-nodepool
   persistence:
     enabled: true
     storageClass: gp3
