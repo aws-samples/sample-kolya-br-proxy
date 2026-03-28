@@ -42,6 +42,19 @@ resource "aws_iam_role_policy_attachment" "rds_monitoring_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
 }
 
+# KMS CMK for Secrets Manager encryption
+resource "aws_kms_key" "secrets" {
+  description             = "CMK for ${local.resource_prefix} RDS Secrets Manager"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+  tags                    = var.default_tags
+}
+
+resource "aws_kms_alias" "secrets" {
+  name          = "alias/${local.resource_prefix}-rds-secrets"
+  target_key_id = aws_kms_key.secrets.key_id
+}
+
 # Generate a random master password for Aurora PostgreSQL
 resource "random_password" "master_password" {
   length           = 32
@@ -54,7 +67,7 @@ resource "aws_secretsmanager_secret" "aurora_postgresql_password" {
   name                    = "${local.resource_prefix}-aurora-postgres-pwd"
   description             = "Master password for Aurora PostgreSQL cluster ${local.cluster_identifier}"
   recovery_window_in_days = 0
-  kms_key_id              = var.kms_key_id != "" ? var.kms_key_id : null
+  kms_key_id              = aws_kms_key.secrets.arn
   tags                    = var.default_tags
 }
 

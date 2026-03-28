@@ -47,7 +47,7 @@ variable "kms_key_id" {
 variable "iam_database_authentication_enabled" {
   description = "Whether to enable IAM database authentication"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "deletion_protection" {
@@ -119,7 +119,7 @@ variable "monitoring_role_arn" {
 variable "performance_insights_enabled" {
   description = "Whether to enable Performance Insights"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "default_tags" {
