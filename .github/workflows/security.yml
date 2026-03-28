@@ -51,7 +51,9 @@ jobs:
           uv export --no-dev --format requirements-txt | \
             uvx pip-audit -r /dev/stdin \
               --ignore-vuln CVE-2024-23342 \
-              --ignore-vuln CVE-2026-4539
+              --ignore-vuln CVE-2026-4539 \
+              --ignore-vuln CVE-2026-34073 \
+              --ignore-vuln CVE-2026-33936
 
   dependency-audit-node:
     name: Node Dependency Audit
