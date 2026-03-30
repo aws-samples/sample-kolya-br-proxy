@@ -9,6 +9,7 @@ from typing import AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -96,9 +97,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Pricing update scheduler stopped")
 
     logger.info("Kolya BR Proxy shutdown complete")
-
-
-from fastapi.exceptions import RequestValidationError
 
 
 def _is_anthropic_request(request: Request) -> bool:
