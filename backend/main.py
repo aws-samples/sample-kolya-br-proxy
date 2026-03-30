@@ -103,9 +103,9 @@ from fastapi.exceptions import RequestValidationError
 
 def _is_anthropic_request(request: Request) -> bool:
     """Check if request targets Anthropic API endpoints."""
-    return request.url.path.rstrip("/").endswith(
-        "/messages"
-    ) and request.headers.get("x-api-key")
+    return request.url.path.rstrip("/").endswith("/messages") and request.headers.get(
+        "x-api-key"
+    )
 
 
 async def _disable_cache(request: Request, call_next):
