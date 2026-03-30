@@ -41,9 +41,9 @@ Cognito is the default provider selected during deployment via `deploy-all.sh`. 
 ### Step 4: Set Environment Variables
 
 ```bash
-KBR_COGNITO_USER_POOL_ID=us-west-2_AbCdEfGhI
-KBR_COGNITO_CLIENT_ID=1a2b3c4d5e6f7g8h9i
-KBR_COGNITO_CLIENT_SECRET=your-cognito-client-secret
+KBR_COGNITO_USER_POOL_ID=us-west-2_EXAMPLE
+KBR_COGNITO_CLIENT_ID=<your-cognito-client-id>
+KBR_COGNITO_CLIENT_SECRET=<your-cognito-client-secret>
 KBR_COGNITO_REGION=us-west-2
 KBR_COGNITO_REDIRECT_URIS=http://localhost:3000/auth/cognito/callback
 ```
@@ -156,8 +156,8 @@ Frontend                     Backend                      Cognito
 ### Step 4: Set Environment Variables
 
 ```bash
-KBR_MICROSOFT_CLIENT_ID=12345678-1234-1234-1234-123456789abc
-KBR_MICROSOFT_CLIENT_SECRET=abcdefghijklmnopqrstuvwxyz123456~_
+KBR_MICROSOFT_CLIENT_ID=<your-microsoft-client-id>
+KBR_MICROSOFT_CLIENT_SECRET=<your-microsoft-client-secret>
 KBR_MICROSOFT_TENANT_ID=common
 KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 ```

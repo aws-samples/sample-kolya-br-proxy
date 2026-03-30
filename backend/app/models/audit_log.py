@@ -40,7 +40,7 @@ class AuditAction(enum.Enum):
     USER_CREATED = "user_created"
     USER_UPDATED = "user_updated"
     USER_DELETED = "user_deleted"
-    PASSWORD_CHANGED = "password_changed"  # pragma: allowlist secret
+    PASSWORD_CHANGED = "password_changed"  # pragma: allowlist secret  # nosemgrep
     EMAIL_VERIFIED = "email_verified"
 
     # Authorization

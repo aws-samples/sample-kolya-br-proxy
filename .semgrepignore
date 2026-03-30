@@ -1,0 +1,6 @@
+# Semgrep ignore patterns
+# The secrets baseline file stores hashes of known false positives - scanning it directly produces noise
+.secrets.baseline
+
+# Architecture prototype (not production code)
+kolya-br-proxy-arch/

@@ -30,5 +30,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health/ || exit 1
 
+# Run as non-root user
+RUN useradd -r -u 1001 -s /sbin/nologin appuser && chown -R appuser /app
+USER appuser
+
 # Run the application (settings loaded from environment variables)
 CMD ["uv", "run", "python", "-m", "backend.main"]

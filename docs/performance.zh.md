@@ -462,8 +462,8 @@ class APIToken(Base):
 # 假设数据库被攻击者获取
 # 攻击者看到的数据：
 {
-    "token_hash": "a3f5b8c9d2e1f4a7b6c5d8e9f1a2b3c4...",  # SHA256 哈希
-    "encrypted_token": "gAAAAABf3x..."                    # Fernet 加密
+    "token_hash": "<sha256-hash>",        # SHA256 哈希
+    "encrypted_token": "<fernet-token>"  # Fernet 加密
 }
 
 # 攻击者无法：
