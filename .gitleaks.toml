@@ -1,0 +1,13 @@
+# Gitleaks configuration
+# https://github.com/gitleaks/gitleaks
+
+[allowlist]
+description = "Global allowlist"
+paths = [
+  # The secrets baseline file intentionally stores hashes of known false positives
+  ".secrets.baseline",
+  # Architecture prototype, not production code
+  "kolya-br-proxy-arch",
+  # Separate infrastructure directory
+  "iac-612674025488-us-west-2",
+]

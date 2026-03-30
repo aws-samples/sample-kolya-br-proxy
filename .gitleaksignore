@@ -1,0 +1,17 @@
+# Gitleaks false positive suppressions
+# Format: <commit-sha>:<filepath>:<rule-id>:<line>
+
+# audit_log.py - "password_changed" is an enum value, not a credential
+918d2fed3521c62c64039ece0d3a44da8d7bf016:backend/app/models/audit_log.py:hashicorp-tf-password:43
+37efba81b27fce82c019534a9f945fbdd22f0489:backend/app/models/audit_log.py:hashicorp-tf-password:43
+
+# docs/oauth-setup - example placeholder values in documentation
+918d2fed3521c62c64039ece0d3a44da8d7bf016:docs/oauth-setup.md:generic-api-key:45
+918d2fed3521c62c64039ece0d3a44da8d7bf016:docs/oauth-setup.zh.md:generic-api-key:45
+
+# docs/performance - example Fernet token in documentation
+2fb614036ba98075358bc2a9a602dd52bc3498ce:docs/performance.md:generic-api-key:465
+2fb614036ba98075358bc2a9a602dd52bc3498ce:docs/performance.zh.md:generic-api-key:465
+
+# iac-612674025488-us-west-2 - separate infrastructure directory, not this project
+918d2fed3521c62c64039ece0d3a44da8d7bf016:iac-612674025488-us-west-2/modules/global-accelerator/README.md:generic-api-key:432

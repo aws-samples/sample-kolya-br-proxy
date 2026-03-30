@@ -130,7 +130,7 @@ def create_app() -> FastAPI:
 
     # Add middleware to disable caching
     @app.middleware("http")
-    async def disable_cache(request: Request, call_next):  # nosemgrep: useless-inner-function
+    async def disable_cache(request: Request, call_next):  # nosemgrep
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
@@ -150,7 +150,7 @@ def create_app() -> FastAPI:
         ) and request.headers.get("x-api-key")
 
     @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception):  # nosemgrep: useless-inner-function
+    async def global_exception_handler(request: Request, exc: Exception):  # nosemgrep
         """Global exception handler for unhandled errors."""
         logger.error(f"Unhandled exception: {exc}", exc_info=True)
 
@@ -181,7 +181,7 @@ def create_app() -> FastAPI:
     from fastapi.exceptions import RequestValidationError
 
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(  # nosemgrep: useless-inner-function
+    async def validation_exception_handler(  # nosemgrep
         request: Request, exc: RequestValidationError
     ):
         """Handle validation errors with detailed logging."""
@@ -212,7 +212,7 @@ def create_app() -> FastAPI:
         )
 
     @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc):  # nosemgrep: useless-inner-function
+    async def http_exception_handler(request: Request, exc):  # nosemgrep
         """Handle HTTP exceptions with format-aware error responses."""
         if _is_anthropic_request(request):
             error_type_map = {
