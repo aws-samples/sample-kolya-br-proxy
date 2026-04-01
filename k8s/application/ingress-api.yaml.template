@@ -12,7 +12,7 @@ metadata:
     alb.ingress.kubernetes.io/load-balancer-name: kolya-br-proxy-api-alb
     alb.ingress.kubernetes.io/tags: Environment=non-prod,Project=kolya-br-proxy,Service=api
     # Streaming response optimizations
-    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=4000
     alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30,load_balancing.algorithm.type=round_robin
     # Health check settings
     alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'

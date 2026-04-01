@@ -24,7 +24,7 @@ const apiBaseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 // Create axios instance with optimized settings
 const api = axios.create({
   baseURL: apiBaseURL,
-  timeout: 900000, // 15 minutes for long-running tasks
+  timeout: 3600000, // 1 hour for long-running tasks
   withCredentials: true, // Send HttpOnly cookies for cross-origin auth requests
   headers: {
     'Content-Type': 'application/json',
