@@ -2,25 +2,45 @@
 
 ## Overview
 
-This system implements dynamic fetching of AWS Bedrock model pricing and automatic database updates. Pricing data is used to calculate API call costs.
+This system implements dynamic fetching of model pricing from multiple sources and automatic database updates. Pricing data is used to calculate API call costs.
 
-## Architecture
+Two independent pricing subsystems run in parallel:
+- **AWS Bedrock pricing** — for all models accessed via AWS Bedrock
+- **Google Gemini pricing** — for models accessed directly via the Gemini API (stored with `region="global"`)
 
-### Database Table: `model_pricing`
+---
+
+## Database Table: `model_pricing`
 
 Stores model pricing information:
-- `model_id`: Model identifier
-- `region`: AWS region
-- `input_price_per_token`: Input token unit price (USD)
-- `output_price_per_token`: Output token unit price (USD)
-- `currency`: Currency (USD)
-- `source`: Data source (`api` = AWS Price List API, `aws-scraper` = AWS pricing page scraper)
-- `last_updated`: Last update time
-- `created_at`: Creation time
 
-### Pricing Fetch Strategy
+| Column | Description |
+|--------|-------------|
+| `model_id` | Model identifier (e.g. `amazon.nova-lite-v1:0`, `gemini-2.5-pro`) |
+| `region` | AWS region, cross-region prefix (`us.`, `global.`), or `"global"` for Gemini |
+| `input_price_per_token` | Input token unit price (USD) |
+| `output_price_per_token` | Output token unit price (USD) |
+| `cached_input_price_per_token` | Context cache read price (USD), NULL if not supported |
+| `currency` | Currency (USD) |
+| `source` | Data source — see values below |
+| `last_updated` | Last update timestamp |
+| `created_at` | Creation timestamp |
 
-The system uses a **dual-source strategy with deduplication** to fetch complete model pricing:
+**`source` field values:**
+
+| Value | Meaning |
+|-------|---------|
+| `api` | AWS Price List API |
+| `aws-scraper` | AWS Bedrock pricing page scraper |
+| `gemini-scraper` | Any of the three Gemini pricing tiers (unified label) |
+
+---
+
+## AWS Bedrock Pricing
+
+### Fetch Strategy
+
+The system uses a **dual-source strategy with deduplication** to fetch complete Bedrock model pricing:
 
 1. **AWS Price List API (Primary Source)** — `source: "api"`
    - Coverage: Amazon Nova, Meta Llama, Mistral, DeepSeek, Google Gemma, MiniMax, Moonshot (Kimi), NVIDIA Nemotron, OpenAI (gpt-oss), Qwen models
@@ -56,8 +76,7 @@ This ensures API data always takes priority and scraped data only fills in the g
   "api_count": 48,
   "scraper_count": 29,
   "failed": 0,
-  "source": "api+aws-scraper",
-  "sources": ["api", "aws-scraper"]
+  "source": "api+aws-scraper"
 }
 ```
 
@@ -70,7 +89,7 @@ This ensures API data always takes priority and scraped data only fills in the g
 | Anthropic | — | Yes | Claude 4.x, 3.x, 2.x, Instant |
 | Cohere | — | Yes | Command R/R+ |
 | DeepSeek | Yes | Yes | R1, V3.1 |
-| Google | Yes | — | Gemma 3 (4B, 12B, 27B) |
+| Google | Yes | — | Gemma 3 (4B, 12B, 27B) — Bedrock only; Gemini models use separate Gemini pricing |
 | Luma AI | — | — | Video generation (per-second pricing) |
 | Meta | Yes | Yes | Llama 3.x, 4.x |
 | MiniMax AI | Yes | — | Minimax M2 |
@@ -84,63 +103,127 @@ This ensures API data always takes priority and scraped data only fills in the g
 | Writer | — | — | Palmyra X4/X5 (not yet in API) |
 | Z AI | — | — | GLM-4.7 (not yet in API) |
 
-**Note:** Providers marked "—" in both columns may have non-token-based pricing (image/video) or are too new for the pricing APIs. All 19 providers are available in the "Add Model" UI regardless of pricing data availability.
+> **Note:** Providers marked "—" in both columns may have non-token-based pricing (image/video) or are too new for the pricing APIs. All providers are available in the "Add Model" UI regardless of pricing data availability.
 
-### Automation Flow
+---
+
+## Google Gemini Pricing
+
+Gemini model prices are fetched independently from AWS pricing. All Gemini entries are stored with `region="global"` (Gemini API has no regional pricing) and `source="gemini-scraper"`.
+
+### Three-Tier Fetch Strategy
+
+Tiers run in order; each subsequent tier only fills in models not already found in earlier tiers. Results are merged and saved together.
+
+#### Tier 1 — Google Official Pricing Page
+
+- **URL:** `https://ai.google.dev/gemini-api/docs/pricing`
+- **Method:** HTTP GET with Googlebot User-Agent (triggers SSR; plain `curl` UA gets empty body)
+- **Parsing:** Locate `<h2>`/`<h3>` headings matching `"Gemini N.N …"`, then find the associated `<table>` containing "Input price" / "Output price" / "Caching price"
+- **Coverage:** All currently-listed models (2.0+, 2.5+, 3.x preview) — ~17 models
+- **Notes:** The page shows two rows per model (standard + batch half-price); only the first row (standard pricing) is taken
+
+#### Tier 2 — LiteLLM Public Price Database
+
+- **URL:** `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`
+- **Method:** Plain HTTP GET of a public GitHub raw JSON file — **no litellm package is installed**
+- **Filter:** Keys starting with `gemini` (not `gemini/` duplicates); skips zero-price experimental models
+- **Coverage:** Preview/dated variants not on the live Google page (e.g. `gemini-2.0-flash-001`, `gemini-2.5-flash-preview-09-2025`, `gemini-exp-1206`) — adds ~17 more models
+- **Priority:** Only adds models not already found in Tier 1
+
+#### Tier 3 — Built-in Static Legacy Table
+
+Maintained manually in `backend/app/services/gemini_pricing_updater.py` (`_LEGACY_GEMINI_PRICING`).
+
+**Only covers models that are no longer on the live Google pricing page AND have missing/zero prices in the LiteLLM JSON:**
+
+| Model | Input $/1M | Output $/1M | Cache $/1M | Source verified |
+|-------|-----------|------------|-----------|----------------|
+| `gemini-1.5-pro` | $1.25 | $5.00 | $0.3125 | Google docs (archived) |
+| `gemini-1.5-flash` | $0.075 | $0.30 | $0.01875 | Google docs (archived) |
+| `gemini-1.5-flash-8b` | $0.0375 | $0.15 | $0.01 | Google docs (archived) |
+
+> **Maintenance rule:** Only add models here when they are **deprecated from the live page** AND the LiteLLM JSON entry has zero or missing output prices. Do not add current models — they will be covered by Tier 1 or Tier 2 automatically.
+
+### Typical Run Results
+
+```
+Gemini pricing tier-1 (Google):           17 models
+Gemini pricing tier-2 (LiteLLM):          17 new models added
+Gemini pricing tier-3 (static legacy):     3 models added
+Gemini pricing saved:                      37 models total
+```
+
+---
+
+## Automation Flow
 
 ```mermaid
 flowchart TD
     A[Start Application] --> B[Initialize Database]
-    B --> C{Check model_pricing table}
-    C -->|Empty table| D[Fetch prices from AWS]
-    C -->|Has data| E[Skip initialization]
-    D --> F[Insert pricing data to DB]
-    F --> G[Log: Initial pricing data loaded]
-    E --> H[Log: Database already contains X records]
-    G --> I[Start APScheduler]
-    H --> I
-    I --> J[Scheduler: Daily at UTC 02:00]
+    B --> C{model_pricing table empty?}
+    C -->|Yes| D[Fetch AWS Bedrock prices]
+    C -->|No| E[Skip AWS initialization]
+    D --> F[Insert AWS pricing to DB]
+    F --> G[Log: Initial pricing loaded]
+    E --> H[Log: DB already has X records]
+    G --> Init2[Fetch Gemini prices - 3 tiers]
+    H --> Init2
+    Init2 --> I[Insert/update Gemini pricing to DB]
+    I --> J[Start APScheduler]
     J --> K[Application Running]
-    K --> L[Scheduled Task Triggered]
-    L --> M[Execute update_pricing_task]
-    M --> N[Fetch latest prices from AWS]
-    N --> O[Upsert to database]
-    O --> P[Log: Pricing update completed]
-    P --> J
+
+    K --> L1[Scheduler: Daily UTC 02:00]
+    L1 --> M1[update_pricing_task - AWS]
+    M1 --> N1[Upsert AWS prices to DB]
+    N1 --> L1
+
+    K --> L2[Scheduler: Daily UTC 02:30]
+    L2 --> M2[update_gemini_pricing_task]
+    M2 --> N2[3-tier Gemini fetch + upsert]
+    N2 --> L2
+
     K --> Q[Admin API: POST /admin/pricing/update]
-    Q --> R[Manual update on demand]
+    Q --> R[Manual AWS update on demand]
     R --> K
 
     style D fill:#e1f5ff
     style F fill:#e1f5ff
-    style N fill:#e1f5ff
-    style O fill:#e1f5ff
-    style I fill:#fff4e1
+    style Init2 fill:#e8f5e9
+    style I fill:#e8f5e9
+    style N1 fill:#e1f5ff
+    style N2 fill:#e8f5e9
     style J fill:#fff4e1
 ```
 
-**Scheduler Implementation Location:**
-- File: `backend/app/tasks/pricing_tasks.py`
-- Functions: `start_scheduler()`, `stop_scheduler()`, `update_pricing_task()`
-- Startup: Called in `backend/main.py` lifespan function after database initialization
-- Shutdown: Called in `backend/main.py` lifespan function during application shutdown
+**Scheduler schedule:**
 
-**Three Update Methods:**
+| Job | Time (UTC) | Task |
+|-----|-----------|------|
+| AWS pricing update | Daily 02:00 | `update_pricing_task()` |
+| Gemini pricing update | Daily 02:30 | `update_gemini_pricing_task()` |
+
+**Implementation files:**
+- `backend/app/tasks/pricing_tasks.py` — `start_scheduler()`, `stop_scheduler()`, both task functions
+- `backend/app/services/pricing_updater.py` — AWS pricing logic
+- `backend/app/services/gemini_pricing_updater.py` — Gemini three-tier logic
+- `backend/main.py` — lifespan startup/shutdown
+
+**Three update methods:**
 
 1. **Auto-initialization on Application Startup**
-   - Checks if `model_pricing` table is empty
-   - If empty, automatically fetches prices from AWS and inserts
-   - Logs show number of records fetched and data source
+   - Checks if `model_pricing` table is empty → fetches AWS if empty
+   - Always runs Gemini pricing initialization on every startup (no API key required)
 
 2. **Scheduled Auto-update**
-   - APScheduler runs daily at UTC 02:00
+   - APScheduler runs AWS at 02:00 UTC, Gemini at 02:30 UTC daily
    - Uses upsert strategy (update if exists, insert if not)
-   - Update logs recorded in application logs
 
-3. **Manual Trigger**
+3. **Manual Trigger (AWS only)**
    - Admin API: `POST /admin/pricing/update`
    - Requires admin privileges
-   - Returns update statistics
+
+---
 
 ## Price Calculation
 
@@ -173,7 +256,7 @@ total_cost = (input_tokens × input_price)                          # Regular in
 
 ```
 Request with 10,000 tokens:
-  - 2,000 regular input tokens:     2,000 × $0.000003  = $0.006
+  - 2,000 regular input tokens:     2,000 × $0.000003   = $0.006
   - 1,000 cache write tokens:       1,000 × $0.00000375 = $0.00375
   - 7,000 cache read tokens:        7,000 × $0.0000003  = $0.0021
   Total input cost: $0.01185  (vs. $0.03 without caching = 60% savings)
@@ -224,50 +307,13 @@ If model pricing is not found:
 - Returns HTTP 500 error
 - Prompts administrator to update pricing data
 
-## Deployment Guide
+---
 
-### Initial Deployment
-
-1. **Run Database Migration**
-   ```bash
-   cd backend
-   alembic upgrade head
-   ```
-
-2. **Start Application**
-   ```bash
-   cd backend
-   python main.py  # Development (with auto-reload)
-   # or
-   uvicorn main:app --host 0.0.0.0 --port 8000  # Production
-   ```
-
-3. **Auto-initialization**
-   - Application automatically checks pricing table on startup
-   - If empty, automatically fetches from AWS and populates
-   - Check logs to confirm successful initialization
-
-### Manual Price Update
-
-To update prices immediately (without waiting for scheduled task):
-
-```bash
-curl -X POST http://localhost:8000/admin/pricing/update \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-### Query Specific Model Pricing
-
-```bash
-curl http://localhost:8000/admin/pricing/models/claude-3-5-sonnet-20241022 \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-## Monitor Section - Pricing Table Display
+## Monitor Section — Pricing Table Display
 
 ### Overview
 
-The Monitor section provides a complete pricing table display with all models and their regional pricing information. A 6-hour caching mechanism is implemented for optimal performance.
+The Monitor section provides a complete pricing table display with all models and their pricing information. A 6-hour caching mechanism is implemented for optimal performance. Gemini models appear in the table with `region="global"`.
 
 ### API Endpoints
 
@@ -284,37 +330,29 @@ Authorization: Bearer {admin_token}
 **Response Example:**
 ```json
 {
-  "total_records": 181,
+  "total_records": 218,
   "pricing_data": [
     {
       "model_id": "amazon.nova-lite-v1:0",
       "region": "us-east-1",
-      "input_price_per_token": "0.0000000600",
-      "output_price_per_token": "0.0000002400",
-      "input_price_per_1k": "0.00006",
-      "output_price_per_1k": "0.00024",
       "input_price_per_1m": "0.06",
       "output_price_per_1m": "0.24",
       "source": "api",
-      "last_updated": "2026-02-20T04:49:28.362348"
+      "last_updated": "2026-04-01T02:00:00"
     },
     {
-      "model_id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-      "region": "default",
-      "input_price_per_token": "0.0000030000",
-      "output_price_per_token": "0.0000150000",
-      "input_price_per_1k": "0.003",
-      "output_price_per_1k": "0.015",
-      "input_price_per_1m": "3.00",
-      "output_price_per_1m": "15.00",
-      "source": "scraper",
-      "last_updated": "2026-02-20T04:49:28.362348"
+      "model_id": "gemini-2.5-pro",
+      "region": "global",
+      "input_price_per_1m": "1.25",
+      "output_price_per_1m": "10.00",
+      "source": "gemini-scraper",
+      "last_updated": "2026-04-01T02:30:00"
     }
   ],
   "cache_info": {
-    "cached_at": "2026-02-20T05:00:00.000000",
+    "cached_at": "2026-04-01T03:00:00",
     "cache_duration_hours": 6,
-    "expires_at": "2026-02-20T11:00:00.000000",
+    "expires_at": "2026-04-01T09:00:00",
     "is_cached": true,
     "cache_age_seconds": 120
   }
@@ -328,37 +366,6 @@ GET /admin/monitor/pricing-summary
 Authorization: Bearer {admin_token}
 ```
 
-**Response Example:**
-```json
-{
-  "total_records": 181,
-  "unique_models": 25,
-  "unique_regions": 26,
-  "data_sources": ["api", "scraper"],
-  "models_list": [
-    "amazon.nova-lite-v1:0",
-    "amazon.nova-lite-v2:0",
-    "amazon.nova-micro-v1:0",
-    "amazon.nova-premier-v1:0",
-    "amazon.nova-pro-v1:0",
-    "anthropic.claude-3-5-sonnet-20240620-v1:0",
-    "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "meta.llama3-1-405b-instruct-v1:0",
-    "..."
-  ],
-  "regions_list": [
-    "ap-northeast-1",
-    "ap-northeast-2",
-    "ap-south-1",
-    "default",
-    "eu-central-1",
-    "us-east-1",
-    "us-west-2",
-    "..."
-  ]
-}
-```
-
 #### 3. Clear Pricing Table Cache
 
 ```http
@@ -366,163 +373,84 @@ POST /admin/monitor/clear-cache
 Authorization: Bearer {admin_token}
 ```
 
-**Use Cases:**
-- Force cache refresh after manual pricing updates
-- Ensure next request fetches latest data
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Pricing cache cleared successfully"
-}
-```
+Use after manual pricing updates to force the next request to read from the database.
 
 ### Caching Mechanism
 
-**Cache Strategy:**
-- Duration: 6 hours
-- Storage: In-memory (application-level)
-- Auto-refresh: Automatically reloads from database when expired
-- Manual refresh: Use `force_refresh=true` or call `clear-cache` endpoint
+- **Duration:** 6 hours (in-memory, application-level)
+- **Auto-refresh:** Reloads from database when expired
+- **Manual refresh:** `force_refresh=true` query param or `clear-cache` endpoint
+- **Invalidation:** Application restart, 6-hour expiry, or manual clear
 
-**Cache Benefits:**
-- Reduces database queries, improves response speed
-- Lowers database load
-- Pricing data changes infrequently, 6-hour cache is reasonable
-
-**Cache Invalidation Scenarios:**
-1. Application restart (memory cache lost)
-2. Cache expires after 6 hours
-3. Manual call to `clear-cache` endpoint
-4. Using `force_refresh=true` parameter
-
-### Usage Examples
-
-#### Frontend Pricing Table Display
-
-```javascript
-// Fetch pricing table data
-async function fetchPricingTable() {
-  const response = await fetch('/admin/monitor/pricing-table', {
-    headers: {
-      'Authorization': `Bearer ${adminToken}`
-    }
-  });
-  const data = await response.json();
-
-  console.log(`Total records: ${data.total_records}`);
-  console.log(`Cache status: ${data.cache_info.is_cached ? 'Cached' : 'Fresh'}`);
-  console.log(`Cache age: ${data.cache_info.cache_age_seconds}s`);
-
-  // Render pricing table
-  renderPricingTable(data.pricing_data);
-}
-
-// Force refresh pricing table
-async function refreshPricingTable() {
-  const response = await fetch('/admin/monitor/pricing-table?force_refresh=true', {
-    headers: {
-      'Authorization': `Bearer ${adminToken}`
-    }
-  });
-  const data = await response.json();
-  renderPricingTable(data.pricing_data);
-}
-```
-
-#### Clear Cache After Pricing Update
-
-```bash
-# 1. Update pricing
-curl -X POST http://localhost:8000/admin/pricing/update \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# 2. Clear cache
-curl -X POST http://localhost:8000/admin/monitor/clear-cache \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# 3. Get latest pricing table
-curl http://localhost:8000/admin/monitor/pricing-table \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-### Performance Optimization
-
-**Database Query Optimization:**
-- Indexed fields: `model_id`, `region` have indexes
-- Sort optimization: Ordered by `model_id` and `region`
-- Single load: Avoids N+1 query problems
-
-**Cache Optimization:**
-- Memory cache: Fast access, no disk I/O
-- 6-hour validity: Balances data freshness and performance
-- Lazy loading: Data loaded only on first access
-
-**Response Optimization:**
-- Multiple price units included (per token, per 1K, per 1M)
-- No additional frontend calculations needed
-- Reduces client-side processing burden
+---
 
 ## Monitoring
 
 ### Verify System Status
 
-Check pricing data in database:
-
 ```bash
-# View total records and model count
+# Total records and unique models
 PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT COUNT(*) as total_records, COUNT(DISTINCT model_id) as unique_models FROM model_pricing;"
 
-# View all model list
+# Check Gemini models specifically
 PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
-  "SELECT DISTINCT model_id FROM model_pricing ORDER BY model_id;"
+  "SELECT model_id, input_price_per_token * 1e6 as input_per_1m,
+          output_price_per_token * 1e6 as output_per_1m, source
+   FROM model_pricing WHERE region = 'global' ORDER BY model_id;"
 
-# View specific model pricing (e.g., Nova Lite)
+# Check for a specific model
 PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT model_id, region,
    input_price_per_token * 1000000 as input_per_1m,
    output_price_per_token * 1000000 as output_per_1m,
-   source
-   FROM model_pricing
-   WHERE model_id = 'amazon.nova-lite-v1:0'
-   ORDER BY region;"
+   source FROM model_pricing
+   WHERE model_id = 'amazon.nova-lite-v1:0' ORDER BY region;"
 ```
 
-### Check Pricing Data
+### Key Log Messages
 
-```sql
--- View all pricing records
-SELECT model_id, region,
-       input_price_per_token * 1000000 as input_per_1m,
-       output_price_per_token * 1000000 as output_per_1m,
-       source, last_updated
-FROM model_pricing
-ORDER BY last_updated DESC;
-
--- Count records
-SELECT COUNT(*) FROM model_pricing;
-
--- View recent updates
-SELECT model_id, last_updated
-FROM model_pricing
-ORDER BY last_updated DESC
-LIMIT 10;
+**AWS pricing:**
+```
+Pricing database is empty, fetching initial pricing data from AWS...
+Initial pricing data loaded: 77 models from api+aws-scraper
+Pricing database already contains 218 records
+Starting AWS pricing update task...
+AWS pricing update completed: 77 models updated from api+aws-scraper, 0 failed
 ```
 
-### Log Monitoring
+**Gemini pricing:**
+```
+Starting Gemini pricing update task...
+Gemini pricing tier-1 (Google): 17 models
+Gemini pricing tier-2 (LiteLLM): 17 new models added
+Gemini pricing tier-3 (static legacy): 3 models added
+Gemini pricing saved: 37 models total
+Gemini pricing update completed: 37 models updated, 0 failed
+```
 
-Key log messages:
-- `"Pricing database is empty, fetching initial pricing data from AWS..."` - Initial setup
-- `"Initial pricing data loaded: X models from Y"` - Initialization complete
-- `"Pricing database already contains X records"` - Data exists, skip initialization
-- `"Pricing update task started"` - Scheduled update started
-- `"Pricing update completed: X models updated"` - Scheduled update complete
+---
 
 ## Troubleshooting
 
-### Issue: Pricing initialization fails on application startup
+### Issue: Gemini pricing shows 0 rows in DB
+
+**Check:**
+```bash
+kubectl logs -n <namespace> -l app=backend | grep -i gemini
+```
+
+**Common causes:**
+1. All three tiers failed simultaneously (network outage)
+2. `GEMINI_API_KEY` check was previously blocking initialization (fixed — no longer gated)
+
+**Fix:** Restart the backend pod; Gemini pricing is initialized on every startup.
+
+### Issue: Gemini prices not visible in Monitor page
+
+The Monitor pricing table includes `region="global"` rows. Use the **Region** dropdown in the UI and select **All Regions** to see Gemini models alongside AWS models.
+
+### Issue: AWS pricing initialization fails on startup
 
 **Symptoms:**
 ```
@@ -535,66 +463,72 @@ WARNING - No pricing data was updated
 3. Web scraper parsing failure
 
 **Solutions:**
-1. Check network connection
+1. Check network connection and IAM permissions
 2. Review detailed error logs
-3. Manually call admin API to retry
+3. Manually call `POST /admin/pricing/update`
 
-### Issue: API call returns 500 error "Pricing not available"
+### Issue: API call returns 500 "Pricing not available"
 
-**Symptoms:**
 ```json
 {
   "detail": "Pricing not available for model: xxx. Please contact administrator to update pricing data."
 }
 ```
 
-**Cause:**
-No pricing data for this model in database
+**Cause:** No pricing row for this model in the database.
 
 **Solutions:**
-1. Call `POST /admin/pricing/update` to update prices
-2. Verify model ID is correct
-3. Check database to confirm pricing data exists
+1. For AWS models: call `POST /admin/pricing/update`
+2. For Gemini models: restart the backend pod (Gemini runs on startup)
+3. Verify model ID is correct
 
 ### Issue: Scheduled task not executing
 
-**Check Methods:**
-1. Review application logs to confirm scheduler started
-2. Wait until UTC 02:00 to check for update logs
-3. Verify APScheduler is running properly
+1. Check logs to confirm scheduler started
+2. Wait for scheduled window (AWS: 02:00 UTC, Gemini: 02:30 UTC)
+3. Verify APScheduler is running; restart application if needed
 
-**Solutions:**
-1. Restart application
-2. Manually trigger update to verify functionality
-3. Check system time is correct
+---
 
 ## Configuration
 
 ### Environment Variables
 
-No additional configuration needed, system uses defaults:
-- Update time: Daily at UTC 02:00
-- Data sources: AWS Price List API (primary) + AWS pricing page scraper (secondary, fills gaps for models not in API)
-- Region: Uses configured `AWS_REGION`
+No extra configuration needed. Gemini pricing runs regardless of `GEMINI_API_KEY` — it scrapes the public Google pricing page.
 
-### Customize Update Time
+| Variable | Effect on pricing |
+|----------|------------------|
+| `AWS_REGION` | Used for AWS Bedrock Price List API queries |
+| `GEMINI_API_KEY` | Used for chat requests; **not required** for pricing updates |
 
-Modify `app/tasks/pricing_tasks.py`:
+### Customize Scheduler Times
+
+Edit `backend/app/tasks/pricing_tasks.py`:
 
 ```python
-scheduler.add_job(
-    update_pricing_task,
-    trigger="cron",
-    hour=2,  # Modify hour
-    minute=0,
-    id="pricing_update",
-    replace_existing=True,
-)
+# AWS pricing — default: daily 02:00 UTC
+scheduler.add_job(update_pricing_task, trigger=CronTrigger(hour=2, minute=0), ...)
+
+# Gemini pricing — default: daily 02:30 UTC
+scheduler.add_job(update_gemini_pricing_task, trigger=CronTrigger(hour=2, minute=30), ...)
 ```
+
+### Maintaining the Gemini Static Legacy Table
+
+File: `backend/app/services/gemini_pricing_updater.py`, constant `_LEGACY_GEMINI_PRICING`.
+
+**Add an entry only when ALL of the following are true:**
+1. The model no longer appears on `https://ai.google.dev/gemini-api/docs/pricing`
+2. The LiteLLM JSON entry has zero or missing output price
+3. The model is still used in production (users have it configured)
+
+**Do not add** current-generation models — they are covered automatically by Tier 1 and Tier 2.
+
+---
 
 ## API Reference
 
-### Update All Model Pricing
+### Update All AWS Model Pricing
 
 ```http
 POST /admin/pricing/update
@@ -606,9 +540,9 @@ Authorization: Bearer {admin_token}
 {
   "message": "Pricing update completed",
   "stats": {
-    "updated": 15,
+    "updated": 77,
     "failed": 0,
-    "source": "api"
+    "source": "api+aws-scraper"
   }
 }
 ```
@@ -630,4 +564,18 @@ Authorization: Bearer {admin_token}
   "input_price_per_1k": "0.003",
   "output_price_per_1k": "0.015"
 }
+```
+
+### Get Pricing Table (Monitor)
+
+```http
+GET /admin/monitor/pricing-table?force_refresh=false
+Authorization: Bearer {admin_token}
+```
+
+### Clear Monitor Cache
+
+```http
+POST /admin/monitor/clear-cache
+Authorization: Bearer {admin_token}
 ```

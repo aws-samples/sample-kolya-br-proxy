@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model import Model
 from app.services.bedrock import BedrockClient
+from app.services.gemini_client import GeminiClient
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -113,10 +114,16 @@ async def list_aws_available_models(
         return {"models": cached_models}
 
     try:
-        # Initialize Bedrock client
-        region = settings.AWS_REGION or "us-west-2"
-        bedrock_client = boto3.client(service_name="bedrock", region_name=region)
-        logger.info(f"Bedrock client initialized for region: {region}")
+        # Use us-east-1 for model discovery — it has the most complete model catalog.
+        # The deployment region (settings.AWS_REGION) is used for actual inference,
+        # but listing available models should always query the primary catalog region.
+        catalog_region = "us-east-1"
+        bedrock_client = boto3.client(
+            service_name="bedrock", region_name=catalog_region
+        )
+        logger.info(
+            f"Bedrock client initialized for model catalog region: {catalog_region} (deployment region: {settings.AWS_REGION})"
+        )
 
         # Allowed providers
         allowed_providers = {
@@ -245,7 +252,18 @@ async def list_aws_available_models(
             f"({len(profile_ids)} inference profiles + foundation models)"
         )
 
-        # Cache the results
+        # Append Gemini models dynamically (only if API key is configured)
+        if settings.GEMINI_API_KEY:
+            try:
+                gemini_models = await GeminiClient.list_models(settings.GEMINI_API_KEY)
+                models.extend(gemini_models)
+                logger.info(
+                    f"Added {len(gemini_models)} Gemini models to available list"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch Gemini models (non-fatal): {e}")
+
+        # Cache the results (includes Gemini models)
         _set_aws_models_cache(models)
 
         return {"models": models}

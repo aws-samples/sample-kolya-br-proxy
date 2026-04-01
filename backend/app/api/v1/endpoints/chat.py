@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import httpx
+
 from app.api.deps import get_current_token
 from app.core.config import get_settings
 from app.core.database import get_db
@@ -23,6 +25,12 @@ from app.schemas.openai import (
 )
 from app.services.background_tasks import BackgroundTaskManager
 from app.services.bedrock import BedrockClient
+from app.services.gemini_client import (
+    GeminiClient,
+    is_gemini_model as _is_gemini_model,
+    extract_cached_tokens,
+    extract_cached_tokens_from_chunk,
+)
 from app.services.pricing import ModelPricing
 from app.services.translator import RequestTranslator, ResponseTranslator
 
@@ -217,6 +225,15 @@ async def create_chat_completion(
                 detail=f"Token does not have access to model: {request_data.model}. Allowed models: {allowed_model_names}",
             )
 
+        # Route Gemini models to Google API directly
+        if _is_gemini_model(request_data.model):
+            return await _handle_gemini_request(
+                request_data=request_data,
+                request_id=request_id,
+                token=token,
+                start_time=start_time,
+            )
+
         # Get singleton Bedrock client
         bedrock_client = BedrockClient.get_instance()
 
@@ -314,6 +331,192 @@ async def create_chat_completion(
             status_code=500,
             detail="Internal server error processing chat completion",
         )
+
+
+async def _handle_gemini_request(
+    request_data: ChatCompletionRequest,
+    request_id: str,
+    token: APIToken,
+    start_time: float,
+):
+    """
+    Forward a chat completion request to Google Gemini native API.
+
+    Converts OpenAI-format payload to Gemini GenerateContentRequest internally;
+    all bedrock_* and OpenAI-only fields are ignored by the converter.
+    """
+    settings = get_settings()
+    if not settings.GEMINI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini API key is not configured on this server",
+        )
+
+    # Pass the full payload — GeminiClient.invoke / invoke_stream only reads
+    # the fields it understands (model, messages, temperature, etc.).
+    payload = request_data.model_dump(exclude_none=True)
+
+    if request_data.stream:
+        return StreamingResponse(
+            stream_gemini_completion(
+                payload=payload,
+                api_key=settings.GEMINI_API_KEY,
+                request_id=request_id,
+                model=request_data.model,
+                token=token,
+                start_time=start_time,
+            ),
+            media_type="text/event-stream",
+        )
+
+    # Non-streaming
+    try:
+        response_data = await GeminiClient.invoke(payload, settings.GEMINI_API_KEY)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Gemini API error: {e}")
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"Gemini API error: {str(e)[:200]}",
+        )
+
+    # Extract usage including cached tokens for auto-cache billing
+    usage = response_data.get("usage", {})
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    cached_tokens = extract_cached_tokens(response_data)
+    # Gemini reports prompt_tokens as total including cached; adjust to non-cached only
+    non_cached_prompt = max(0, prompt_tokens - cached_tokens)
+
+    background_tasks.create_task(
+        record_usage(
+            token_id=token.id,
+            user_id=token.user_id,
+            model=request_data.model,
+            request_id=request_id,
+            prompt_tokens=non_cached_prompt,
+            completion_tokens=completion_tokens,
+            cache_read_input_tokens=cached_tokens,
+        ),
+        task_name=f"record_usage_{request_id}",
+    )
+
+    duration = time.time() - start_time
+    cache_info = f", cached={cached_tokens}" if cached_tokens else ""
+    logger.info(
+        f"Gemini completion successful: request_id={request_id}, "
+        f"duration={round(duration, 3)}s, "
+        f"prompt={non_cached_prompt}, completion={completion_tokens}{cache_info}"
+    )
+
+    return response_data
+
+
+async def stream_gemini_completion(
+    payload: dict,
+    api_key: str,
+    request_id: str,
+    model: str,
+    token: APIToken,
+    start_time: float,
+) -> AsyncGenerator[str, None]:
+    """
+    Stream a Gemini completion via the native streamGenerateContent API.
+
+    GeminiClient.invoke_stream yields OpenAI-format SSE chunks; we forward them
+    verbatim and extract usage from any chunk that carries a usage object.
+    """
+    import json as _json
+
+    settings = get_settings()
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_cached_tokens = 0
+    last_heartbeat = time.time()
+
+    try:
+        async for chunk in GeminiClient.invoke_stream(payload, api_key):
+            current_time = time.time()
+
+            # Send heartbeat if idle too long
+            if current_time - last_heartbeat > settings.STREAM_HEARTBEAT_INTERVAL:
+                yield ": heartbeat\n\n"
+                last_heartbeat = current_time
+
+            # Forward OpenAI-format SSE chunk produced by invoke_stream
+            yield chunk
+            last_heartbeat = current_time
+
+            # Extract usage for billing (appears on the final content chunk)
+            for line in chunk.splitlines():
+                if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                    try:
+                        data = _json.loads(line[6:])
+                        usage = data.get("usage")
+                        if usage:
+                            total_prompt_tokens = usage.get(
+                                "prompt_tokens", total_prompt_tokens
+                            )
+                            total_completion_tokens = usage.get(
+                                "completion_tokens", total_completion_tokens
+                            )
+                            cached = extract_cached_tokens_from_chunk(data)
+                            if cached is not None:
+                                total_cached_tokens = cached
+                    except Exception:
+                        pass
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"Gemini stream error: model={model}, request_id={request_id}, "
+            f"status={e.response.status_code}",
+            exc_info=True,
+        )
+        error_response = ErrorResponse(
+            error=ErrorDetail(
+                message=f"Gemini API error: {str(e)[:200]}",
+                type="server_error",
+                code=str(e.response.status_code),
+            )
+        )
+        yield f"data: {error_response.model_dump_json()}\n\n"
+    except Exception as e:
+        logger.error(
+            f"Gemini streaming failed: model={model}, request_id={request_id}, error={e}",
+            exc_info=True,
+        )
+        error_response = ErrorResponse(
+            error=ErrorDetail(
+                message=str(e),
+                type="server_error",
+                code="internal_error",
+            )
+        )
+        yield f"data: {error_response.model_dump_json()}\n\n"
+
+    # Adjust prompt tokens to exclude cached
+    non_cached_prompt = max(0, total_prompt_tokens - total_cached_tokens)
+
+    # Record usage
+    background_tasks.create_task(
+        record_usage(
+            token_id=token.id,
+            user_id=token.user_id,
+            model=model,
+            request_id=request_id,
+            prompt_tokens=non_cached_prompt,
+            completion_tokens=total_completion_tokens,
+            cache_read_input_tokens=total_cached_tokens,
+        ),
+        task_name=f"record_usage_{request_id}",
+    )
+
+    duration = time.time() - start_time
+    cache_info = f", cached={total_cached_tokens}" if total_cached_tokens else ""
+    logger.info(
+        f"Gemini streaming successful: request_id={request_id}, "
+        f"duration={round(duration, 3)}s, "
+        f"prompt={non_cached_prompt}, completion={total_completion_tokens}{cache_info}"
+    )
 
 
 async def stream_chat_completion(

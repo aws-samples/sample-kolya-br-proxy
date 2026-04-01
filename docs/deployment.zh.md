@@ -46,23 +46,108 @@ export AWS_REGION=us-west-1   # 或其他区域
 
 ### 2. 创建 ACM 证书
 
-ACM 证书必须与 ALB 在同一区域。一张证书可通过 SAN 覆盖多个域名。
+**一张证书**通过 SAN（主题备用名称）同时覆盖两个域名（`kbp.kolya.fun` 和 `api.kbp.kolya.fun`）。证书必须与 ALB 在**同一区域**。
+
+#### 2a. 申请证书
 
 ```bash
-aws acm request-certificate \
+CERT_ARN=$(aws acm request-certificate \
   --region $AWS_REGION \
   --domain-name kbp.kolya.fun \
   --subject-alternative-names "api.kbp.kolya.fun" \
-  --validation-method DNS
+  --validation-method DNS \
+  --query 'CertificateArn' \
+  --output text)
 
-# 在 Route53 中添加 DNS 验证 CNAME 记录，然后等待证书状态变为 ISSUED：
-aws acm describe-certificate \
-  --region $AWS_REGION \
-  --certificate-arn <上一步返回的 ARN> \
-  --query 'Certificate.Status'
+echo "证书 ARN：$CERT_ARN"
 ```
 
-记录证书 ARN — 步骤 4 中 `k8s/deploy.sh` 会提示你输入。
+#### 2b. 获取 DNS 验证 CNAME 记录
+
+ACM 会为每个域名生成一条 CNAME 验证记录，执行以下命令查看：
+
+```bash
+aws acm describe-certificate \
+  --region $AWS_REGION \
+  --certificate-arn $CERT_ARN \
+  --query 'Certificate.DomainValidationOptions[*].{域名:DomainName,记录名:ResourceRecord.Name,记录值:ResourceRecord.Value}' \
+  --output table
+```
+
+输出示例（每个域名一条记录）：
+
+```
+-----------------------------------------------------------------------
+|                       DescribeCertificate                           |
++---------------------+----------------------+------------------------+
+|        域名         |        记录名        |        记录值          |
++---------------------+----------------------+------------------------+
+|  kbp.kolya.fun      |  _abc123.kbp...      |  _def456.acm-...       |
+|  api.kbp.kolya.fun  |  _abc123.api.kbp...  |  _ghi789.acm-...       |
++---------------------+----------------------+------------------------+
+```
+
+> **提示：** 如果两个域名属于同一根域名，ACM 可能只生成一条 CNAME 记录，只需添加一条即可。
+
+#### 2c. 在 Route 53 中添加 CNAME 记录
+
+先获取托管区域 ID：
+
+```bash
+ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+  --dns-name kolya.fun \
+  --query 'HostedZones[0].Id' \
+  --output text | cut -d'/' -f3)
+
+echo "托管区域 ID：$ZONE_ID"
+```
+
+将上一步表格中的每条 CNAME 记录添加到 Route 53（每条记录执行一次）：
+
+```bash
+aws route53 change-resource-record-sets \
+  --hosted-zone-id $ZONE_ID \
+  --change-batch '{
+    "Changes": [
+      {
+        "Action": "UPSERT",
+        "ResourceRecordSet": {
+          "Name": "<上表中的记录名>",
+          "Type": "CNAME",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "<上表中的记录值>"}]
+        }
+      }
+    ]
+  }'
+```
+
+#### 2d. 等待证书签发
+
+DNS 传播通常需要 1–5 分钟。轮询直到状态变为 `ISSUED`：
+
+```bash
+while true; do
+  STATUS=$(aws acm describe-certificate \
+    --region $AWS_REGION \
+    --certificate-arn $CERT_ARN \
+    --query 'Certificate.Status' \
+    --output text)
+  echo "$(date '+%H:%M:%S')  状态：$STATUS"
+  [[ "$STATUS" == "ISSUED" ]] && break
+  sleep 15
+done
+echo "证书已签发：$CERT_ARN"
+```
+
+#### 2e. 保存证书 ARN
+
+记录 `$CERT_ARN`，步骤 4（K8s 应用部署）中 `deploy-all.sh` 会提示输入。
+
+```bash
+echo $CERT_ARN
+# arn:aws:acm:us-west-1:612674025488:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
 
 ### 3. 创建 Terraform 状态 S3 存储桶
 
@@ -329,10 +414,10 @@ kubectl get ingress -n kbp
 # 本地执行
 cd backend && uv run alembic upgrade head
 
-# 在 EKS 集群中执行
-kubectl exec -it deployment/backend -n kbp -- uv run alembic upgrade head
+# 在 EKS 集群中执行（生产镜像不含 uv，直接用 python）
+kubectl exec -it deployment/backend -n kbp -- alembic upgrade head
 
-# 创建新的迁移文件
+# 创建新的迁移文件（仅本地）
 cd backend && uv run alembic revision --autogenerate -m "describe your change"
 ```
 

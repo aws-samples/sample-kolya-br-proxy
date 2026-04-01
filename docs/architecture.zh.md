@@ -1,6 +1,6 @@
 # 架构文档
 
-Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 和 Anthropic Messages API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）的 AI 网关。
+Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 和 Anthropic Messages API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）以及通过原生 generateContent API 访问 Google Gemini 模型的 AI 网关。
 
 ---
 
@@ -52,6 +52,10 @@ graph LR
         Bedrock["AWS Bedrock<br/>(Claude, Nova, DeepSeek,<br/>Mistral, Llama)"]
     end
 
+    subgraph Google_Services ["Google Services"]
+        Gemini["Google Gemini API<br/>(原生 generateContent)"]
+    end
+
     OAI -->|"HTTPS /v1/chat/*"| ALB
     Anthropic_SDK -->|"HTTPS /v1/messages"| ALB
     Browser -->|"HTTPS /*"| ALB
@@ -60,6 +64,7 @@ graph LR
     Nginx --> Vue
     Uvicorn --> FastAPI
     FastAPI -->|"InvokeModel /<br/>Converse API"| Bedrock
+    FastAPI -->|"generateContent /<br/>streamGenerateContent"| Gemini
     FastAPI -->|"SQLAlchemy async"| PG
     FastAPI -.->|"分布式限流"| Redis
 ```
@@ -75,6 +80,8 @@ graph LR
 | 异步信号量 (50) | 反压匹配连接池大小；防止请求排队 |
 | 面板用 JWT，网关用 API 密钥 | 分离认证关注点；API 密钥长期有效，JWT 短期有效 |
 | 后台使用量记录 | `record_usage` 作为后台任务运行，避免阻塞响应 |
+| Gemini 使用原生 API（非 OpenAI 兼容层）| 直接调用 `generateContent` / `streamGenerateContent`，避免 Gemini OpenAI 兼容层拒绝 `frequency_penalty` 等字段 |
+| Gemini 格式转换在 Client 层完成 | `GeminiClient` 负责 OpenAI ↔ Gemini 的格式互转；`chat.py` 始终看到统一的 OpenAI 格式，与处理 Bedrock 响应对称 |
 
 ---
 
@@ -606,9 +613,10 @@ sequenceDiagram
 
 ## 7. 请求处理流程
 
-本节详细描述网关请求的完整生命周期。代理支持两条 API 路径：
+本节详细描述网关请求的完整生命周期。代理支持三条 API 路径：
 
-- **OpenAI 路径**（`/v1/chat/completions`）：在 OpenAI 和 Bedrock 格式之间进行完整转换
+- **OpenAI 路径 → AWS Bedrock**（`/v1/chat/completions`，非 Gemini 模型）：在 OpenAI 和 Bedrock 格式之间进行完整转换
+- **OpenAI 路径 → Google Gemini**（`/v1/chat/completions`，`gemini-*` 模型）：`GeminiClient` 在内部完成 OpenAI ↔ Gemini 原生格式转换；`chat.py` 格式无感知
 - **Anthropic 路径**（`/v1/messages`）：近乎直通，因为 Bedrock InvokeModel 原生使用 Anthropic Messages API 格式
 
 ### 7.1 OpenAI 路径时序图
@@ -696,7 +704,46 @@ sequenceDiagram
     BG->>DB: INSERT INTO usage_records
 ```
 
-### 7.2 Anthropic 路径时序图
+### 7.2 Gemini 路径时序图
+
+当请求的模型名称以 `gemini-` 开头时，`chat.py` 路由到 `_handle_gemini_request()`。`GeminiClient` 在内部处理所有格式转换；`chat.py` 始终收到 OpenAI 格式的响应 dict。
+
+```mermaid
+sequenceDiagram
+    participant Client as OpenAI Client
+    participant Chat as chat.py endpoint
+    participant GC as GeminiClient
+    participant Gemini as Google Gemini API
+
+    Client->>Chat: POST /v1/chat/completions<br/>model: "gemini-2.5-flash"
+    Chat->>Chat: is_gemini_model() → true
+    Chat->>Chat: 配额 + 模型权限检查
+
+    alt 非流式（stream=false 或图片模型）
+        Chat->>GC: invoke(payload, api_key)
+        GC->>GC: _openai_to_gemini_payload()<br/>messages→contents+systemInstruction<br/>tools→functionDeclarations
+        GC->>Gemini: POST /v1beta/models/{model}:generateContent
+        Gemini-->>GC: GenerateContentResponse (JSON)
+        GC->>GC: _gemini_response_to_openai()<br/>candidates→choices, usageMetadata→usage<br/>inlineData→image_url (base64)
+        GC-->>Chat: OpenAI 格式 dict
+        Chat-->>Client: JSON 响应
+    else 流式（stream=true）
+        Chat->>GC: invoke_stream(payload, api_key)
+        GC->>GC: _openai_to_gemini_payload()
+        GC->>Gemini: POST /v1beta/models/{model}:streamGenerateContent?alt=sse
+        loop SSE 数据块
+            Gemini-->>GC: data: {GenerateContentResponse chunk}
+            GC->>GC: _gemini_chunk_to_sse()<br/>→ OpenAI chat.completion.chunk 格式
+            GC-->>Chat: OpenAI SSE 字符串
+        end
+        GC-->>Chat: data: [DONE]
+        Chat-->>Client: SSE 流
+    end
+
+    Chat->>Chat: 后台：record_usage（从 usage 中提取缓存 token）
+```
+
+### 7.3 Anthropic 路径时序图
 
 Anthropic 路径是近乎直通的：由于 Bedrock 的 InvokeModel API 原生接受 Anthropic Messages API 格式，只需极少转换。与 OpenAI 路径的关键区别：
 
@@ -757,7 +804,13 @@ sequenceDiagram
     Msg->>BG: background: record_usage(...)
 ```
 
-### 7.3 请求/响应转换
+### 7.4 请求/响应转换汇总
+
+| 路径 | 转换方式 | 说明 |
+|---|---|---|
+| **OpenAI → Bedrock** | 三阶段（OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI）| 完整转换；支持工具调用、图片、Bedrock 扩展字段 |
+| **OpenAI → Gemini** | `GeminiClient` 内部转换（OpenAI → Gemini GenerateContentRequest / 反向）| 原生 `generateContent` API；不经过 OpenAI 兼容层 |
+| **Anthropic → Bedrock** | 近乎直通（`invoke_model`）| 最小转换；保留 `cache_control`、thinking blocks |
 
 代理在客户端 API 格式和 Bedrock 之间执行转换：
 

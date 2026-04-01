@@ -1,11 +1,13 @@
 # Request Translation Pipeline
 
-How Kolya BR Proxy translates requests into AWS Bedrock API calls, and converts responses back. The proxy supports two client-facing API formats:
+How Kolya BR Proxy translates requests into upstream LLM API calls, and converts responses back. The proxy supports two client-facing API formats:
 
-- **OpenAI-compatible** (`POST /v1/chat/completions`) -- requires format translation
+- **OpenAI-compatible** (`POST /v1/chat/completions`) -- routes to AWS Bedrock (non-Gemini) or Google Gemini (model starts with `gemini-`)
 - **Anthropic Messages API** (`POST /v1/messages`) -- near-passthrough to Bedrock InvokeModel
 
-Anthropic models use the InvokeModel API (native Messages API format), while non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.) use the Converse API.
+For Bedrock: Anthropic models use the InvokeModel API (native Messages API format), while non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.) use the Converse API.
+
+For Gemini: `GeminiClient` uses the native `generateContent` / `streamGenerateContent` API; OpenAI ↔ Gemini conversion happens entirely within the client layer.
 
 ---
 
@@ -22,6 +24,7 @@ Anthropic models use the InvokeModel API (native Messages API format), while non
 9. [Effort Parameter Auto-transform](#9-effort-parameter-auto-transform)
 10. [Automatic Fixes](#10-automatic-fixes)
 11. [Unsupported Parameters](#11-unsupported-parameters)
+12. [Google Gemini Native API Path](#12-google-gemini-native-api-path)
 
 ---
 
@@ -639,15 +642,111 @@ These OpenAI/Bedrock parameters are **warned and ignored** when using `invoke_mo
 
 ---
 
+## 12. Google Gemini Native API Path
+
+**File**: `backend/app/services/gemini_client.py`
+
+Activated when `model.startswith("gemini-")`. All translation happens inside `GeminiClient`; `chat.py` always sees an OpenAI-format dict, exactly as it does for Bedrock responses.
+
+### 12.1 Data Flow
+
+```mermaid
+sequenceDiagram
+    participant Chat as chat.py
+    participant GC as GeminiClient
+    participant Gemini as Google API
+
+    Chat->>GC: invoke(payload) / invoke_stream(payload)
+    Note over GC: payload is the raw OpenAI dict<br/>(model, messages, temperature, tools, …)
+
+    GC->>GC: _openai_to_gemini_payload(payload)
+    Note over GC: messages → contents + systemInstruction<br/>tool_calls → functionCall parts<br/>tool results → functionResponse parts<br/>image_url → inlineData
+
+    alt Non-streaming
+        GC->>Gemini: POST /v1beta/models/{model}:generateContent
+        Gemini-->>GC: GenerateContentResponse (JSON)
+        GC->>GC: _gemini_response_to_openai()
+        GC-->>Chat: OpenAI ChatCompletionResponse dict
+    else Streaming
+        GC->>Gemini: POST /v1beta/models/{model}:streamGenerateContent?alt=sse
+        loop per SSE line
+            Gemini-->>GC: data: {GenerateContentResponse chunk}
+            GC->>GC: _gemini_chunk_to_sse()
+            GC-->>Chat: "data: {chat.completion.chunk}\n\n"
+        end
+        GC-->>Chat: "data: [DONE]\n\n"
+    end
+```
+
+### 12.2 Request Conversion (`_openai_to_gemini_payload`)
+
+| OpenAI | Gemini | Notes |
+|---|---|---|
+| `messages[role=system]` | `systemInstruction.parts[{text}]` | Merged from all system messages |
+| `messages[role=user]` | `contents[role=user].parts` | Text or multimodal parts |
+| `messages[role=assistant]` | `contents[role=model].parts` | `tool_calls` → `functionCall` parts |
+| `messages[role=tool]` | `contents[role=user].parts[functionResponse]` | Consecutive tool messages merged into one user turn |
+| `content: [{type:"image_url", image_url:{url:"data:…"}}]` | `parts[{inlineData:{mimeType, data}}]` | Base64 data URI decoded |
+| `content: [{type:"image_url", image_url:{url:"https://…"}}]` | `parts[{fileData:{mimeType, fileUri}}]` | Regular URL passed as fileData |
+| `max_tokens` | `generationConfig.maxOutputTokens` | |
+| `temperature` | `generationConfig.temperature` | |
+| `top_p` | `generationConfig.topP` | |
+| `stop` (str or list) | `generationConfig.stopSequences` | |
+| `tools[].function` | `tools[0].functionDeclarations[]` | All functions in one tools entry |
+| `tool_choice: "none"` | `toolConfig.functionCallingConfig.mode: NONE` | |
+| `tool_choice: "auto"` | `toolConfig.functionCallingConfig.mode: AUTO` | |
+| `tool_choice: "required"` | `toolConfig.functionCallingConfig.mode: ANY` | |
+| `tool_choice: {function: {name}}` | `toolConfig.functionCallingConfig.mode: ANY` + `allowedFunctionNames` | |
+| `frequency_penalty`, `presence_penalty`, `n`, `logprobs`, `user`, `bedrock_*` | **Silently ignored** | Not passed to Gemini; no filtering needed in caller |
+
+### 12.3 Response Conversion (`_gemini_response_to_openai`)
+
+| Gemini | OpenAI | Notes |
+|---|---|---|
+| `candidates[i].content.parts[text]` | `choices[i].message.content` | Concatenated if multiple text parts |
+| `candidates[i].content.parts[functionCall]` | `choices[i].message.tool_calls[]` | `args` → JSON-serialized `arguments` |
+| `candidates[i].content.parts[inlineData]` | `choices[i].message.content` (array) | `{type:"image_url", image_url:{url:"data:<mime>;base64,<data>"}}` |
+| `candidates[i].content.parts[thought:true]` | **Skipped** | Internal reasoning tokens not forwarded |
+| `candidates[i].finishReason: STOP` | `finish_reason: stop` | |
+| `candidates[i].finishReason: MAX_TOKENS` | `finish_reason: length` | |
+| `candidates[i].finishReason: SAFETY / RECITATION / …` | `finish_reason: content_filter` | |
+| `candidates[i].finishReason: STOP` (with tool calls) | `finish_reason: tool_calls` | Overridden when tool calls present |
+| `usageMetadata.promptTokenCount` | `usage.prompt_tokens` | |
+| `usageMetadata.candidatesTokenCount` | `usage.completion_tokens` | |
+| `usageMetadata.totalTokenCount` | `usage.total_tokens` | |
+| `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` | Only when > 0 |
+
+### 12.4 Streaming Conversion (`_gemini_chunk_to_sse`)
+
+Each native Gemini SSE line (`data: {GenerateContentResponse}`) becomes one or more `data: {chat.completion.chunk}` lines. The final chunk that includes `usageMetadata.totalTokenCount` also carries `"usage"` in the OpenAI chunk for billing extraction by `stream_gemini_completion`.
+
+### 12.5 Cached Token Billing
+
+`chat.py` calls `extract_cached_tokens()` / `extract_cached_tokens_from_chunk()` (defined in `gemini_client.py`) on the OpenAI-format response/chunk. These read `usage.prompt_tokens_details.cached_tokens`, which is set by `_build_usage()` when `usageMetadata.cachedContentTokenCount > 0`. The billing logic then deducts cached tokens from prompt tokens so cached input is not charged at the full input rate.
+
+### 12.6 Fields NOT Converted (Design Decision)
+
+The following Gemini-specific features are not currently mapped:
+
+| Gemini feature | How to use |
+|---|---|
+| Grounding (Google Search) | Not supported via this proxy |
+| `safetySettings` overrides | Not supported via this proxy |
+| `cachedContent` (context caching) | Not supported via this proxy |
+| Image generation (🍌 models) | Supported — `inlineData` parts are returned as `image_url` base64 content; set `stream: false` (image models do not stream) |
+
+---
+
 ## File Reference
 
 | File | Role in Translation |
 |---|---|
-| `api/v1/endpoints/chat.py` | OpenAI entry point; extracts `X-Bedrock-*` headers; orchestrates stream/non-stream flow |
+| `api/v1/endpoints/chat.py` | OpenAI entry point; routes to Bedrock or Gemini; orchestrates stream/non-stream flow |
 | `api/anthropic/endpoints/messages.py` | Anthropic entry point; `x-api-key` auth; Anthropic SSE streaming |
 | `services/translator.py` | `RequestTranslator`: OpenAI → BedrockRequest; `ResponseTranslator`: BedrockResponse → OpenAI |
 | `services/anthropic_translator.py` | `AnthropicRequestTranslator`: Anthropic → BedrockRequest; `AnthropicResponseTranslator`: BedrockResponse → Anthropic |
 | `services/bedrock.py` | `_build_anthropic_body()`: BedrockRequest → Anthropic JSON (Anthropic models); `_build_converse_params()`: BedrockRequest → Converse API params (non-Anthropic); `_anthropic_event_to_bedrock()` / `_converse_stream_event_to_bedrock()`: stream event mapping |
+| `services/gemini_client.py` | `GeminiClient`: `invoke()` / `invoke_stream()` with full OpenAI ↔ Gemini native conversion; `extract_cached_tokens()` helpers |
 | `schemas/openai.py` | OpenAI request/response Pydantic models |
 | `schemas/anthropic.py` | Anthropic Messages API request/response/streaming Pydantic models |
 | `schemas/bedrock.py` | Internal Bedrock Pydantic models (BedrockRequest, BedrockResponse, BedrockStreamEvent) |

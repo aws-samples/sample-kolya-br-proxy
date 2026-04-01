@@ -81,7 +81,7 @@
           color="grey-8"
           icon="add"
           label="Add Model"
-          @click="showAddDialog = true"
+          @click="openAddDialog"
           unelevated
           size="sm"
         />
@@ -125,18 +125,37 @@
 
     <!-- Add Model Dialog -->
     <q-dialog v-model="showAddDialog">
-      <q-card dark style="min-width: 500px">
+      <q-card dark style="min-width: 520px">
         <q-card-section>
           <div class="text-h6">Add Model</div>
         </q-card-section>
 
         <q-card-section class="q-pt-none">
+          <!-- Provider selector -->
+          <div class="text-caption text-grey-6 q-mb-xs">Provider</div>
+          <q-btn-toggle
+            v-model="selectedProvider"
+            no-caps
+            unelevated
+            dense
+            toggle-color="grey-7"
+            color="grey-9"
+            text-color="grey-4"
+            toggle-text-color="white"
+            :options="[
+              { label: 'AWS Bedrock', value: 'bedrock' },
+              { label: 'Google Gemini', value: 'google' },
+            ]"
+            class="q-mb-md"
+            @update:model-value="onProviderChange"
+          />
+
           <q-select
             v-model="selectedAwsModel"
             :options="filteredAwsModels"
             option-label="friendly_name"
             option-value="friendly_name"
-            label="Select Model from AWS"
+            :label="selectedProvider === 'google' ? 'Select Gemini Model' : 'Select Model from AWS Bedrock'"
             outlined
             dark
             :loading="loadingAwsModels"
@@ -149,13 +168,18 @@
                 <q-item-section>
                   <q-item-label>
                     {{ scope.opt.friendly_name }}
-                    <q-badge
-                      v-if="scope.opt.is_cross_region"
-                      :color="scope.opt.cross_region_type === 'global' ? 'orange-8' : 'blue-8'"
-                      :label="scope.opt.cross_region_type === 'global' ? 'Global' : scope.opt.cross_region_type?.toUpperCase()"
-                      class="q-ml-sm"
-                    />
-                    <q-badge v-else color="grey-7" label="Standard" class="q-ml-sm" />
+                    <template v-if="scope.opt.provider === 'google'">
+                      <q-badge color="green-8" label="Google" class="q-ml-sm" />
+                    </template>
+                    <template v-else>
+                      <q-badge
+                        v-if="scope.opt.is_cross_region"
+                        :color="scope.opt.cross_region_type === 'global' ? 'orange-8' : 'blue-8'"
+                        :label="scope.opt.cross_region_type === 'global' ? 'Global' : scope.opt.cross_region_type?.toUpperCase()"
+                        class="q-ml-sm"
+                      />
+                      <q-badge v-else color="grey-7" label="Standard" class="q-ml-sm" />
+                    </template>
                   </q-item-label>
                   <q-item-label caption class="text-mono">{{ scope.opt.model_id }}</q-item-label>
                 </q-item-section>
@@ -243,6 +267,7 @@ const tokensStore = useTokensStore();
 
 const step = ref(1);
 const showAddDialog = ref(false);
+const selectedProvider = ref<'bedrock' | 'google'>('bedrock');
 const awsModels = ref<AwsModel[]>([]);
 const filteredAwsModels = ref<AwsModel[]>([]);
 const loadingAwsModels = ref(false);
@@ -290,12 +315,20 @@ const currentToken = computed(() => {
   return tokensStore.tokens.find(t => t.id === selectedTokenId.value);
 });
 
+function openAddDialog() {
+  selectedProvider.value = 'bedrock';
+  selectedAwsModel.value = null;
+  filteredAwsModels.value = _modelsForProvider();
+  showAddDialog.value = true;
+}
+
 async function fetchAwsModels() {
   loadingAwsModels.value = true;
   try {
     const response = await api.get<{ models: AwsModel[] }>('/admin/models/aws-available');
     awsModels.value = response.data.models;
-    filteredAwsModels.value = response.data.models;
+    // Initialize with current provider filter
+    filteredAwsModels.value = _modelsForProvider();
   } catch {
     Notify.create({
       type: 'negative',
@@ -307,13 +340,27 @@ async function fetchAwsModels() {
   }
 }
 
+function _modelsForProvider(): AwsModel[] {
+  if (selectedProvider.value === 'google') {
+    return awsModels.value.filter(m => m.provider === 'google');
+  }
+  return awsModels.value.filter(m => m.provider !== 'google');
+}
+
+function onProviderChange() {
+  // Clear selection when switching provider
+  selectedAwsModel.value = null;
+  filteredAwsModels.value = _modelsForProvider();
+}
+
 function filterModels(val: string, update: (fn: () => void) => void) {
   update(() => {
+    const providerModels = _modelsForProvider();
     if (val === '') {
-      filteredAwsModels.value = awsModels.value;
+      filteredAwsModels.value = providerModels;
     } else {
       const needle = val.toLowerCase();
-      filteredAwsModels.value = awsModels.value.filter(
+      filteredAwsModels.value = providerModels.filter(
         model =>
           model.friendly_name.toLowerCase().includes(needle) ||
           model.model_id.toLowerCase().includes(needle)

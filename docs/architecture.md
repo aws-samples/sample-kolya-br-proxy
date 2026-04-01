@@ -1,6 +1,6 @@
 # Architecture
 
-Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway that provides both OpenAI-compatible and Anthropic Messages API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.).
+Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway that provides both OpenAI-compatible and Anthropic Messages API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.) and Google Gemini models via the native generateContent API.
 
 ---
 
@@ -52,6 +52,10 @@ graph LR
         Bedrock["AWS Bedrock<br/>(Claude, Nova, DeepSeek,<br/>Mistral, Llama)"]
     end
 
+    subgraph Google_Services ["Google Services"]
+        Gemini["Google Gemini API<br/>(generateContent native)"]
+    end
+
     OAI -->|"HTTPS /v1/chat/*"| ALB
     Anthropic_SDK -->|"HTTPS /v1/messages"| ALB
     Browser -->|"HTTPS /*"| ALB
@@ -60,6 +64,7 @@ graph LR
     Nginx --> Vue
     Uvicorn --> FastAPI
     FastAPI -->|"InvokeModel /<br/>Converse API"| Bedrock
+    FastAPI -->|"generateContent /<br/>streamGenerateContent"| Gemini
     FastAPI -->|"SQLAlchemy async"| PG
     FastAPI -.->|"Distributed rate limiting"| Redis
 ```
@@ -75,6 +80,8 @@ graph LR
 | Asyncio semaphore (50) | Back-pressure to match connection pool size; prevents request queuing |
 | JWT for dashboard, API keys for gateway | Separate auth concerns; API keys are long-lived, JWTs are short-lived |
 | Background usage recording | `record_usage` runs as a background task to avoid blocking responses |
+| Gemini native API (not OpenAI compat) | Uses `generateContent` / `streamGenerateContent` directly; avoids Gemini's OpenAI-compat layer which rejects fields like `frequency_penalty` |
+| Gemini format conversion in client layer | `GeminiClient` converts OpenAI ↔ Gemini natively; `chat.py` sees uniform OpenAI format regardless of backend |
 
 ---
 
@@ -124,6 +131,8 @@ graph TD
         ResTranslator["ResponseTranslator<br/>(Bedrock -> OpenAI)"]
         AnthReqTranslator["AnthropicRequestTranslator<br/>(Anthropic -> Bedrock)"]
         AnthResTranslator["AnthropicResponseTranslator<br/>(Bedrock -> Anthropic)"]
+        GeminiSvc["GeminiClient<br/>(OpenAI ↔ Gemini native conversion)"]
+        GeminiPricing["GeminiPricingUpdater<br/>(3-tier price fetch)"]
         TokenSvc["TokenService<br/>(validate, CRUD)"]
         AuthSvc["AuthService<br/>(OAuth user creation)"]
         RefreshSvc["RefreshTokenService<br/>(token rotation)"]
@@ -604,9 +613,10 @@ sequenceDiagram
 
 ## 7. Request Processing Flow
 
-This section details the full lifecycle of gateway requests. The proxy supports two API paths:
+This section details the full lifecycle of gateway requests. The proxy supports three API paths:
 
-- **OpenAI path** (`/v1/chat/completions`): Full translation between OpenAI and Bedrock formats
+- **OpenAI path → AWS Bedrock** (`/v1/chat/completions`, non-Gemini models): Full translation between OpenAI and Bedrock formats
+- **OpenAI path → Google Gemini** (`/v1/chat/completions`, `gemini-*` models): `GeminiClient` converts OpenAI ↔ Gemini native format; `chat.py` is format-agnostic
 - **Anthropic path** (`/v1/messages`): Near-passthrough since Bedrock InvokeModel natively uses Anthropic Messages API format
 
 ### 7.1 OpenAI Path Sequence Diagram
@@ -694,7 +704,76 @@ sequenceDiagram
     BG->>DB: INSERT INTO usage_records
 ```
 
-### 7.2 Anthropic Path Sequence Diagram
+### 7.2 Gemini Path Sequence Diagram
+
+When the requested model starts with `gemini-`, `chat.py` routes to `_handle_gemini_request()`. The `GeminiClient` handles all format conversion internally; `chat.py` always receives an OpenAI-format response dict.
+
+```mermaid
+sequenceDiagram
+    participant Client as OpenAI Client
+    participant Chat as chat.py endpoint
+    participant GC as GeminiClient
+    participant Gemini as Google Gemini API<br/>(generativelanguage.googleapis.com)
+
+    Client->>Chat: POST /v1/chat/completions<br/>model: "gemini-2.5-flash"
+    Chat->>Chat: is_gemini_model() → true
+    Chat->>Chat: Quota + model access check
+
+    alt Non-streaming (stream=false, or image model)
+        Chat->>GC: invoke(payload, api_key)
+        GC->>GC: _openai_to_gemini_payload()<br/>messages→contents+systemInstruction<br/>max_tokens→maxOutputTokens, tools→functionDeclarations
+        GC->>Gemini: POST /v1beta/models/{model}:generateContent
+        Gemini-->>GC: GenerateContentResponse (JSON)
+        GC->>GC: _gemini_response_to_openai()<br/>candidates→choices, usageMetadata→usage<br/>inlineData→image_url (base64)
+        GC-->>Chat: OpenAI-format dict
+        Chat-->>Client: JSON response
+    else Streaming (stream=true)
+        Chat->>GC: invoke_stream(payload, api_key)
+        GC->>GC: _openai_to_gemini_payload()
+        GC->>Gemini: POST /v1beta/models/{model}:streamGenerateContent?alt=sse
+        loop SSE chunks
+            Gemini-->>GC: data: {GenerateContentResponse chunk}
+            GC->>GC: _gemini_chunk_to_sse()<br/>→ OpenAI chat.completion.chunk format
+            GC-->>Chat: OpenAI SSE string
+        end
+        GC-->>Chat: data: [DONE]
+        Chat-->>Client: SSE stream
+    end
+
+    Chat->>Chat: background: record_usage(cached_tokens extracted from usage)
+```
+
+**Key conversion mappings (OpenAI → Gemini):**
+
+| OpenAI field | Gemini field |
+|---|---|
+| `messages[role=system]` | `systemInstruction.parts` |
+| `messages[role=user/assistant]` | `contents[role=user/model]` |
+| `messages[role=tool]` | `contents[role=user].parts[functionResponse]` |
+| `tool_calls` in assistant message | `parts[functionCall]` |
+| `max_tokens` | `generationConfig.maxOutputTokens` |
+| `temperature` | `generationConfig.temperature` |
+| `top_p` | `generationConfig.topP` |
+| `stop` | `generationConfig.stopSequences` |
+| `tools[].function` | `tools[].functionDeclarations[]` |
+| `tool_choice: "none/auto/required"` | `toolConfig.functionCallingConfig.mode: NONE/AUTO/ANY` |
+| `image_url` (base64 data URI) | `inlineData.mimeType + inlineData.data` |
+
+**Key conversion mappings (Gemini → OpenAI):**
+
+| Gemini field | OpenAI field |
+|---|---|
+| `candidates[0].content.parts[text]` | `choices[0].message.content` (string) |
+| `candidates[0].content.parts[functionCall]` | `choices[0].message.tool_calls[]` |
+| `candidates[0].content.parts[inlineData]` | `choices[0].message.content` (array with `image_url`) |
+| `candidates[0].finishReason: STOP` | `choices[0].finish_reason: stop` |
+| `candidates[0].finishReason: MAX_TOKENS` | `choices[0].finish_reason: length` |
+| `candidates[0].finishReason: SAFETY` | `choices[0].finish_reason: content_filter` |
+| `usageMetadata.promptTokenCount` | `usage.prompt_tokens` |
+| `usageMetadata.candidatesTokenCount` | `usage.completion_tokens` |
+| `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` |
+
+### 7.3 Anthropic Path Sequence Diagram
 
 The Anthropic path is a near-passthrough: since Bedrock's InvokeModel API natively accepts Anthropic Messages API format, minimal translation is needed. Key differences from the OpenAI path:
 
@@ -755,14 +834,15 @@ sequenceDiagram
     Msg->>BG: background: record_usage(...)
 ```
 
-### 7.3 Request/Response Translation
+### 7.4 Request/Response Translation Summary
 
-The proxy performs translation between client API formats and Bedrock:
+| Path | Translation | Notes |
+|---|---|---|
+| **OpenAI → Bedrock** | Three-phase (OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI) | Full translation; tool calls, images, Bedrock extensions |
+| **OpenAI → Gemini** | `GeminiClient` internal conversion (OpenAI → Gemini GenerateContentRequest / back) | Native `generateContent` API; no OpenAI-compat layer |
+| **Anthropic → Bedrock** | Near-passthrough (`invoke_model`) | Minimal translation; preserves `cache_control`, thinking blocks |
 
-- **OpenAI path**: Three-phase translation (OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI). Includes message conversion, tool call mapping, parameter translation, and automatic fixes.
-- **Anthropic path**: Near-passthrough (Anthropic → raw dict → `invoke_model`). Minimal translation since Bedrock natively uses Anthropic Messages API format for Claude models. Preserves `cache_control` markers and thinking blocks.
-
-For non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.), both paths use the Converse API via `converse`/`converse_stream`.
+For non-Anthropic Bedrock models (Nova, DeepSeek, Mistral, Llama, etc.), the Bedrock path uses the Converse API via `converse`/`converse_stream`.
 
 For the complete translation pipeline documentation, see **[Request Translation](request-translation.md)**.
 

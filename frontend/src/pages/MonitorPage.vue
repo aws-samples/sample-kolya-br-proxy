@@ -215,7 +215,7 @@
           v-else
           :rows="filteredPricingData"
           :columns="pricingColumns"
-          row-key="model_id"
+          :row-key="(row) => row.model_id + '|' + row.region"
           flat
           dense
           dark
@@ -223,6 +223,17 @@
         >
           <template v-slot:top-right>
             <div class="row q-gutter-sm">
+              <q-select
+                v-model="selectedProvider"
+                :options="providerOptions"
+                label="Provider"
+                outlined
+                dense
+                dark
+                emit-value
+                map-options
+                style="min-width: 160px"
+              />
               <q-select
                 v-model="selectedRegion"
                 :options="regionOptions"
@@ -232,7 +243,7 @@
                 dark
                 emit-value
                 map-options
-                style="min-width: 200px"
+                style="min-width: 180px"
               />
               <q-input
                 v-model="pricingFilter"
@@ -241,7 +252,7 @@
                 placeholder="Search models"
                 dark
                 outlined
-                style="min-width: 200px"
+                style="min-width: 180px"
               >
                 <template v-slot:append>
                   <q-icon name="search" />
@@ -250,15 +261,28 @@
             </div>
           </template>
 
+          <template v-slot:body-cell-provider="props">
+            <q-td :props="props">
+              <q-chip
+                dense
+                :color="PROVIDER_COLORS[props.value] ?? 'grey-7'"
+                text-color="white"
+                size="sm"
+              >
+                {{ props.value }}
+              </q-chip>
+            </q-td>
+          </template>
+
           <template v-slot:body-cell-input_price_per_1m="props">
             <q-td :props="props">
-              <span class="text-mono">${{ Number(props.value).toFixed(2) }}</span>
+              <span class="text-mono">{{ formatPrice(props.value) }}</span>
             </q-td>
           </template>
 
           <template v-slot:body-cell-output_price_per_1m="props">
             <q-td :props="props">
-              <span class="text-mono">${{ Number(props.value).toFixed(2) }}</span>
+              <span class="text-mono">{{ formatPrice(props.value) }}</span>
             </q-td>
           </template>
 
@@ -266,7 +290,7 @@
             <q-td :props="props">
               <q-chip
                 dense
-                :color="props.value === 'api' ? 'blue-8' : props.value === 'scraper' ? 'green-8' : 'purple-8'"
+                :color="props.value === 'api' ? 'blue-8' : props.value === 'aws-scraper' ? 'teal-8' : 'purple-8'"
                 text-color="white"
                 size="sm"
               >
@@ -324,6 +348,27 @@ const customStart = ref('');
 const customEnd = ref('');
 const pricingFilter = ref('');
 const selectedRegion = ref<string | null>(null);
+const selectedProvider = ref<string | null>(null);
+
+// Provider colours — keyed by the display name returned by getProvider()
+const PROVIDER_COLORS: Record<string, string> = {
+  Amazon:    'blue-8',
+  Anthropic: 'orange-8',
+  Google:    'green-8',
+  Gemini:    'teal-8',
+  Meta:      'indigo-7',
+  Mistral:   'deep-orange-7',
+  Cohere:    'cyan-8',
+  DeepSeek:  'purple-8',
+  MiniMax:   'pink-7',
+  Moonshot:  'blue-grey-7',
+  NVIDIA:    'green-9',
+  OpenAI:    'grey-7',
+  Qwen:      'amber-8',
+  AI21:      'light-blue-8',
+  Writer:    'brown-7',
+  ZAI:       'red-8',
+};
 
 const datePresetOptions = [
   { label: '24h', value: '24h' },
@@ -355,6 +400,13 @@ const CHART_COLORS = [
 
 const pricingColumns = [
   {
+    name: 'provider',
+    label: 'Provider',
+    field: 'provider',
+    align: 'left' as const,
+    sortable: true,
+  },
+  {
     name: 'model_id',
     label: 'Model ID',
     field: 'model_id',
@@ -370,14 +422,14 @@ const pricingColumns = [
   },
   {
     name: 'input_price_per_1m',
-    label: 'Input (per 1M tokens)',
+    label: 'Input / 1M',
     field: 'input_price_per_1m',
     align: 'right' as const,
     sortable: true,
   },
   {
     name: 'output_price_per_1m',
-    label: 'Output (per 1M tokens)',
+    label: 'Output / 1M',
     field: 'output_price_per_1m',
     align: 'right' as const,
     sortable: true,
@@ -391,7 +443,7 @@ const pricingColumns = [
   },
   {
     name: 'last_updated',
-    label: 'Last Updated',
+    label: 'Updated',
     field: 'last_updated',
     align: 'center' as const,
     sortable: true,
@@ -405,14 +457,86 @@ const tokenOptions = computed(() =>
   })),
 );
 
-const regionOptions = computed(() => {
+/**
+ * Extract a human-readable provider name from a model_id.
+ *
+ * model_id formats:
+ *   "amazon.nova-lite-v1:0"          → "Amazon"
+ *   "anthropic.claude-3-5-sonnet…"   → "Anthropic"
+ *   "us.amazon.nova-lite-v1:0"       → "Amazon"   (cross-region prefix)
+ *   "global.anthropic.claude-…"      → "Anthropic"
+ *   "gemini-2.5-pro"                 → "Gemini"
+ *   "gemini-1.5-flash"               → "Gemini"
+ *   "zai.glm-5"                      → "ZAI"
+ */
+function getProvider(modelId: string): string {
+  // Strip cross-region prefixes: "us.", "eu.", "ap.", "global."
+  const stripped = modelId.replace(/^(us|eu|ap|global|us-gov)\.[a-z]{0,4}\.?/, '');
+
+  const prefix = (stripped.split('.')[0] ?? '').toLowerCase();
+
+  const MAP: Record<string, string> = {
+    amazon:    'Amazon',
+    anthropic: 'Anthropic',
+    meta:      'Meta',
+    mistral:   'Mistral',
+    cohere:    'Cohere',
+    deepseek:  'DeepSeek',
+    minimax:   'MiniMax',
+    moonshot:  'Moonshot',
+    nvidia:    'NVIDIA',
+    openai:    'OpenAI',
+    qwen:      'Qwen',
+    ai21:      'AI21',
+    writer:    'Writer',
+    zai:       'ZAI',
+    stability: 'Stability',
+    twelvelabs:'TwelveLabs',
+    google:    'Google',
+    luma:      'Luma',
+  };
+
+  if (MAP[prefix]) return MAP[prefix];
+
+  // Gemini models don't have a dot-prefix — identify by name
+  if (modelId.startsWith('gemini-') || modelId.startsWith('gemini/')) return 'Gemini';
+
+  // Fallback: capitalise first segment
+  return prefix.charAt(0).toUpperCase() + prefix.slice(1);
+}
+
+/**
+ * Format a per-1M price string with sensible precision.
+ * Always shows at least 2 decimal places; uses up to 4 for sub-cent prices.
+ */
+function formatPrice(value: string): string {
+  const n = Number(value);
+  if (n === 0) return '$0.00';
+  // Use 4 decimal places for prices < $0.10, else 2
+  const decimals = n < 0.10 ? 4 : 2;
+  return '$' + n.toFixed(decimals);
+}
+
+const enrichedPricingData = computed(() => {
   if (!monitorStore.pricingTable) return [];
+  return monitorStore.pricingTable.pricing_data.map(record => ({
+    ...record,
+    provider: getProvider(record.model_id),
+  }));
+});
 
+const providerOptions = computed(() => {
+  const providers = new Set<string>();
+  enrichedPricingData.value.forEach(r => providers.add(r.provider));
+  return [
+    { label: 'All Providers', value: null },
+    ...Array.from(providers).sort().map(p => ({ label: p, value: p })),
+  ];
+});
+
+const regionOptions = computed(() => {
   const regions = new Set<string>();
-  monitorStore.pricingTable.pricing_data.forEach(record => {
-    regions.add(record.region);
-  });
-
+  enrichedPricingData.value.forEach(r => regions.add(r.region));
   return [
     { label: 'All Regions', value: null },
     ...Array.from(regions).sort().map(region => ({
@@ -423,21 +547,22 @@ const regionOptions = computed(() => {
 });
 
 const filteredPricingData = computed(() => {
-  if (!monitorStore.pricingTable) return [];
+  let data = enrichedPricingData.value;
 
-  let data = monitorStore.pricingTable.pricing_data;
-
-  // Filter by region
-  if (selectedRegion.value) {
-    data = data.filter(record => record.region === selectedRegion.value);
+  if (selectedProvider.value) {
+    data = data.filter(r => r.provider === selectedProvider.value);
   }
 
-  // Filter by search text
+  if (selectedRegion.value) {
+    data = data.filter(r => r.region === selectedRegion.value);
+  }
+
   if (pricingFilter.value) {
     const searchLower = pricingFilter.value.toLowerCase();
-    data = data.filter(record =>
-      record.model_id.toLowerCase().includes(searchLower) ||
-      record.region.toLowerCase().includes(searchLower)
+    data = data.filter(r =>
+      r.model_id.toLowerCase().includes(searchLower) ||
+      r.region.toLowerCase().includes(searchLower) ||
+      r.provider.toLowerCase().includes(searchLower),
     );
   }
 
