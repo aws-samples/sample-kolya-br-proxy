@@ -54,6 +54,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize pricing data if database is empty
     from app.core.database import async_session_maker
     from app.services.pricing_updater import PricingUpdater
+    from app.services.gemini_pricing_updater import GeminiPricingUpdater
+    from app.core.config import get_settings as _get_settings
     from sqlalchemy import select, func
     from app.models.model_pricing import ModelPricing
 
@@ -72,6 +74,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         else:
             logger.info(f"Pricing database already contains {count} records")
+
+    # Initialize Gemini pricing if API key is configured
+    _settings = _get_settings()
+    if _settings.GEMINI_API_KEY:
+        async with async_session_maker() as db:
+            try:
+                gemini_updater = GeminiPricingUpdater(db)
+                gemini_stats = await gemini_updater.update_all_pricing()
+                logger.info(
+                    f"Gemini pricing initialized: {gemini_stats['updated']} models loaded"
+                )
+            except Exception as e:
+                logger.warning(f"Gemini pricing initialization failed (non-fatal): {e}")
 
     # Initialize singleton Bedrock client at startup
     BedrockClient.get_instance()

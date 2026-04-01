@@ -56,6 +56,12 @@ class Settings(BaseSettings):
         description="AWS secret access key (local development only, Pod Identity used in Kubernetes)",
     )
 
+    # Google Gemini settings
+    GEMINI_API_KEY: Optional[str] = Field(
+        default=None,
+        description="Google Gemini API key for direct Gemini model access",
+    )
+
     # AWS Bedrock settings
     BEDROCK_MAX_CONCURRENT_REQUESTS: int = Field(
         default=50,

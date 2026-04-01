@@ -99,6 +99,12 @@ spec:
             secretKeyRef:
               name: backend-secrets
               key: cognito-region
+        - name: KBR_GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: gemini-api-key
+              optional: true
         resources:
           requests:
             cpu: ${BACKEND_CPU_REQUEST}

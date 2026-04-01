@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model import Model
 from app.services.bedrock import BedrockClient
+from app.services.gemini_client import GeminiClient
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -245,7 +246,16 @@ async def list_aws_available_models(
             f"({len(profile_ids)} inference profiles + foundation models)"
         )
 
-        # Cache the results
+        # Append Gemini models dynamically (only if API key is configured)
+        if settings.GEMINI_API_KEY:
+            try:
+                gemini_models = await GeminiClient.list_models(settings.GEMINI_API_KEY)
+                models.extend(gemini_models)
+                logger.info(f"Added {len(gemini_models)} Gemini models to available list")
+            except Exception as e:
+                logger.warning(f"Failed to fetch Gemini models (non-fatal): {e}")
+
+        # Cache the results (includes Gemini models)
         _set_aws_models_cache(models)
 
         return {"models": models}
