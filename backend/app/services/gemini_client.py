@@ -618,8 +618,7 @@ class GeminiClient:
         model = payload.get("model", "")
         model_id = model.removeprefix("models/")
         url = (
-            f"{GEMINI_BASE_URL}/{model_id}:streamGenerateContent"
-            f"?alt=sse&key={api_key}"
+            f"{GEMINI_BASE_URL}/{model_id}:streamGenerateContent?alt=sse&key={api_key}"
         )
 
         gemini_body = _openai_to_gemini_payload(payload)
