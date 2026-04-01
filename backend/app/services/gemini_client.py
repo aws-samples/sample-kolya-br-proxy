@@ -583,7 +583,7 @@ class GeminiClient:
         gemini_body = _openai_to_gemini_payload(payload)
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
 
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=3600) as client:
             resp = await client.post(
                 url,
                 headers={"Content-Type": "application/json"},
@@ -625,7 +625,7 @@ class GeminiClient:
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
         created = int(time.time())
 
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=3600) as client:
             async with client.stream(
                 "POST",
                 url,
