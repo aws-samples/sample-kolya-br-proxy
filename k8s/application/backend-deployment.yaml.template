@@ -27,7 +27,7 @@ spec:
       initContainers:
       - name: db-migrate
         image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/kolya-br-proxy-backend:latest
-        command: ["uv", "run", "python", "scripts/migrate.py"]
+        command: ["python", "scripts/migrate.py"]
         workingDir: /app/backend
         envFrom:
         - configMapRef:
