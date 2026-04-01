@@ -211,7 +211,7 @@ class BedrockClient:
             region_name=settings.AWS_REGION,
             retries={"max_attempts": 3, "mode": "adaptive"},
             connect_timeout=10,  # 10 seconds for connection
-            read_timeout=300,  # 5 minutes: covers thinking model pauses and long prefill latency
+            read_timeout=3600,  # 1 hour: covers very long non-streaming tasks
             max_pool_connections=settings.BEDROCK_MAX_CONCURRENT_REQUESTS,
             tcp_keepalive=True,  # Enable TCP keepalive
         )
