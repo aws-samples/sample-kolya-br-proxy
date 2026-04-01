@@ -75,18 +75,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         else:
             logger.info(f"Pricing database already contains {count} records")
 
-    # Initialize Gemini pricing if API key is configured
-    _settings = _get_settings()
-    if _settings.GEMINI_API_KEY:
-        async with async_session_maker() as db:
-            try:
-                gemini_updater = GeminiPricingUpdater(db)
-                gemini_stats = await gemini_updater.update_all_pricing()
-                logger.info(
-                    f"Gemini pricing initialized: {gemini_stats['updated']} models loaded"
-                )
-            except Exception as e:
-                logger.warning(f"Gemini pricing initialization failed (non-fatal): {e}")
+    # Initialize Gemini pricing (scrapes public pricing page, no API key needed)
+    async with async_session_maker() as db:
+        try:
+            gemini_updater = GeminiPricingUpdater(db)
+            gemini_stats = await gemini_updater.update_all_pricing()
+            logger.info(
+                f"Gemini pricing initialized: {gemini_stats['updated']} models loaded"
+            )
+        except Exception as e:
+            logger.warning(f"Gemini pricing initialization failed (non-fatal): {e}")
 
     # Initialize singleton Bedrock client at startup
     BedrockClient.get_instance()

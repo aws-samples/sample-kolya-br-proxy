@@ -2,25 +2,45 @@
 
 ## 概述
 
-本系统实现了从 AWS 动态获取 Bedrock 模型价格，并自动更新到数据库。价格数据用于计算 API 调用成本。
+本系统从多个数据源动态获取模型价格，并自动更新到数据库。价格数据用于计算 API 调用成本。
 
-## 架构
+系统包含两个独立的定价子系统并行运行：
+- **AWS Bedrock 定价** — 覆盖所有通过 AWS Bedrock 调用的模型
+- **Google Gemini 定价** — 覆盖通过 Gemini API 直接调用的模型（存储时 `region="global"`）
 
-### 数据库表：`model_pricing`
+---
+
+## 数据库表：`model_pricing`
 
 存储模型价格信息：
-- `model_id`: 模型标识符
-- `region`: AWS 区域
-- `input_price_per_token`: 输入 token 单价（USD）
-- `output_price_per_token`: 输出 token 单价（USD）
-- `currency`: 货币（USD）
-- `source`: 数据来源（`api` = AWS Price List API，`aws-scraper` = AWS 定价页面爬虫）
-- `last_updated`: 最后更新时间
-- `created_at`: 创建时间
 
-### 价格获取策略
+| 字段 | 说明 |
+|------|------|
+| `model_id` | 模型标识符（如 `amazon.nova-lite-v1:0`、`gemini-2.5-pro`） |
+| `region` | AWS 区域、跨区域前缀（`us.`、`global.`），Gemini 模型为 `"global"` |
+| `input_price_per_token` | 输入 token 单价（USD） |
+| `output_price_per_token` | 输出 token 单价（USD） |
+| `cached_input_price_per_token` | 上下文缓存读取价格（USD），不支持则为 NULL |
+| `currency` | 货币（USD） |
+| `source` | 数据来源，见下表 |
+| `last_updated` | 最后更新时间 |
+| `created_at` | 创建时间 |
 
-系统使用**双数据源 + 去重**策略获取完整的模型价格：
+**`source` 字段取值：**
+
+| 值 | 含义 |
+|----|------|
+| `api` | AWS Price List API |
+| `aws-scraper` | AWS Bedrock 定价页面爬虫 |
+| `gemini-scraper` | Gemini 三级策略（统一标签） |
+
+---
+
+## AWS Bedrock 定价
+
+### 获取策略
+
+系统使用**双数据源 + 去重**策略获取完整的 Bedrock 模型价格：
 
 1. **AWS Price List API（主数据源）** — `source: "api"`
    - 官方 API，数据最准确，结构化数据
@@ -41,12 +61,23 @@
    - 跨区域部分通过标题识别："Global Cross-region" → `global.` 前缀，"Geo"/"In-region" → 地理前缀（如 `us.`）
 
 **更新流程（顺序执行 + 去重）：**
-1. 调用 AWS Price List API → 保存结果，`source: "api"`
+1. 调用 AWS Price List API → 保存，`source: "api"`
 2. 收集步骤 1 中所有基础 model ID
 3. 从 AWS 定价页面提取价格（静态 HTML + JSON）
-4. 仅保存在步骤 2 中**未出现**的模型 → `source: "aws-scraper"`
+4. 仅保存步骤 2 中**未出现**的模型 → `source: "aws-scraper"`
 
 API 数据始终优先，爬虫数据仅填补空缺。
+
+**运行统计示例：**
+```json
+{
+  "updated": 77,
+  "api_count": 48,
+  "scraper_count": 29,
+  "failed": 0,
+  "source": "api+aws-scraper"
+}
+```
 
 ### 支持的厂商（共 19 个）
 
@@ -57,7 +88,7 @@ API 数据始终优先，爬虫数据仅填补空缺。
 | Anthropic | — | 是 | Claude 4.x、3.x、2.x、Instant |
 | Cohere | — | 是 | Command R/R+ |
 | DeepSeek | 是 | 是 | R1、V3.1 |
-| Google | 是 | — | Gemma 3 (4B, 12B, 27B) |
+| Google | 是 | — | Gemma 3 (4B, 12B, 27B)，仅 Bedrock；Gemini 模型使用独立的 Gemini 定价系统 |
 | Luma AI | — | — | 视频生成（按秒计价） |
 | Meta | 是 | 是 | Llama 3.x、4.x |
 | MiniMax AI | 是 | — | Minimax M2 |
@@ -71,63 +102,127 @@ API 数据始终优先，爬虫数据仅填补空缺。
 | Writer | — | — | Palmyra X4/X5（尚未入 API） |
 | Z AI | — | — | GLM-4.7（尚未入 API） |
 
-**注意：** 两列都标 "—" 的厂商可能采用非 token 计价（图像/视频），或太新尚未进入定价 API。无论是否有价格数据，所有 19 个厂商均可在"添加模型"界面中选择。
+> **注意：** 两列都标 "—" 的厂商可能采用非 token 计价（图像/视频），或太新尚未进入定价 API。无论是否有价格数据，所有厂商均可在"添加模型"界面中选择。
 
-### 自动化流程
+---
+
+## Google Gemini 定价
+
+Gemini 模型价格独立于 AWS 定价系统单独获取。所有 Gemini 记录存储时 `region="global"`（Gemini API 无区域差异定价），`source="gemini-scraper"`。
+
+### 三级获取策略
+
+三个 Tier 按顺序执行，后续 Tier 只补充前面 Tier 没有覆盖的模型，最终合并保存。
+
+#### Tier 1 — Google 官方定价页面
+
+- **URL：** `https://ai.google.dev/gemini-api/docs/pricing`
+- **方式：** 使用 Googlebot User-Agent 发起 HTTP GET（触发 SSR；普通 UA 返回空内容）
+- **解析：** 定位 `<h2>`/`<h3>` 中包含 `"Gemini N.N …"` 的标题，匹配后续包含 "Input price"/"Output price"/"Caching price" 的 `<table>`
+- **覆盖：** 所有当前在售模型（2.0+、2.5+、3.x 预览版）— 约 17 个模型
+- **说明：** 页面每个模型显示两行（标准价 + Batch 半价），仅取第一行（标准价）
+
+#### Tier 2 — LiteLLM 公开价格数据库
+
+- **URL：** `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`
+- **方式：** 普通 HTTP GET 获取 GitHub 公开 raw JSON 文件 — **不安装 litellm 包，无任何依赖**
+- **过滤：** 只取 `gemini` 开头的键（排除 `gemini/` 前缀重复项），跳过价格为 0 的实验模型
+- **覆盖：** 官方页面没有的预览/日期版变体（如 `gemini-2.0-flash-001`、`gemini-2.5-flash-preview-09-2025`、`gemini-exp-1206`）— 新增约 17 个模型
+- **优先级：** 仅补充 Tier 1 未找到的模型
+
+#### Tier 3 — 内置静态旧版价格表
+
+在 `backend/app/services/gemini_pricing_updater.py` 中手动维护（`_LEGACY_GEMINI_PRICING` 常量）。
+
+**仅覆盖已从 Google 官方定价页下线、且 LiteLLM JSON 中价格缺失/为零的老旧模型：**
+
+| 模型 | 输入 $/1M | 输出 $/1M | 缓存 $/1M | 数据来源 |
+|------|---------|---------|---------|---------|
+| `gemini-1.5-pro` | $1.25 | $5.00 | $0.3125 | Google 文档（已归档） |
+| `gemini-1.5-flash` | $0.075 | $0.30 | $0.01875 | Google 文档（已归档） |
+| `gemini-1.5-flash-8b` | $0.0375 | $0.15 | $0.01 | Google 文档（已归档） |
+
+> **维护原则：** 仅在以下全部条件满足时才添加新条目：（1）模型已从官方定价页下线；（2）LiteLLM JSON 中输出价格为零或缺失；（3）仍有用户在生产环境使用该模型。**不要添加当前在售模型**，它们会被 Tier 1 或 Tier 2 自动覆盖。
+
+### 典型运行结果
+
+```
+Gemini pricing tier-1 (Google):           17 个模型
+Gemini pricing tier-2 (LiteLLM):          新增 17 个模型
+Gemini pricing tier-3 (static legacy):    新增 3 个模型
+Gemini pricing saved:                      共 37 个模型
+```
+
+---
+
+## 自动化流程
 
 ```mermaid
 flowchart TD
     A[启动应用] --> B[初始化数据库]
-    B --> C{检查 model_pricing 表}
-    C -->|空表| D[从 AWS 获取价格]
-    C -->|有数据| E[跳过初始化]
-    D --> F[插入价格数据到数据库]
-    F --> G[日志: 初始价格数据已加载]
-    E --> H[日志: 数据库已包含 X 条记录]
-    G --> I[启动 APScheduler 调度器]
-    H --> I
-    I --> J[调度器: 每天 UTC 02:00]
+    B --> C{model_pricing 表为空？}
+    C -->|是| D[获取 AWS Bedrock 价格]
+    C -->|否| E[跳过 AWS 初始化]
+    D --> F[插入 AWS 价格到数据库]
+    F --> G[日志: 初始价格已加载]
+    E --> H[日志: 数据库已含 X 条记录]
+    G --> Init2[获取 Gemini 价格 - 三级策略]
+    H --> Init2
+    Init2 --> I[写入/更新 Gemini 价格到数据库]
+    I --> J[启动 APScheduler]
     J --> K[应用正常运行]
-    K --> L[定时任务触发]
-    L --> M[执行 update_pricing_task]
-    M --> N[从 AWS 获取最新价格]
-    N --> O[Upsert 到数据库]
-    O --> P[日志: 价格更新完成]
-    P --> J
+
+    K --> L1[调度器: 每天 UTC 02:00]
+    L1 --> M1[update_pricing_task - AWS]
+    M1 --> N1[Upsert AWS 价格]
+    N1 --> L1
+
+    K --> L2[调度器: 每天 UTC 02:30]
+    L2 --> M2[update_gemini_pricing_task]
+    M2 --> N2[三级 Gemini 获取 + Upsert]
+    N2 --> L2
+
     K --> Q[管理员 API: POST /admin/pricing/update]
-    Q --> R[手动按需更新]
+    Q --> R[手动按需更新 AWS]
     R --> K
 
     style D fill:#e1f5ff
     style F fill:#e1f5ff
-    style N fill:#e1f5ff
-    style O fill:#e1f5ff
-    style I fill:#fff4e1
+    style Init2 fill:#e8f5e9
+    style I fill:#e8f5e9
+    style N1 fill:#e1f5ff
+    style N2 fill:#e8f5e9
     style J fill:#fff4e1
 ```
 
-**调度器实现位置：**
-- 文件：`backend/app/tasks/pricing_tasks.py`
-- 函数：`start_scheduler()`, `stop_scheduler()`, `update_pricing_task()`
-- 启动：在 `backend/main.py` 的 lifespan 函数中，数据库初始化后调用
-- 关闭：在 `backend/main.py` 的 lifespan 函数中，应用关闭时调用
+**调度计划：**
+
+| 任务 | 时间 (UTC) | 内容 |
+|------|-----------|------|
+| AWS 价格更新 | 每天 02:00 | `update_pricing_task()` |
+| Gemini 价格更新 | 每天 02:30 | `update_gemini_pricing_task()` |
+
+**实现文件：**
+- `backend/app/tasks/pricing_tasks.py` — 调度器启停、两个任务函数
+- `backend/app/services/pricing_updater.py` — AWS 定价逻辑
+- `backend/app/services/gemini_pricing_updater.py` — Gemini 三级策略逻辑
+- `backend/main.py` — lifespan 启动/关闭
 
 **三种更新方式：**
 
 1. **应用启动时自动初始化**
-   - 检查 `model_pricing` 表是否为空
-   - 如果为空，自动从 AWS 获取价格并插入
-   - 日志会显示获取的记录数和数据源
+   - 检查 `model_pricing` 表是否为空 → 为空则获取 AWS 价格
+   - 每次启动都会运行 Gemini 价格初始化（无需 API Key）
 
 2. **定期自动更新**
-   - APScheduler 每天 UTC 02:00 自动更新
+   - APScheduler：AWS 每天 UTC 02:00，Gemini 每天 UTC 02:30
    - 使用 upsert 策略（存在则更新，不存在则插入）
-   - 更新日志记录在应用日志中
 
-3. **手动触发更新**
-   - 管理员 API: `POST /admin/pricing/update`
+3. **手动触发（仅 AWS）**
+   - 管理员 API：`POST /admin/pricing/update`
    - 需要管理员权限
-   - 返回更新统计信息
+
+---
 
 ## 价格计算
 
@@ -168,7 +263,7 @@ flowchart TD
 
 ### 数据库存储
 
-Cache token 数量存储在 `usage_records` 表中，用于费用明细分析：
+Cache token 数量存储在 `usage_records` 表中：
 
 ```python
 class UsageRecord(Base):
@@ -180,8 +275,6 @@ class UsageRecord(Base):
 ```
 
 ### OpenAI 兼容响应格式
-
-返回给客户端的响应中包含 cache 明细（兼容 OpenAI API 格式）：
 
 ```json
 {
@@ -199,62 +292,22 @@ class UsageRecord(Base):
 
 ### 实现位置
 
-- `app/services/pricing.py`: `ModelPricing.calculate_cost()` — 应用 cache 价格乘数
-- `app/api/v1/endpoints/chat.py`: `record_usage()` — 提取并传递 cache token 数
-- `app/models/usage.py`: `UsageRecord` — 存储 cache token 列
-- `app/services/translator.py`: `ResponseTranslator` — 在 OpenAI 格式中返回 `prompt_tokens_details`
+- `app/services/pricing.py`：`ModelPricing.calculate_cost()` — 应用 cache 价格乘数
+- `app/api/v1/endpoints/chat.py`：`record_usage()` — 提取并传递 cache token 数
+- `app/models/usage.py`：`UsageRecord` — 存储 cache token 列
+- `app/services/translator.py`：`ResponseTranslator` — 返回 `prompt_tokens_details`
 
 ### 错误处理
 
-如果找不到模型价格：
-- 抛出 `ValueError` 异常
-- 返回 HTTP 500 错误
-- 提示管理员更新价格数据
+找不到模型价格时：抛出 `ValueError`，返回 HTTP 500，提示管理员更新价格数据。
 
-## 部署说明
+---
 
-### 首次部署
-
-1. **运行数据库迁移**
-   ```bash
-   cd backend
-   alembic upgrade head
-   ```
-
-2. **启动应用**
-   ```bash
-   cd backend
-   python main.py  # 开发环境（带自动重载）
-   # 或
-   uvicorn main:app --host 0.0.0.0 --port 8000  # 生产环境
-   ```
-
-3. **自动初始化**
-   - 应用启动时会自动检查价格表
-   - 如果为空，自动从 AWS 获取并填充
-   - 查看日志确认初始化成功
-
-### 手动更新价格
-
-如果需要立即更新价格（不等待定时任务）：
-
-```bash
-curl -X POST http://localhost:8000/admin/pricing/update \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-### 查询特定模型价格
-
-```bash
-curl http://localhost:8000/admin/pricing/models/claude-3-5-sonnet-20241022 \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-## Monitor Section - 价格表展示
+## Monitor Section — 价格表展示
 
 ### 概述
 
-Monitor section 提供了完整的价格表展示功能，包含所有模型在各个区域的价格信息。为了提高性能，系统实现了 6 小时缓存机制。
+Monitor section 提供完整的价格表展示，包含所有模型（含 Gemini `region="global"` 行）及其价格信息，实现了 6 小时缓存机制。
 
 ### API 端点
 
@@ -265,43 +318,32 @@ GET /admin/monitor/pricing-table?force_refresh=false
 Authorization: Bearer {admin_token}
 ```
 
-**查询参数：**
-- `force_refresh`: 是否强制刷新缓存（默认：false）
-
 **响应示例：**
 ```json
 {
-  "total_records": 181,
+  "total_records": 218,
   "pricing_data": [
     {
       "model_id": "amazon.nova-lite-v1:0",
       "region": "us-east-1",
-      "input_price_per_token": "0.0000000600",
-      "output_price_per_token": "0.0000002400",
-      "input_price_per_1k": "0.00006",
-      "output_price_per_1k": "0.00024",
       "input_price_per_1m": "0.06",
       "output_price_per_1m": "0.24",
       "source": "api",
-      "last_updated": "2026-02-20T04:49:28.362348"
+      "last_updated": "2026-04-01T02:00:00"
     },
     {
-      "model_id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
-      "region": "default",
-      "input_price_per_token": "0.0000030000",
-      "output_price_per_token": "0.0000150000",
-      "input_price_per_1k": "0.003",
-      "output_price_per_1k": "0.015",
-      "input_price_per_1m": "3.00",
-      "output_price_per_1m": "15.00",
-      "source": "scraper",
-      "last_updated": "2026-02-20T04:49:28.362348"
+      "model_id": "gemini-2.5-pro",
+      "region": "global",
+      "input_price_per_1m": "1.25",
+      "output_price_per_1m": "10.00",
+      "source": "gemini-scraper",
+      "last_updated": "2026-04-01T02:30:00"
     }
   ],
   "cache_info": {
-    "cached_at": "2026-02-20T05:00:00.000000",
+    "cached_at": "2026-04-01T03:00:00",
     "cache_duration_hours": 6,
-    "expires_at": "2026-02-20T11:00:00.000000",
+    "expires_at": "2026-04-01T09:00:00",
     "is_cached": true,
     "cache_age_seconds": 120
   }
@@ -315,37 +357,6 @@ GET /admin/monitor/pricing-summary
 Authorization: Bearer {admin_token}
 ```
 
-**响应示例：**
-```json
-{
-  "total_records": 181,
-  "unique_models": 25,
-  "unique_regions": 26,
-  "data_sources": ["api", "scraper"],
-  "models_list": [
-    "amazon.nova-lite-v1:0",
-    "amazon.nova-lite-v2:0",
-    "amazon.nova-micro-v1:0",
-    "amazon.nova-premier-v1:0",
-    "amazon.nova-pro-v1:0",
-    "anthropic.claude-3-5-sonnet-20240620-v1:0",
-    "anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "meta.llama3-1-405b-instruct-v1:0",
-    "..."
-  ],
-  "regions_list": [
-    "ap-northeast-1",
-    "ap-northeast-2",
-    "ap-south-1",
-    "default",
-    "eu-central-1",
-    "us-east-1",
-    "us-west-2",
-    "..."
-  ]
-}
-```
-
 #### 3. 清除价格表缓存
 
 ```http
@@ -353,163 +364,83 @@ POST /admin/monitor/clear-cache
 Authorization: Bearer {admin_token}
 ```
 
-**使用场景：**
-- 手动更新价格后，强制刷新缓存
-- 确保下次请求获取最新数据
-
-**响应：**
-```json
-{
-  "success": true,
-  "message": "Pricing cache cleared successfully"
-}
-```
+手动更新价格后调用，强制下次请求从数据库读取最新数据。
 
 ### 缓存机制
 
-**缓存策略：**
-- 缓存时长：6 小时
-- 缓存位置：内存（应用级别）
-- 自动刷新：缓存过期后自动从数据库重新加载
-- 手动刷新：使用 `force_refresh=true` 或调用 `clear-cache` 端点
+- **时长：** 6 小时（内存缓存，应用级别）
+- **自动刷新：** 缓存过期后自动从数据库重新加载
+- **手动刷新：** `force_refresh=true` 参数或调用 `clear-cache` 端点
+- **失效场景：** 应用重启、6 小时到期、手动清除
 
-**缓存优势：**
-- 减少数据库查询，提高响应速度
-- 降低数据库负载
-- 价格数据变化不频繁，6 小时缓存合理
-
-**缓存失效场景：**
-1. 应用重启（内存缓存丢失）
-2. 缓存超过 6 小时自动失效
-3. 手动调用 `clear-cache` 端点
-4. 使用 `force_refresh=true` 参数
-
-### 使用示例
-
-#### 前端展示价格表
-
-```javascript
-// 获取价格表数据
-async function fetchPricingTable() {
-  const response = await fetch('/admin/monitor/pricing-table', {
-    headers: {
-      'Authorization': `Bearer ${adminToken}`
-    }
-  });
-  const data = await response.json();
-
-  console.log(`总记录数: ${data.total_records}`);
-  console.log(`缓存状态: ${data.cache_info.is_cached ? '已缓存' : '新数据'}`);
-  console.log(`缓存年龄: ${data.cache_info.cache_age_seconds}秒`);
-
-  // 渲染价格表
-  renderPricingTable(data.pricing_data);
-}
-
-// 强制刷新价格表
-async function refreshPricingTable() {
-  const response = await fetch('/admin/monitor/pricing-table?force_refresh=true', {
-    headers: {
-      'Authorization': `Bearer ${adminToken}`
-    }
-  });
-  const data = await response.json();
-  renderPricingTable(data.pricing_data);
-}
-```
-
-#### 价格更新后清除缓存
-
-```bash
-# 1. 更新价格
-curl -X POST http://localhost:8000/admin/pricing/update \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# 2. 清除缓存
-curl -X POST http://localhost:8000/admin/monitor/clear-cache \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-
-# 3. 获取最新价格表
-curl http://localhost:8000/admin/monitor/pricing-table \
-  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
-```
-
-### 性能优化
-
-**数据库查询优化：**
-- 使用索引：`model_id`, `region` 字段已建立索引
-- 排序优化：按 `model_id` 和 `region` 排序
-- 一次性加载：避免 N+1 查询问题
-
-**缓存优化：**
-- 内存缓存：快速访问，无需磁盘 I/O
-- 6 小时有效期：平衡数据新鲜度和性能
-- 懒加载：首次访问时才加载数据
-
-**响应优化：**
-- 包含多种价格单位（per token, per 1K, per 1M）
-- 前端无需额外计算
-- 减少客户端处理负担
+---
 
 ## 监控
 
 ### 验证系统状态
-
-检查数据库中的价格数据：
 
 ```bash
 # 查看总记录数和模型数
 PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT COUNT(*) as total_records, COUNT(DISTINCT model_id) as unique_models FROM model_pricing;"
 
-# 查看所有模型列表
+# 专项检查 Gemini 模型价格
 PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
-  "SELECT DISTINCT model_id FROM model_pricing ORDER BY model_id;"
+  "SELECT model_id, input_price_per_token * 1e6 as input_per_1m,
+          output_price_per_token * 1e6 as output_per_1m, source
+   FROM model_pricing WHERE region = 'global' ORDER BY model_id;"
 
-# 查看特定模型的价格（例如 Nova Lite）
+# 查看特定模型的价格
 PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT model_id, region,
    input_price_per_token * 1000000 as input_per_1m,
    output_price_per_token * 1000000 as output_per_1m,
-   source
-   FROM model_pricing
-   WHERE model_id = 'amazon.nova-lite-v1:0'
-   ORDER BY region;"
+   source FROM model_pricing
+   WHERE model_id = 'amazon.nova-lite-v1:0' ORDER BY region;"
 ```
 
-### 检查价格数据
+### 关键日志
 
-```sql
--- 查看所有价格记录
-SELECT model_id, region,
-       input_price_per_token * 1000000 as input_per_1m,
-       output_price_per_token * 1000000 as output_per_1m,
-       source, last_updated
-FROM model_pricing
-ORDER BY last_updated DESC;
-
--- 统计记录数
-SELECT COUNT(*) FROM model_pricing;
-
--- 查看最近更新
-SELECT model_id, last_updated
-FROM model_pricing
-ORDER BY last_updated DESC
-LIMIT 10;
+**AWS 定价：**
+```
+Pricing database is empty, fetching initial pricing data from AWS...
+Initial pricing data loaded: 77 models from api+aws-scraper
+Starting AWS pricing update task...
+AWS pricing update completed: 77 models updated from api+aws-scraper, 0 failed
 ```
 
-### 日志监控
+**Gemini 定价：**
+```
+Starting Gemini pricing update task...
+Gemini pricing tier-1 (Google): 17 models
+Gemini pricing tier-2 (LiteLLM): 17 new models added
+Gemini pricing tier-3 (static legacy): 3 models added
+Gemini pricing saved: 37 models total
+Gemini pricing update completed: 37 models updated, 0 failed
+```
 
-关键日志信息：
-- `"Pricing database is empty, fetching initial pricing data from AWS..."` - 首次初始化
-- `"Initial pricing data loaded: X models from Y"` - 初始化完成
-- `"Pricing database already contains X records"` - 已有数据，跳过初始化
-- `"Pricing update task started"` - 定时更新开始
-- `"Pricing update completed: X models updated"` - 定时更新完成
+---
 
 ## 故障排查
 
-### 问题：应用启动时价格初始化失败
+### 问题：Gemini 价格数据库为空（0 条记录）
+
+**检查：**
+```bash
+kubectl logs -n <namespace> -l app=backend | grep -i gemini
+```
+
+**常见原因：**
+1. 三个 Tier 同时失败（网络断连）
+2. 旧版代码中 `GEMINI_API_KEY` 门控阻止了初始化（已修复，不再受 API Key 限制）
+
+**修复：** 重启 backend pod，每次启动都会重新初始化 Gemini 价格。
+
+### 问题：Monitor 页面看不到 Google 价格
+
+Monitor 价格表包含 `region="global"` 的行。在 UI 右上角的 **Region** 下拉框中选择 **All Regions** 即可同时看到 AWS 和 Gemini 模型价格。
+
+### 问题：AWS 价格初始化失败
 
 **症状：**
 ```
@@ -518,70 +449,73 @@ WARNING - No pricing data was updated
 
 **可能原因：**
 1. AWS Price List API 不可用
-2. 网络连接问题
-3. 网页爬虫解析失败
+2. 网络连接或 IAM 权限问题
+3. 爬虫解析失败
 
-**解决方案：**
-1. 检查网络连接
-2. 查看详细错误日志
-3. 手动调用管理员 API 重试
+**解决：** 检查网络和 IAM 权限，查看详细错误日志，手动调用 `POST /admin/pricing/update` 重试。
 
-### 问题：API 调用返回 500 错误 "Pricing not available"
+### 问题：API 调用返回 500 "Pricing not available"
 
-**症状：**
 ```json
 {
   "detail": "Pricing not available for model: xxx. Please contact administrator to update pricing data."
 }
 ```
 
-**原因：**
-数据库中没有该模型的价格数据
+**原因：** 数据库中没有该模型的价格记录。
 
-**解决方案：**
-1. 调用 `POST /admin/pricing/update` 更新价格
-2. 检查模型 ID 是否正确
-3. 查看数据库确认价格数据存在
+**解决：**
+- AWS 模型：调用 `POST /admin/pricing/update`
+- Gemini 模型：重启 backend pod（Gemini 在启动时自动初始化）
+- 确认模型 ID 是否正确
 
 ### 问题：定时任务没有执行
 
-**检查方法：**
-1. 查看应用日志，确认调度器已启动
-2. 等待到 UTC 02:00 查看是否有更新日志
-3. 检查 APScheduler 是否正常运行
+1. 查看日志确认调度器已启动
+2. 等待调度时间窗口（AWS：UTC 02:00，Gemini：UTC 02:30）
+3. APScheduler 异常时重启应用
 
-**解决方案：**
-1. 重启应用
-2. 手动触发更新验证功能正常
-3. 检查系统时间是否正确
+---
 
 ## 配置
 
 ### 环境变量
 
-无需额外配置，系统使用默认设置：
-- 更新时间：每天 UTC 02:00
-- 数据源：AWS Price List API（主）+ AWS 定价页面爬虫（补充，填补 API 中没有的模型）
-- 区域：使用配置的 `AWS_REGION`
+| 变量 | 对定价的影响 |
+|------|-------------|
+| `AWS_REGION` | 用于 AWS Bedrock Price List API 查询 |
+| `GEMINI_API_KEY` | 用于 Gemini 对话请求；**价格更新不需要** |
 
-### 自定义更新时间
+Gemini 价格更新爬取公开的 Google 定价页面，无需 `GEMINI_API_KEY`。
 
-修改 `app/tasks/pricing_tasks.py`：
+### 自定义调度时间
+
+修改 `backend/app/tasks/pricing_tasks.py`：
 
 ```python
-scheduler.add_job(
-    update_pricing_task,
-    trigger="cron",
-    hour=2,  # 修改小时
-    minute=0,
-    id="pricing_update",
-    replace_existing=True,
-)
+# AWS 价格 — 默认每天 UTC 02:00
+scheduler.add_job(update_pricing_task, trigger=CronTrigger(hour=2, minute=0), ...)
+
+# Gemini 价格 — 默认每天 UTC 02:30
+scheduler.add_job(update_gemini_pricing_task, trigger=CronTrigger(hour=2, minute=30), ...)
 ```
+
+### 维护 Gemini 静态旧版价格表
+
+文件：`backend/app/services/gemini_pricing_updater.py`，常量 `_LEGACY_GEMINI_PRICING`。
+
+**仅在以下全部条件满足时才添加新条目：**
+1. 模型已从 `https://ai.google.dev/gemini-api/docs/pricing` 下线
+2. LiteLLM JSON 中输出价格为零或缺失
+3. 仍有用户在生产环境使用该模型
+
+**不要添加当前在售模型**，它们由 Tier 1 和 Tier 2 自动覆盖。
+
+---
 
 ## API 参考
 
-### 更新所有模型价格
+### 更新所有 AWS 模型价格
 
 ```http
 POST /admin/pricing/update
@@ -593,9 +527,9 @@ Authorization: Bearer {admin_token}
 {
   "message": "Pricing update completed",
   "stats": {
-    "updated": 15,
+    "updated": 77,
     "failed": 0,
-    "source": "api"
+    "source": "api+aws-scraper"
   }
 }
 ```
@@ -617,4 +551,18 @@ Authorization: Bearer {admin_token}
   "input_price_per_1k": "0.003",
   "output_price_per_1k": "0.015"
 }
+```
+
+### 获取价格表（Monitor）
+
+```http
+GET /admin/monitor/pricing-table?force_refresh=false
+Authorization: Bearer {admin_token}
+```
+
+### 清除 Monitor 缓存
+
+```http
+POST /admin/monitor/clear-cache
+Authorization: Bearer {admin_token}
 ```

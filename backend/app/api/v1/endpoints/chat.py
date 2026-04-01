@@ -340,10 +340,10 @@ async def _handle_gemini_request(
     start_time: float,
 ):
     """
-    Forward a chat completion request to Google Gemini OpenAI-compatible API.
+    Forward a chat completion request to Google Gemini native API.
 
-    The request body is forwarded as-is, so Gemini-specific fields (thinking,
-    grounding, etc.) are passed through automatically.
+    Converts OpenAI-format payload to Gemini GenerateContentRequest internally;
+    all bedrock_* and OpenAI-only fields are ignored by the converter.
     """
     settings = get_settings()
     if not settings.GEMINI_API_KEY:
@@ -352,22 +352,9 @@ async def _handle_gemini_request(
             detail="Gemini API key is not configured on this server",
         )
 
-    # Build forwarding payload — exclude internal bedrock_* fields
-    payload = request_data.model_dump(
-        exclude_none=True,
-        exclude={
-            "bedrock_guardrail_config",
-            "bedrock_trace",
-            "bedrock_additional_model_request_fields",
-            "bedrock_performance_config",
-            "bedrock_prompt_caching",
-            "bedrock_prompt_variables",
-            "bedrock_additional_model_response_field_paths",
-            "bedrock_auto_cache",
-            "bedrock_cache_ttl",
-            "bedrock_request_metadata",
-        },
-    )
+    # Pass the full payload — GeminiClient.invoke / invoke_stream only reads
+    # the fields it understands (model, messages, temperature, etc.).
+    payload = request_data.model_dump(exclude_none=True)
 
     if request_data.stream:
         return StreamingResponse(
@@ -433,8 +420,10 @@ async def stream_gemini_completion(
     start_time: float,
 ) -> AsyncGenerator[str, None]:
     """
-    Stream a Gemini completion by forwarding SSE chunks from Google API.
-    Extracts usage info from the final chunk for billing.
+    Stream a Gemini completion via the native streamGenerateContent API.
+
+    GeminiClient.invoke_stream yields OpenAI-format SSE chunks; we forward them
+    verbatim and extract usage from any chunk that carries a usage object.
     """
     import json as _json
 
@@ -448,16 +437,16 @@ async def stream_gemini_completion(
         async for chunk in GeminiClient.invoke_stream(payload, api_key):
             current_time = time.time()
 
-            # Send heartbeat if idle
+            # Send heartbeat if idle too long
             if current_time - last_heartbeat > settings.STREAM_HEARTBEAT_INTERVAL:
                 yield ": heartbeat\n\n"
                 last_heartbeat = current_time
 
-            # Forward chunk as-is (already SSE format from Google)
+            # Forward OpenAI-format SSE chunk produced by invoke_stream
             yield chunk
             last_heartbeat = current_time
 
-            # Try to extract usage from data chunks for recording
+            # Extract usage for billing (appears on the final content chunk)
             for line in chunk.splitlines():
                 if line.startswith("data: ") and line.strip() != "data: [DONE]":
                     try:
@@ -478,7 +467,8 @@ async def stream_gemini_completion(
 
     except httpx.HTTPStatusError as e:
         logger.error(
-            f"Gemini stream error: model={model}, request_id={request_id}, status={e.response.status_code}",
+            f"Gemini stream error: model={model}, request_id={request_id}, "
+            f"status={e.response.status_code}",
             exc_info=True,
         )
         error_response = ErrorResponse(

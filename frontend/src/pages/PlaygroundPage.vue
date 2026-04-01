@@ -91,9 +91,21 @@
                 <div class="text-caption text-grey-5 q-mb-xs">
                   {{ msg.role === 'user' ? 'You' : 'Assistant' }}
                 </div>
-                <div v-if="msg.content" style="white-space: pre-wrap">{{ msg.content }}</div>
-                <div v-else class="text-grey-6">
+                <!-- Loading state -->
+                <div v-if="!msg.content && !msg.imageUrls?.length" class="text-grey-6">
                   <q-spinner-dots size="sm" />
+                </div>
+                <!-- Text content -->
+                <div v-if="msg.content" style="white-space: pre-wrap">{{ msg.content }}</div>
+                <!-- Image content (Gemini image models return base64 data URLs) -->
+                <div v-if="msg.imageUrls?.length" class="q-mt-sm">
+                  <img
+                    v-for="(imgUrl, imgIdx) in msg.imageUrls"
+                    :key="imgIdx"
+                    :src="imgUrl"
+                    class="generated-image"
+                    alt="Generated image"
+                  />
                 </div>
               </div>
             </div>
@@ -140,6 +152,7 @@ import catImage from 'src/assets/kunt-black-kunt.gif';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  imageUrls?: string[];  // base64 data URLs from image generation models
 }
 
 const tokensStore = useTokensStore();
@@ -178,6 +191,38 @@ const modelOptions = computed(() => {
       value: model.model_id,  // 使用完整的 model_id (包含 global. 前缀)
     }));
 });
+
+/** Image generation models don't support streaming */
+function isImageModel(modelId: string | null): boolean {
+  if (!modelId) return false;
+  return modelId.includes('-image') || modelId.includes('canvas') || modelId.includes('imagen');
+}
+
+/** Extract text + image URLs from a non-streaming OpenAI-format response */
+function parseNonStreamResponse(data: Record<string, unknown>): { text: string; imageUrls: string[] } {
+  const text: string[] = [];
+  const imageUrls: string[] = [];
+
+  const choices = data.choices as Array<Record<string, unknown>> | undefined;
+  const content = choices?.[0]?.message
+    ? (choices[0].message as Record<string, unknown>).content
+    : undefined;
+
+  if (typeof content === 'string') {
+    text.push(content);
+  } else if (Array.isArray(content)) {
+    for (const part of content as Array<Record<string, unknown>>) {
+      if (part.type === 'text' && typeof part.text === 'string') {
+        text.push(part.text);
+      } else if (part.type === 'image_url') {
+        const url = (part.image_url as Record<string, string> | undefined)?.url;
+        if (url) imageUrls.push(url);
+      }
+    }
+  }
+
+  return { text: text.join(''), imageUrls };
+}
 
 async function onTokenChange() {
   // 清空当前选择的模型
@@ -300,7 +345,9 @@ async function sendMessage() {
 
     const tokenData = await response.json();
 
-    // Call API with obtained key (streaming)
+    const useStream = !isImageModel(selectedModel.value);
+
+    // Call API
     const chatResponse = await fetch(`${apiBaseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -311,12 +358,12 @@ async function sendMessage() {
       body: JSON.stringify({
         model: selectedModel.value,
         messages: messages.value.slice(0, -1)
-          .filter(m => m.content && m.content.trim())  // Filter out empty messages
+          .filter(m => m.content && m.content.trim())
           .map(m => ({
             role: m.role,
             content: m.content,
           })),
-        stream: true,
+        stream: useStream,
         ...(temperature.value !== null && { temperature: temperature.value }),
         ...(maxTokens.value !== null && { max_tokens: maxTokens.value }),
       }),
@@ -328,13 +375,32 @@ async function sendMessage() {
         const error = await chatResponse.json();
         errorMessage = error.detail || error.message || errorMessage;
       } catch {
-        // Response is not JSON, use status text
         errorMessage = chatResponse.statusText || `HTTP ${chatResponse.status}`;
       }
       throw new Error(errorMessage);
     }
 
-    // Read streaming response
+    // --- Non-streaming path (image models) ---
+    if (!useStream) {
+      loading.value = false;
+      const responseData = await chatResponse.json() as Record<string, unknown>;
+      const { text, imageUrls } = parseNonStreamResponse(responseData);
+      const msg = messages.value[assistantMsgIndex];
+      if (msg) {
+        if (text) {
+          typewriterQueue.value = text;
+          startTypewriter(assistantMsgIndex);
+        }
+        if (imageUrls.length) {
+          msg.imageUrls = imageUrls;
+          messages.value = [...messages.value];
+          void scrollToBottom();
+        }
+      }
+      return;
+    }
+
+    // --- Streaming path (text/chat models) ---
     const reader = chatResponse.body?.getReader();
     const decoder = new TextDecoder();
 
@@ -342,7 +408,6 @@ async function sendMessage() {
       throw new Error('Unable to read response stream');
     }
 
-    // Start receiving streaming data, hide loading
     loading.value = false;
 
     while (true) {
@@ -358,14 +423,35 @@ async function sendMessage() {
           if (data === '[DONE]') continue;
 
           try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) {
-              // Add content to typewriter queue
-              typewriterQueue.value += content;
-              // Start typewriter effect if not already typing
-              if (!isTyping.value) {
-                startTypewriter(assistantMsgIndex);
+            const parsed = JSON.parse(data) as Record<string, unknown>;
+            const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
+            const delta = choices?.[0]?.delta as Record<string, unknown> | undefined;
+            if (!delta) continue;
+
+            // Text content (string)
+            if (typeof delta.content === 'string' && delta.content) {
+              typewriterQueue.value += delta.content;
+              if (!isTyping.value) startTypewriter(assistantMsgIndex);
+            }
+
+            // Array content parts
+            if (Array.isArray(delta.content)) {
+              for (const part of delta.content as Array<Record<string, unknown>>) {
+                if (part.type === 'text' && typeof part.text === 'string') {
+                  typewriterQueue.value += part.text;
+                  if (!isTyping.value) startTypewriter(assistantMsgIndex);
+                } else if (part.type === 'image_url') {
+                  const url = (part.image_url as Record<string, string> | undefined)?.url;
+                  if (url) {
+                    const msg = messages.value[assistantMsgIndex];
+                    if (msg) {
+                      if (!msg.imageUrls) msg.imageUrls = [];
+                      msg.imageUrls.push(url);
+                      messages.value = [...messages.value];
+                      void scrollToBottom();
+                    }
+                  }
+                }
               }
             }
           } catch {
@@ -400,6 +486,14 @@ async function sendMessage() {
   background-position: center;
   background-repeat: no-repeat;
   background-attachment: local;
+}
+
+.generated-image {
+  max-width: 100%;
+  max-height: 600px;
+  border-radius: 8px;
+  display: block;
+  margin-top: 8px;
 }
 
 :deep(.no-spinners) {
