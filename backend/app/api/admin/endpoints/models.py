@@ -114,10 +114,12 @@ async def list_aws_available_models(
         return {"models": cached_models}
 
     try:
-        # Initialize Bedrock client
-        region = settings.AWS_REGION or "us-west-2"
-        bedrock_client = boto3.client(service_name="bedrock", region_name=region)
-        logger.info(f"Bedrock client initialized for region: {region}")
+        # Use us-east-1 for model discovery — it has the most complete model catalog.
+        # The deployment region (settings.AWS_REGION) is used for actual inference,
+        # but listing available models should always query the primary catalog region.
+        catalog_region = "us-east-1"
+        bedrock_client = boto3.client(service_name="bedrock", region_name=catalog_region)
+        logger.info(f"Bedrock client initialized for model catalog region: {catalog_region} (deployment region: {settings.AWS_REGION})")
 
         # Allowed providers
         allowed_providers = {

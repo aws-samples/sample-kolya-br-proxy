@@ -58,6 +58,10 @@ class PricingUpdater:
             "region": settings.AWS_REGION,
         }
 
+        # 0. Build dynamic model name → model ID mapping from Bedrock API
+        # This auto-discovers new models so the static mapping table stays minimal
+        PricingUpdater._dynamic_mapping_cache = self._build_dynamic_mapping()
+
         # 1. Fetch from AWS Price List API (primary — all models)
         api_model_ids: Set[str] = set()
         try:
@@ -600,16 +604,59 @@ class PricingUpdater:
         await self.db.commit()
         return updated_count
 
+    @staticmethod
+    def _build_dynamic_mapping() -> Dict[str, str]:
+        """
+        Build modelName → modelId mapping dynamically from Bedrock list_foundation_models.
+        This auto-discovers new models without manual maintenance.
+        Falls back to empty dict if API call fails.
+        """
+        try:
+            import boto3
+            client = boto3.client("bedrock", region_name="us-east-1")
+            resp = client.list_foundation_models()
+            mapping = {}
+            for m in resp.get("modelSummaries", []):
+                model_id = m.get("modelId", "")
+                model_name = m.get("modelName", "")
+                if model_id and model_name:
+                    # Strip capacity suffix (e.g. "nova-pro-v1:0:300k" → "nova-pro-v1:0")
+                    # Capacity variants share the same pricing as the base model
+                    parts = model_id.split(":")
+                    if len(parts) == 3:
+                        model_id = ":".join(parts[:2])
+                    mapping[model_name] = model_id
+            logger.info(f"Dynamic model mapping built: {len(mapping)} entries from Bedrock API")
+            return mapping
+        except Exception as e:
+            logger.warning(f"Failed to build dynamic model mapping from Bedrock API: {e}")
+            return {}
+
+    # Class-level cache for dynamic mapping (refreshed each pricing update cycle)
+    _dynamic_mapping_cache: Dict[str, str] = {}
+
     def _map_model_name_to_id(self, model_name: str) -> Optional[str]:
         """
         Map AWS model name to Bedrock model ID.
 
+        First tries dynamic mapping built from Bedrock list_foundation_models API
+        (auto-discovers new models). Falls back to static mapping for models
+        where the pricing page name differs from the API modelName.
+
         Args:
-            model_name: Model name from AWS API (e.g., "Claude 3 Haiku")
+            model_name: Model name from AWS pricing page (e.g., "GLM 5")
 
         Returns:
             Bedrock model ID or None if not recognized
         """
+        # 1. Try dynamic mapping first (auto-discovered from Bedrock API)
+        if self._dynamic_mapping_cache:
+            if model_name in self._dynamic_mapping_cache:
+                return self._dynamic_mapping_cache[model_name]
+
+        # 2. Static mapping fallback — covers cases where the pricing page name
+        #    differs from modelName in the Bedrock API (e.g. "Claude 3 Haiku" vs
+        #    "Claude 3 Haiku (200K)"), or for cross-region prefix variants.
         model_mapping = {
             # ── Anthropic Claude ──────────────────────────────────
             # Claude 4.x
@@ -747,6 +794,8 @@ class PricingUpdater:
             "Palmyra X4": "writer.palmyra-x4-v1:0",
             "Palmyra X5": "writer.palmyra-x5-v1:0",
             # ── Z AI ──────────────────────────────────────────────
+            "GLM 5": "zai.glm-5",
+            "GLM-5": "zai.glm-5",
             "GLM 4.7": "zai.glm-4.7",
             "GLM 4.7 Flash": "zai.glm-4.7-flash",
             "GLM-4.7": "zai.glm-4.7",
