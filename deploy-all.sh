@@ -38,10 +38,25 @@ K8S_DIR="$SCRIPT_DIR/k8s"
 BACKEND_DIR="$SCRIPT_DIR/backend"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
 
+# Auto-select AWS profile if not set and no default profile exists
+if [[ -z "$AWS_PROFILE" ]]; then
+    if ! aws sts get-caller-identity &>/dev/null; then
+        # No default profile, try to find one automatically
+        AVAILABLE_PROFILE=$(aws configure list-profiles 2>/dev/null | head -1)
+        if [[ -n "$AVAILABLE_PROFILE" ]]; then
+            export AWS_PROFILE="$AVAILABLE_PROFILE"
+            echo "ℹ️  No default AWS profile, auto-selected: $AWS_PROFILE"
+        fi
+    fi
+fi
+
 # Default configuration
 SKIP_CONFIRMATION=false
 SPECIFIC_STEP=""
-AWS_REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}"
+# Prefer region from terraform.tfvars (single source of truth) over aws configure default
+_TFVARS_REGION=$(awk '$1=="region" && $2=="=" { gsub(/"/, "", $3); print $3; exit }' "$SCRIPT_DIR/iac/terraform.tfvars" 2>/dev/null || echo "")
+AWS_REGION="${AWS_REGION:-${_TFVARS_REGION:-$(aws configure get region 2>/dev/null || echo "")}}"
+unset _TFVARS_REGION
 AWS_ACCOUNT_ID=""
 ECR_NAMESPACE="kolya-br-proxy"
 DEPLOY_ENV=""  # Auto-derived from Terraform workspace: prod or non-prod
@@ -141,7 +156,10 @@ configure_tfvars() {
     print_substep "Auto-detecting AWS account and region..."
     local detected_account
     detected_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
-    local detected_region="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}"
+    # For region: prefer existing tfvars value, then AWS_REGION env, then aws configure
+    local existing_region
+    existing_region=$(_read_tfvar "region" 2>/dev/null || echo "")
+    local detected_region="${existing_region:-${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}}"
 
     if [[ -n "$detected_account" ]]; then
         _write_tfvar "account" "$detected_account"
@@ -841,15 +859,21 @@ check_aws_credentials() {
     print_info "Account ID: $AWS_ACCOUNT_ID"
     print_info "User: $user_arn"
 
-    # Prompt for region if auto-detection failed and --region was not provided
+    # Always confirm region with user (auto-detected value may come from wrong profile)
     if [[ -z "$AWS_REGION" ]]; then
         print_warning "AWS region could not be detected automatically"
         while [[ -z "$AWS_REGION" ]]; do
-            read -p "Enter AWS region (e.g. us-west-2): " AWS_REGION
+            read -p "Enter AWS region (e.g. us-west-1): " AWS_REGION
             if [[ -z "$AWS_REGION" ]]; then
                 print_warning "Region is required"
             fi
         done
+    else
+        echo ""
+        read -p "Press Enter to use [$AWS_REGION], or type a different region: " region_input
+        if [[ -n "$region_input" ]]; then
+            AWS_REGION="$region_input"
+        fi
     fi
 
     print_info "Region: $AWS_REGION"
@@ -1228,6 +1252,15 @@ build_and_push_images() {
     print_step "3" "Build and Push Docker Images to ECR"
 
     cd "$IAC_DIR"
+
+    # Override AWS_REGION from tfvars (single source of truth), in case
+    # 'aws configure get region' returned a different region than the deployment
+    local tfvars_region
+    tfvars_region=$(_read_tfvar "region" 2>/dev/null || echo "")
+    if [[ -n "$tfvars_region" ]]; then
+        AWS_REGION="$tfvars_region"
+        print_info "Region from tfvars: $AWS_REGION"
+    fi
 
     # Get AWS account ID
     print_substep "Getting AWS account info..."

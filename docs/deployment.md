@@ -46,23 +46,108 @@ export AWS_REGION=us-west-1   # or whatever region you want
 
 ### 2. Create ACM certificate
 
-ACM cert must be in the same region as the ALBs. One cert can cover multiple domains via SAN.
+One certificate covers both domains (`kbp.kolya.fun` and `api.kbp.kolya.fun`) using Subject Alternative Names (SAN). The cert must be in the **same region** as the ALBs.
+
+#### 2a. Request the certificate
 
 ```bash
-aws acm request-certificate \
+CERT_ARN=$(aws acm request-certificate \
   --region $AWS_REGION \
   --domain-name kbp.kolya.fun \
   --subject-alternative-names "api.kbp.kolya.fun" \
-  --validation-method DNS
+  --validation-method DNS \
+  --query 'CertificateArn' \
+  --output text)
 
-# Add the DNS validation CNAME records to Route53, then wait for ISSUED status:
-aws acm describe-certificate \
-  --region $AWS_REGION \
-  --certificate-arn <arn-from-above> \
-  --query 'Certificate.Status'
+echo "Certificate ARN: $CERT_ARN"
 ```
 
-Record the certificate ARN — you'll need it in Step 4 when `k8s/deploy.sh` prompts for it.
+#### 2b. Get DNS validation CNAME records
+
+ACM generates one CNAME record per domain. Retrieve them:
+
+```bash
+aws acm describe-certificate \
+  --region $AWS_REGION \
+  --certificate-arn $CERT_ARN \
+  --query 'Certificate.DomainValidationOptions[*].{Domain:DomainName,Name:ResourceRecord.Name,Value:ResourceRecord.Value}' \
+  --output table
+```
+
+You will see two records (one for each domain):
+
+```
+-----------------------------------------------------------------------
+|                       DescribeCertificate                           |
++---------------------+----------------------+------------------------+
+|       Domain        |         Name         |         Value          |
++---------------------+----------------------+------------------------+
+|  kbp.kolya.fun      |  _abc123.kbp...      |  _def456.acm-...       |
+|  api.kbp.kolya.fun  |  _abc123.api.kbp...  |  _ghi789.acm-...       |
++---------------------+----------------------+------------------------+
+```
+
+> **Note:** Both domains may share the same CNAME record if they share the same root domain. In that case only one record needs to be added.
+
+#### 2c. Add CNAME records to Route 53
+
+Get your hosted zone ID first:
+
+```bash
+ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+  --dns-name kolya.fun \
+  --query 'HostedZones[0].Id' \
+  --output text | cut -d'/' -f3)
+
+echo "Hosted Zone ID: $ZONE_ID"
+```
+
+Add each CNAME record returned in the previous step. Repeat for each unique record:
+
+```bash
+aws route53 change-resource-record-sets \
+  --hosted-zone-id $ZONE_ID \
+  --change-batch '{
+    "Changes": [
+      {
+        "Action": "UPSERT",
+        "ResourceRecordSet": {
+          "Name": "<Name-from-table-above>",
+          "Type": "CNAME",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "<Value-from-table-above>"}]
+        }
+      }
+    ]
+  }'
+```
+
+#### 2d. Wait for certificate to be issued
+
+DNS propagation usually takes 1–5 minutes. Poll until status is `ISSUED`:
+
+```bash
+while true; do
+  STATUS=$(aws acm describe-certificate \
+    --region $AWS_REGION \
+    --certificate-arn $CERT_ARN \
+    --query 'Certificate.Status' \
+    --output text)
+  echo "$(date '+%H:%M:%S')  Status: $STATUS"
+  [[ "$STATUS" == "ISSUED" ]] && break
+  sleep 15
+done
+echo "Certificate issued: $CERT_ARN"
+```
+
+#### 2e. Save the ARN
+
+Record `$CERT_ARN` — `deploy-all.sh` will prompt for it during Step 4 (K8s app deployment).
+
+```bash
+echo $CERT_ARN
+# arn:aws:acm:us-west-1:612674025488:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
 
 ### 3. Create S3 bucket for Terraform state
 
@@ -329,10 +414,10 @@ kubectl get ingress -n kbp
 # Local
 cd backend && uv run alembic upgrade head
 
-# On EKS
-kubectl exec -it deployment/backend -n kbp -- uv run alembic upgrade head
+# On EKS (uv is not in the production image, use python directly)
+kubectl exec -it deployment/backend -n kbp -- alembic upgrade head
 
-# Create a new migration
+# Create a new migration (local only)
 cd backend && uv run alembic revision --autogenerate -m "describe your change"
 ```
 
