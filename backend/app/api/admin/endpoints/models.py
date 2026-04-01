@@ -118,8 +118,12 @@ async def list_aws_available_models(
         # The deployment region (settings.AWS_REGION) is used for actual inference,
         # but listing available models should always query the primary catalog region.
         catalog_region = "us-east-1"
-        bedrock_client = boto3.client(service_name="bedrock", region_name=catalog_region)
-        logger.info(f"Bedrock client initialized for model catalog region: {catalog_region} (deployment region: {settings.AWS_REGION})")
+        bedrock_client = boto3.client(
+            service_name="bedrock", region_name=catalog_region
+        )
+        logger.info(
+            f"Bedrock client initialized for model catalog region: {catalog_region} (deployment region: {settings.AWS_REGION})"
+        )
 
         # Allowed providers
         allowed_providers = {
@@ -253,7 +257,9 @@ async def list_aws_available_models(
             try:
                 gemini_models = await GeminiClient.list_models(settings.GEMINI_API_KEY)
                 models.extend(gemini_models)
-                logger.info(f"Added {len(gemini_models)} Gemini models to available list")
+                logger.info(
+                    f"Added {len(gemini_models)} Gemini models to available list"
+                )
             except Exception as e:
                 logger.warning(f"Failed to fetch Gemini models (non-fatal): {e}")
 

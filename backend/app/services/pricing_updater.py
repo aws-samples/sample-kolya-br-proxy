@@ -613,6 +613,7 @@ class PricingUpdater:
         """
         try:
             import boto3
+
             client = boto3.client("bedrock", region_name="us-east-1")
             resp = client.list_foundation_models()
             mapping = {}
@@ -626,10 +627,14 @@ class PricingUpdater:
                     if len(parts) == 3:
                         model_id = ":".join(parts[:2])
                     mapping[model_name] = model_id
-            logger.info(f"Dynamic model mapping built: {len(mapping)} entries from Bedrock API")
+            logger.info(
+                f"Dynamic model mapping built: {len(mapping)} entries from Bedrock API"
+            )
             return mapping
         except Exception as e:
-            logger.warning(f"Failed to build dynamic model mapping from Bedrock API: {e}")
+            logger.warning(
+                f"Failed to build dynamic model mapping from Bedrock API: {e}"
+            )
             return {}
 
     # Class-level cache for dynamic mapping (refreshed each pricing update cycle)

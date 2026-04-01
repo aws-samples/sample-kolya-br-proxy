@@ -55,7 +55,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.core.database import async_session_maker
     from app.services.pricing_updater import PricingUpdater
     from app.services.gemini_pricing_updater import GeminiPricingUpdater
-    from app.core.config import get_settings as _get_settings
     from sqlalchemy import select, func
     from app.models.model_pricing import ModelPricing
 

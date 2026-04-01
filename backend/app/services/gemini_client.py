@@ -137,9 +137,7 @@ def _openai_messages_to_gemini(
             if not isinstance(result, dict):
                 result = {"output": result}
 
-            fn_resp_part = {
-                "functionResponse": {"name": fn_name, "response": result}
-            }
+            fn_resp_part = {"functionResponse": {"name": fn_name, "response": result}}
             # Merge consecutive tool results into a single user turn
             if (
                 contents
@@ -164,9 +162,7 @@ def _openai_messages_to_gemini(
                 args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            parts.append(
-                {"functionCall": {"name": fn.get("name", ""), "args": args}}
-            )
+            parts.append({"functionCall": {"name": fn.get("name", ""), "args": args}})
 
         if not parts:
             parts = [{"text": ""}]
@@ -282,9 +278,9 @@ def _map_finish_reason(reason: Optional[str]) -> Optional[str]:
 def _gemini_parts_to_openai(
     parts: List[Dict[str, Any]],
 ) -> Tuple[
-    Optional[str],          # concatenated text (None if empty)
-    Optional[List[Dict]],   # tool_calls list (None if absent)
-    Optional[List[Dict]],   # image content parts (None if absent)
+    Optional[str],  # concatenated text (None if empty)
+    Optional[List[Dict]],  # tool_calls list (None if absent)
+    Optional[List[Dict]],  # image content parts (None if absent)
 ]:
     """
     Parse Gemini response parts into OpenAI-style (text, tool_calls, image_parts).
@@ -387,9 +383,7 @@ def _gemini_response_to_openai(
         if tool_calls:
             message["tool_calls"] = tool_calls
 
-        choices.append(
-            {"index": i, "message": message, "finish_reason": finish_reason}
-        )
+        choices.append({"index": i, "message": message, "finish_reason": finish_reason})
 
     return {
         "id": request_id,
@@ -451,9 +445,7 @@ def _gemini_chunk_to_sse(
             "object": "chat.completion.chunk",
             "created": created,
             "model": model,
-            "choices": [
-                {"index": i, "delta": delta, "finish_reason": finish_reason}
-            ],
+            "choices": [{"index": i, "delta": delta, "finish_reason": finish_reason}],
         }
 
         # Include usage on the final chunk (when totalTokenCount is available)
@@ -541,7 +533,7 @@ class GeminiClient:
                     if "generateContent" not in supported_methods:
                         continue
 
-                    model_id = name[len("models/"):]
+                    model_id = name[len("models/") :]
                     if any(kw in model_id for kw in ("embed", "aqa", "retrieval")):
                         continue
 

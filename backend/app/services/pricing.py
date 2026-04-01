@@ -78,6 +78,7 @@ class ModelPricing:
                 region = "global"
             else:
                 from app.core.config import get_settings
+
                 region = get_settings().AWS_REGION
 
         # Determine cache write multiplier (Bedrock only)
@@ -88,8 +89,6 @@ class ModelPricing:
         # Try to get pricing from database
         if self.db:
             from app.services.pricing_updater import PricingUpdater
-            from app.models.model_pricing import ModelPricing as ModelPricingRecord
-            from sqlalchemy import select
 
             updater = PricingUpdater(self.db)
             pricing = await updater.get_pricing(model, region)

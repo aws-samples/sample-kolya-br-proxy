@@ -18,7 +18,6 @@ Results from all three tiers are merged (later tiers only fill gaps, never overw
 Prices are stored per-token in model_pricing with region="global".
 """
 
-import json
 import logging
 import re
 from datetime import datetime
@@ -46,16 +45,16 @@ GEMINI_PRICING_REGION = "global"
 # Format: (model_id, input $/1M, output $/1M, cached_input $/1M or None)
 # ---------------------------------------------------------------------------
 _LEGACY_GEMINI_PRICING: List[Tuple] = [
-    ("gemini-1.5-pro",      1.25,   5.00,  0.3125),
-    ("gemini-1.5-flash",    0.075,  0.30,  0.01875),
-    ("gemini-1.5-flash-8b", 0.0375, 0.15,  0.01),
+    ("gemini-1.5-pro", 1.25, 5.00, 0.3125),
+    ("gemini-1.5-flash", 0.075, 0.30, 0.01875),
+    ("gemini-1.5-flash-8b", 0.0375, 0.15, 0.01),
 ]
 
 # ---------------------------------------------------------------------------
 # Pricing entry type alias
 # ---------------------------------------------------------------------------
 PricingEntry = Dict  # keys: model_id, region, input_price_per_token,
-                     #       output_price_per_token, cached_input_price_per_token
+#       output_price_per_token, cached_input_price_per_token
 
 
 class GeminiPricingUpdater:
@@ -108,7 +107,9 @@ class GeminiPricingUpdater:
         logger.info(f"Gemini pricing tier-3 (static legacy): {added} models added")
 
         if not merged:
-            logger.error("GeminiPricingUpdater: all three tiers failed, no pricing data")
+            logger.error(
+                "GeminiPricingUpdater: all three tiers failed, no pricing data"
+            )
             return {"updated": 0, "failed": 1, "source": "none"}
 
         pricing_list = list(merged.values())
@@ -154,7 +155,9 @@ class GeminiPricingUpdater:
         # Find all <table>…</table> blocks with their start positions
         tables: List[Tuple[int, str]] = [
             (m.start(), m.group())
-            for m in re.finditer(r"<table[^>]*>.*?</table>", html, re.DOTALL | re.IGNORECASE)
+            for m in re.finditer(
+                r"<table[^>]*>.*?</table>", html, re.DOTALL | re.IGNORECASE
+            )
         ]
 
         seen_models: set = set()
@@ -315,7 +318,7 @@ class GeminiPricingUpdater:
 
         # Strip emoji / parenthetical suffixes  (🍌, (Live API), etc.)
         name = re.sub(r"[\U00010000-\U0010ffff]", "", name)  # emoji
-        name = re.sub(r"\(.*?\)", "", name)                   # parentheticals
+        name = re.sub(r"\(.*?\)", "", name)  # parentheticals
         name = name.strip()
 
         # "Gemini X.Y Something" → "gemini-x.y-something"
@@ -353,9 +356,8 @@ class GeminiPricingUpdater:
                     existing.output_price_per_token = data["output_price_per_token"]
                     existing.source = source
                     existing.last_updated = now
-                    if (
-                        data.get("cached_input_price_per_token") is not None
-                        and hasattr(existing, "cached_input_price_per_token")
+                    if data.get("cached_input_price_per_token") is not None and hasattr(
+                        existing, "cached_input_price_per_token"
                     ):
                         existing.cached_input_price_per_token = data[
                             "cached_input_price_per_token"
@@ -371,9 +373,8 @@ class GeminiPricingUpdater:
                         last_updated=now,
                         created_at=now,
                     )
-                    if (
-                        data.get("cached_input_price_per_token") is not None
-                        and hasattr(ModelPricing, "cached_input_price_per_token")
+                    if data.get("cached_input_price_per_token") is not None and hasattr(
+                        ModelPricing, "cached_input_price_per_token"
                     ):
                         kwargs["cached_input_price_per_token"] = data[
                             "cached_input_price_per_token"
