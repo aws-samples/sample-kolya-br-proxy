@@ -5,7 +5,7 @@
 <h1 align="center">Kolya BR Proxy</h1>
 
 <p align="center">
-  <strong>AI Gateway providing OpenAI & Anthropic compatible APIs backed by AWS Bedrock</strong>
+  <strong>AI Gateway providing OpenAI & Anthropic compatible APIs backed by AWS Bedrock and Google Gemini</strong>
 </p>
 
 <p align="center">
@@ -20,6 +20,7 @@
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue 3" />
   <img src="https://img.shields.io/badge/AWS_Bedrock-FF9900?logo=amazonaws&logoColor=white" alt="AWS Bedrock" />
+  <img src="https://img.shields.io/badge/Google_Gemini-4285F4?logo=google&logoColor=white" alt="Google Gemini" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
 </p>
 
@@ -30,6 +31,7 @@
 | | |
 |---|---|
 | **Dual API, one key** | Both OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) endpoints. Same `sk-ant-api03_` key works everywhere — Cursor, Cline, Claude Code, OpenAI SDK. |
+| **Multi-cloud LLM routing** | AWS Bedrock (Claude, Nova, DeepSeek, Mistral, Llama, 19+ providers) + Google Gemini (native `generateContent` API). One proxy, all models. |
 | **Up to 90% cost savings** | Prompt caching reads at 0.1x price. Agent loops save ~60% after just 2 requests. |
 | **Enterprise security** | 3-layer CSRF, AWS WAF, SHA256 + AES-128 token protection, OAuth SSO (Cognito / Entra ID). |
 | **Production-ready** | Distributed Redis rate limiting, HPA autoscaling (1-10 Pods), streaming heartbeat, Karpenter node scaling. |
@@ -61,7 +63,8 @@ graph LR
     Client["Client (Cursor / Claude Code / SDK)"] -->|OpenAI or Anthropic API| Backend["Backend (FastAPI)"]
     Frontend["Frontend (Vue 3 + Quasar)"] -->|Admin API| Backend
     Backend -->|InvokeModel - Claude| Bedrock["AWS Bedrock"]
-    Backend -->|Converse API - Nova / DeepSeek| Bedrock
+    Backend -->|Converse API - Nova / DeepSeek / Llama| Bedrock
+    Backend -->|generateContent native API| Gemini["Google Gemini"]
     Backend -->|asyncpg| DB[(PostgreSQL)]
     Backend -.->|Cache + Rate Limit| Redis[(Redis)]
     subgraph AWS EKS
@@ -78,7 +81,7 @@ graph LR
 | `POST /v1/messages` | `x-api-key` | Anthropic Messages | Claude Code, Anthropic SDK |
 | `GET /v1/models` | Both | OpenAI | All clients |
 
-Both routes go through the same Bedrock backend, token validation, quota tracking, and prompt caching pipeline.
+Model routing is automatic — `gemini-*` models go to Google Gemini via the native `generateContent` API; all other models go to AWS Bedrock. Both routes share the same token validation, quota tracking, and usage recording pipeline.
 
 ---
 
@@ -207,11 +210,12 @@ print(message.content[0].text)
 ### Multi-Provider Support
 - **Anthropic Claude** via native InvokeModel API (thinking, effort, prompt caching)
 - **Amazon Nova, DeepSeek, Mistral, Llama** via Converse API
-- 19 providers through unified translation layer
+- **Google Gemini** via native `generateContent` / `streamGenerateContent` API (image generation 🍌, tool calling, implicit caching)
+- 19+ providers through unified translation layer
 
 ### Cost Optimization
 - **Prompt caching** — 90% discount on reads, auto-injection of cache breakpoints (up to 4 per request)
-- **Per-token billing** — Dynamic pricing from AWS API (181+ regional pricing records)
+- **Per-token billing** — Dynamic pricing from AWS API (181+ regional pricing records) + Gemini 3-tier pricing (Google official page → LiteLLM JSON → static legacy table)
 - **Real-time tracking** — Background async usage recording with per-token quota limits
 
 ### Security
@@ -238,7 +242,7 @@ print(message.content[0].text)
 | **Database** | PostgreSQL (Aurora in prod), asyncpg |
 | **Cache** | Redis (rate limiting, token caching) |
 | **Auth** | JWT, AWS Cognito, Microsoft OAuth |
-| **Cloud** | AWS Bedrock, EKS, ECR, WAF, Secrets Manager |
+| **Cloud** | AWS Bedrock, EKS, ECR, WAF, Secrets Manager, Google Gemini API |
 | **IaC** | Terraform, Karpenter, External Secrets Operator |
 
 ---
