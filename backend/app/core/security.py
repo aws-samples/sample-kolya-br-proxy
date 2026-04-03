@@ -28,12 +28,12 @@ ALLOWED_JWT_ALGORITHMS = ["HS256", "HS384", "HS512"]
 def _get_encryption_key() -> bytes:
     """Derive a Fernet-compatible encryption key from the JWT secret.
 
-    Uses BLAKE2b keyed hash for key derivation — avoids SHA-256
-    which CodeQL flags as weak for sensitive data.
+    Uses SHA-3 (SHA3-256) for key derivation — CodeQL-recommended
+    strong hash function for sensitive data.
     """
     key_material = settings.JWT_SECRET_KEY.encode()
-    h = hashlib.blake2b(key_material, key=b"kolya-br-proxy-enc", digest_size=32)
-    return base64.urlsafe_b64encode(h.digest())
+    key = hashlib.sha3_256(key_material).digest()
+    return base64.urlsafe_b64encode(key)
 
 
 _fernet = Fernet(_get_encryption_key())
@@ -91,9 +91,9 @@ def hash_token(token: str) -> str:
     """
     Hash an API token for secure storage and fast lookup.
 
-    Uses BLAKE2b keyed hash for deterministic hashing (same input = same
-    output). This allows efficient indexed DB lookups while preventing
-    offline rainbow-table attacks.
+    Uses HMAC-SHA3-256 keyed with the JWT secret for deterministic hashing
+    (same input = same output). This allows efficient indexed DB lookups
+    while preventing offline rainbow-table attacks.
 
     Note: API tokens are high-entropy (secrets.token_urlsafe(32)), so
     a computationally expensive hash (bcrypt) is not required.
@@ -102,10 +102,12 @@ def hash_token(token: str) -> str:
         token: Plain API token
 
     Returns:
-        BLAKE2b keyed hash of token (hex string)
+        HMAC-SHA3-256 hash of token (hex string)
     """
-    return hashlib.blake2b(
-        token.encode(), key=settings.JWT_SECRET_KEY.encode(), digest_size=32
+    import hmac
+
+    return hmac.new(
+        settings.JWT_SECRET_KEY.encode(), token.encode(), hashlib.sha3_256
     ).hexdigest()
 
 
@@ -264,17 +266,19 @@ def hash_refresh_token(token: str) -> str:
     """
     Hash a refresh token for secure storage.
 
-    Uses BLAKE2b keyed hash for deterministic hashing to allow
-    efficient lookup while preventing offline attacks.
+    Uses HMAC-SHA3-256 keyed with the JWT secret for deterministic hashing
+    to allow efficient lookup while preventing offline attacks.
 
     Args:
         token: Plain refresh token (JWT string)
 
     Returns:
-        BLAKE2b keyed hash of token (hex string)
+        HMAC-SHA3-256 hash of token (hex string)
     """
-    return hashlib.blake2b(
-        token.encode(), key=settings.JWT_SECRET_KEY.encode(), digest_size=32
+    import hmac
+
+    return hmac.new(
+        settings.JWT_SECRET_KEY.encode(), token.encode(), hashlib.sha3_256
     ).hexdigest()
 
 
