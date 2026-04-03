@@ -22,7 +22,7 @@ print("\n🚀 OpenAI Compatible API 测试")
 print("=" * 60)
 print(f"Base URL: {API_BASE_URL}")
 print(f"模型: {MODEL_NAME}")
-print(f"Token: {API_TOKEN[:10]}...{API_TOKEN[-10:]}")
+print(f"Token: {'*' * 20} (hidden)")
 
 
 # ============ 测试函数 ============
