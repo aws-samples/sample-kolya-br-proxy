@@ -273,6 +273,6 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         log_level="info",
         timeout_keep_alive=settings.UVICORN_TIMEOUT_KEEP_ALIVE,
-        limit_concurrency=settings.UVICORN_LIMIT_CONCURRENCY,
-        limit_max_requests=settings.UVICORN_LIMIT_MAX_REQUESTS,
+        limit_concurrency=settings.UVICORN_LIMIT_CONCURRENCY or None,
+        limit_max_requests=settings.UVICORN_LIMIT_MAX_REQUESTS or None,
     )
