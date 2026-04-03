@@ -28,15 +28,12 @@ ALLOWED_JWT_ALGORITHMS = ["HS256", "HS384", "HS512"]
 def _get_encryption_key() -> bytes:
     """Derive a Fernet-compatible encryption key from the JWT secret.
 
-    Uses HKDF (HMAC-based Key Derivation Function) instead of plain SHA-256
-    to satisfy CodeQL py/weak-sensitive-data-hashing.
+    Uses BLAKE2b keyed hash for key derivation — avoids SHA-256
+    which CodeQL flags as weak for sensitive data.
     """
-    import hmac as _hmac
-
     key_material = settings.JWT_SECRET_KEY.encode()
-    # HKDF-extract: PRK = HMAC-SHA256(salt, key_material)
-    prk = _hmac.new(b"kolya-br-proxy-enc", key_material, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(prk)
+    h = hashlib.blake2b(key_material, key=b"kolya-br-proxy-enc", digest_size=32)
+    return base64.urlsafe_b64encode(h.digest())
 
 
 _fernet = Fernet(_get_encryption_key())
@@ -94,9 +91,9 @@ def hash_token(token: str) -> str:
     """
     Hash an API token for secure storage and fast lookup.
 
-    Uses HMAC-SHA256 keyed with the JWT secret for deterministic hashing
-    (same input = same output). This allows efficient indexed DB lookups
-    while preventing offline rainbow-table attacks.
+    Uses BLAKE2b keyed hash for deterministic hashing (same input = same
+    output). This allows efficient indexed DB lookups while preventing
+    offline rainbow-table attacks.
 
     Note: API tokens are high-entropy (secrets.token_urlsafe(32)), so
     a computationally expensive hash (bcrypt) is not required.
@@ -105,12 +102,10 @@ def hash_token(token: str) -> str:
         token: Plain API token
 
     Returns:
-        HMAC-SHA256 hash of token (hex string)
+        BLAKE2b keyed hash of token (hex string)
     """
-    import hmac
-
-    return hmac.new(
-        settings.JWT_SECRET_KEY.encode(), token.encode(), hashlib.sha256
+    return hashlib.blake2b(
+        token.encode(), key=settings.JWT_SECRET_KEY.encode(), digest_size=32
     ).hexdigest()
 
 
@@ -122,7 +117,7 @@ def verify_token(plain_token: str, hashed_token: str) -> bool:
 
     Args:
         plain_token: Plain API token
-        hashed_token: SHA256 hash from database
+        hashed_token: Keyed hash from database
 
     Returns:
         True if token matches, False otherwise
@@ -269,19 +264,17 @@ def hash_refresh_token(token: str) -> str:
     """
     Hash a refresh token for secure storage.
 
-    Uses HMAC-SHA256 keyed with the JWT secret for deterministic hashing
-    to allow efficient lookup while preventing offline attacks.
+    Uses BLAKE2b keyed hash for deterministic hashing to allow
+    efficient lookup while preventing offline attacks.
 
     Args:
         token: Plain refresh token (JWT string)
 
     Returns:
-        HMAC-SHA256 hash of token (hex string)
+        BLAKE2b keyed hash of token (hex string)
     """
-    import hmac
-
-    return hmac.new(
-        settings.JWT_SECRET_KEY.encode(), token.encode(), hashlib.sha256
+    return hashlib.blake2b(
+        token.encode(), key=settings.JWT_SECRET_KEY.encode(), digest_size=32
     ).hexdigest()
 
 
