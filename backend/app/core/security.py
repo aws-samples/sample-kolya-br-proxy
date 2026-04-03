@@ -11,7 +11,8 @@ from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from cryptography.fernet import Fernet
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError as JWTError
 from passlib.context import CryptContext
 
 from app.core.config import get_settings
