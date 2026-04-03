@@ -218,15 +218,25 @@ class PricingUpdater:
         settings = get_settings()
         target_region = settings.AWS_REGION
 
-        # Determine which locally-available models are still missing pricing
+        # Determine which models are still missing pricing.
+        # Check local region AND reference regions, since some models
+        # (e.g. GLM) may only exist in certain regions but are routed
+        # there transparently by the proxy.
         import boto3
 
-        bedrock = boto3.client("bedrock", region_name=target_region)
-        resp = bedrock.list_foundation_models()
-        local_model_ids = {
-            m["modelId"] for m in resp.get("modelSummaries", []) if m.get("modelId")
-        }
-        missing = local_model_ids - already_found
+        all_model_ids: Set[str] = set()
+        for region in [target_region] + self._BACKFILL_REGIONS:
+            try:
+                bedrock = boto3.client("bedrock", region_name=region)
+                resp = bedrock.list_foundation_models()
+                for m in resp.get("modelSummaries", []):
+                    mid = m.get("modelId")
+                    if mid:
+                        all_model_ids.add(mid)
+            except Exception as e:
+                logger.debug(f"Could not list models from {region}: {e}")
+
+        missing = all_model_ids - already_found
         if not missing:
             return 0
 
