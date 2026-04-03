@@ -104,11 +104,12 @@ class CognitoOAuthService:
         Returns:
             Base64-encoded SECRET_HASH
         """
+        # HMAC-SHA256 per AWS Cognito SECRET_HASH spec — not password hashing.
         message = username + self.client_id
         dig = hmac.new(
             self.client_secret.encode("utf-8"),
             message.encode("utf-8"),
-            hashlib.sha256,
+            hashlib.sha256,  # CodeQL: false positive — keyed HMAC per AWS spec
         ).digest()
         return base64.b64encode(dig).decode()
 

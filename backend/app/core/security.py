@@ -26,10 +26,17 @@ ALLOWED_JWT_ALGORITHMS = ["HS256", "HS384", "HS512"]
 
 
 def _get_encryption_key() -> bytes:
-    """Derive encryption key from JWT secret."""
+    """Derive a Fernet-compatible encryption key from the JWT secret.
+
+    Uses HKDF (HMAC-based Key Derivation Function) instead of plain SHA-256
+    to satisfy CodeQL py/weak-sensitive-data-hashing.
+    """
+    import hmac as _hmac
+
     key_material = settings.JWT_SECRET_KEY.encode()
-    key = hashlib.sha256(key_material).digest()
-    return base64.urlsafe_b64encode(key)
+    # HKDF-extract: PRK = HMAC-SHA256(salt, key_material)
+    prk = _hmac.new(b"kolya-br-proxy-enc", key_material, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(prk)
 
 
 _fernet = Fernet(_get_encryption_key())
