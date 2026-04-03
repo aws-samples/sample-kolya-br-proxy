@@ -626,7 +626,7 @@ async def _stream_gemini_as_anthropic(
 
         # Send message_stop
         yield (
-            "event: message_stop\n" f"data: {_json.dumps({'type': 'message_stop'})}\n\n"
+            f"event: message_stop\ndata: {_json.dumps({'type': 'message_stop'})}\n\n"
         )
 
     except Exception as e:
