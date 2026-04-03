@@ -112,6 +112,9 @@ class PricingUpdater:
             logger.warning(f"Failed to scrape AWS pricing page: {e}")
             stats["failed"] += 1
 
+        # 3. Clean up stale cross-region pricing entries
+        await self.cleanup_stale_cross_region_entries()
+
         # Set source summary
         if stats["sources"]:
             stats["source"] = "+".join(stats["sources"])
@@ -125,6 +128,51 @@ class PricingUpdater:
         )
 
         return stats
+
+    async def cleanup_stale_cross_region_entries(self) -> int:
+        """Remove cross-region pricing entries not in the profile cache.
+
+        Keeps pricing consistent with get_all_available_models() — any
+        cross-region model_id (has a geo prefix) that is not in
+        ``_local_profile_ids`` is deleted from the pricing table.
+
+        Can be called standalone (e.g. on startup) or as part of
+        ``update_all_pricing()``.
+
+        Returns:
+            Number of deleted records.
+        """
+        settings = get_settings()
+        try:
+            from app.services.bedrock import BedrockClient
+
+            profile_ids = BedrockClient.get_instance()._profile_cache._local_profile_ids
+            if not profile_ids:
+                return 0
+
+            all_pricing = await self.db.execute(
+                select(ModelPricing).where(
+                    ModelPricing.region == settings.AWS_REGION,
+                )
+            )
+            all_records = all_pricing.scalars().all()
+            deleted = 0
+            for rec in all_records:
+                # Only check cross-region entries (those with a geo prefix)
+                if rec.model_id != self._strip_prefix(rec.model_id):
+                    if rec.model_id not in profile_ids:
+                        await self.db.delete(rec)
+                        deleted += 1
+            if deleted:
+                await self.db.commit()
+                logger.info(
+                    f"Cleaned {deleted} stale cross-region pricing entries "
+                    f"not in profile cache for {settings.AWS_REGION}"
+                )
+            return deleted
+        except Exception as e:
+            logger.debug(f"Could not clean stale cross-region pricing entries: {e}")
+            return 0
 
     def _extract_price_from_terms(
         self, terms: dict, product_id: str
@@ -302,7 +350,7 @@ class PricingUpdater:
     @staticmethod
     def _strip_prefix(model_id: str) -> str:
         """Strip cross-region geographic prefix from a model ID to get the base ID."""
-        for pfx in ("us.", "eu.", "apac.", "au.", "ca.", "jp."):
+        for pfx in ("global.", "us.", "eu.", "apac.", "au.", "ca.", "jp."):
             if model_id.startswith(pfx):
                 return model_id[len(pfx) :]
         return model_id
@@ -512,6 +560,33 @@ class PricingUpdater:
                 f"Unmatched model names from AWS scraper (no mapping): "
                 f"{sorted(unmapped_names)}"
             )
+
+        # Filter scraped entries against the profile cache so that pricing
+        # stays consistent with the "Select model from Bedrock" list
+        # (get_all_available_models).  Any cross-region model_id (has a geo
+        # prefix like "us.", "global.", etc.) that is NOT in the profile
+        # cache is dropped — it cannot actually be invoked from this region.
+        try:
+            profile_ids = BedrockClient.get_instance()._profile_cache._local_profile_ids
+            if profile_ids:
+                before = len(pricing_data)
+                pricing_data = [
+                    d
+                    for d in pricing_data
+                    if d["model_id"]
+                    == self._strip_prefix(d["model_id"])  # no prefix → keep
+                    or d["model_id"] in profile_ids  # prefix + in cache → keep
+                ]
+                filtered = before - len(pricing_data)
+                if filtered:
+                    logger.info(
+                        f"Filtered {filtered} scraped cross-region pricing entries "
+                        f"not in profile cache for {target_region}"
+                    )
+        except Exception:
+            # Profile cache may not be initialized yet (first startup);
+            # keep all entries and let the next scheduled run clean up.
+            pass
 
         global_count = sum(
             1 for d in pricing_data if d["model_id"].startswith("global.")

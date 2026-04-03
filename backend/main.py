@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.core.database import init_db
 from app.api.v1.router import gateway_router
 from app.api.anthropic.router import anthropic_router
+from app.api.gemini.router import gemini_router
 from app.api.admin.router import admin_router
 from app.api.health import health_router
 from app.middleware.security import SecurityMiddleware
@@ -51,6 +52,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
     logger.info("Database initialized")
 
+    # Initialize singleton Bedrock client and populate profile cache FIRST
+    # so pricing updater can filter out unavailable global. profiles
+    bedrock = BedrockClient.get_instance()
+    logger.info("BedrockClient initialized")
+
+    await bedrock.refresh_profile_cache()
+    logger.info("Inference profile cache populated")
+
     # Initialize pricing data if database is empty
     from app.core.database import async_session_maker
     from app.services.pricing_updater import PricingUpdater
@@ -62,17 +71,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         result = await db.execute(select(func.count(ModelPricing.id)))
         count = result.scalar()
 
+        updater = PricingUpdater(db)
         if count == 0:
             logger.info(
                 "Pricing database is empty, fetching initial pricing data from AWS..."
             )
-            updater = PricingUpdater(db)
             stats = await updater.update_all_pricing()
             logger.info(
                 f"Initial pricing data loaded: {stats['updated']} models from {stats['source']}"
             )
         else:
             logger.info(f"Pricing database already contains {count} records")
+            # Always run cleanup on startup to remove stale cross-region
+            # entries that are not in the profile cache (e.g. after a code
+            # update that fixes filtering logic).
+            await updater.cleanup_stale_cross_region_entries()
 
     # Initialize Gemini pricing (scrapes public pricing page, no API key needed)
     async with async_session_maker() as db:
@@ -84,10 +97,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
         except Exception as e:
             logger.warning(f"Gemini pricing initialization failed (non-fatal): {e}")
-
-    # Initialize singleton Bedrock client at startup
-    BedrockClient.get_instance()
-    logger.info("BedrockClient initialized")
 
     # Start pricing update scheduler
     from app.tasks.pricing_tasks import start_scheduler
@@ -257,6 +266,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(gateway_router, prefix="/v1", tags=["ai-gateway"])
     app.include_router(anthropic_router, prefix="/v1", tags=["anthropic-api"])
+    app.include_router(gemini_router, prefix="/v1beta", tags=["gemini-api"])
     app.include_router(admin_router, prefix="/admin", tags=["admin"])
 
     return app
@@ -274,5 +284,5 @@ if __name__ == "__main__":
         log_level="info",
         timeout_keep_alive=settings.UVICORN_TIMEOUT_KEEP_ALIVE,
         limit_concurrency=settings.UVICORN_LIMIT_CONCURRENCY,
-        limit_max_requests=settings.UVICORN_LIMIT_MAX_REQUESTS,
+        limit_max_requests=settings.UVICORN_LIMIT_MAX_REQUESTS or None,
     )

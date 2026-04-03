@@ -37,6 +37,24 @@
               :loading="modelsStore.loading"
             />
 
+            <!-- SDK Protocol selector -->
+            <div v-if="sdkOptions.length > 0" class="q-mb-lg">
+              <div class="text-caption text-grey-5 q-mb-xs">SDK Protocol</div>
+              <q-btn-toggle
+                v-model="selectedSdk"
+                :options="sdkOptions"
+                no-caps
+                rounded
+                unelevated
+                toggle-color="primary"
+                color="grey-8"
+                text-color="grey-4"
+                class="full-width"
+                spread
+                dense
+              />
+            </div>
+
             <q-input
               v-model.number="temperature"
               label="Temperature"
@@ -90,6 +108,7 @@
               >
                 <div class="text-caption text-grey-5 q-mb-xs">
                   {{ msg.role === 'user' ? 'You' : 'Assistant' }}
+                  <q-badge v-if="msg.role === 'assistant' && msg.sdk" :label="msg.sdk" color="grey-7" class="q-ml-xs" />
                 </div>
                 <!-- Loading state -->
                 <div v-if="!msg.content && !msg.imageUrls?.length" class="text-grey-6">
@@ -142,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue';
+import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { Notify } from 'quasar';
 import { useTokensStore } from 'src/stores/tokens';
 import { useModelsStore } from 'src/stores/models';
@@ -152,7 +171,8 @@ import catImage from 'src/assets/kunt-black-kunt.gif';
 interface Message {
   role: 'user' | 'assistant';
   content: string;
-  imageUrls?: string[];  // base64 data URLs from image generation models
+  imageUrls?: string[];
+  sdk?: string;  // which SDK was used for this response
 }
 
 const tokensStore = useTokensStore();
@@ -160,6 +180,7 @@ const modelsStore = useModelsStore();
 
 const selectedToken = ref<string | null>(null);
 const selectedModel = ref<string | null>(null);
+const selectedSdk = ref<'openai' | 'anthropic' | 'gemini'>('openai');
 const temperature = ref(0.7);
 const maxTokens = ref(2048);
 const userMessage = ref('');
@@ -170,6 +191,47 @@ const messagesEndRef = ref<HTMLElement | null>(null);
 const typewriterQueue = ref<string>('');
 const isTyping = ref(false);
 
+// ---------------------------------------------------------------------------
+// SDK options based on selected model
+// ---------------------------------------------------------------------------
+
+const sdkOptions = computed(() => {
+  const model = selectedModel.value || '';
+  if (model.includes('gemini')) {
+    return [
+      { label: 'Gemini SDK', value: 'gemini' },
+      { label: 'Anthropic', value: 'anthropic' },
+      { label: 'OpenAI', value: 'openai' },
+    ];
+  }
+  if (model.includes('anthropic')) {
+    return [
+      { label: 'Anthropic', value: 'anthropic' },
+      { label: 'OpenAI', value: 'openai' },
+    ];
+  }
+  // Other models (llama, nova, etc.)
+  if (model) {
+    return [
+      { label: 'Anthropic', value: 'anthropic' },
+      { label: 'OpenAI', value: 'openai' },
+    ];
+  }
+  return [];
+});
+
+// Auto-set default SDK when model changes
+watch(selectedModel, (newModel) => {
+  if (!newModel) return;
+  if (newModel.includes('gemini')) {
+    selectedSdk.value = 'gemini';
+  } else if (newModel.includes('anthropic')) {
+    selectedSdk.value = 'anthropic';
+  } else {
+    selectedSdk.value = 'openai';
+  }
+});
+
 const tokenOptions = computed(() => {
   return tokensStore.tokens.map(token => ({
     label: token.name,
@@ -178,17 +240,14 @@ const tokenOptions = computed(() => {
 });
 
 const modelOptions = computed(() => {
-  // 如果没有选择 token，返回空列表
   if (!selectedToken.value) {
     return [];
   }
-
-  // 从 modelsStore 获取该 token 的模型列表
   return modelsStore.models
     .filter(model => model.is_active)
     .map(model => ({
       label: model.friendly_name || model.model_name,
-      value: model.model_id,  // 使用完整的 model_id (包含 global. 前缀)
+      value: model.model_id,
     }));
 });
 
@@ -198,37 +257,8 @@ function isImageModel(modelId: string | null): boolean {
   return modelId.includes('-image') || modelId.includes('canvas') || modelId.includes('imagen');
 }
 
-/** Extract text + image URLs from a non-streaming OpenAI-format response */
-function parseNonStreamResponse(data: Record<string, unknown>): { text: string; imageUrls: string[] } {
-  const text: string[] = [];
-  const imageUrls: string[] = [];
-
-  const choices = data.choices as Array<Record<string, unknown>> | undefined;
-  const content = choices?.[0]?.message
-    ? (choices[0].message as Record<string, unknown>).content
-    : undefined;
-
-  if (typeof content === 'string') {
-    text.push(content);
-  } else if (Array.isArray(content)) {
-    for (const part of content as Array<Record<string, unknown>>) {
-      if (part.type === 'text' && typeof part.text === 'string') {
-        text.push(part.text);
-      } else if (part.type === 'image_url') {
-        const url = (part.image_url as Record<string, string> | undefined)?.url;
-        if (url) imageUrls.push(url);
-      }
-    }
-  }
-
-  return { text: text.join(''), imageUrls };
-}
-
 async function onTokenChange() {
-  // 清空当前选择的模型
   selectedModel.value = null;
-
-  // 如果选择了 token，加载该 token 的模型列表
   if (selectedToken.value) {
     await modelsStore.fetchModels(selectedToken.value);
   }
@@ -245,7 +275,6 @@ async function scrollToBottom() {
   }
 }
 
-// 打字机效果
 function startTypewriter(assistantMsgIndex: number) {
   if (isTyping.value || !typewriterQueue.value) return;
 
@@ -257,7 +286,6 @@ function startTypewriter(assistantMsgIndex: number) {
       return;
     }
 
-    // 每次取出 1-3 个字符（模拟打字速度变化）
     const chunkSize = Math.floor(Math.random() * 3) + 1;
     const chunk = typewriterQueue.value.slice(0, chunkSize);
     typewriterQueue.value = typewriterQueue.value.slice(chunkSize);
@@ -268,197 +296,294 @@ function startTypewriter(assistantMsgIndex: number) {
       messages.value = [...messages.value];
       void scrollToBottom();
     }
-  }, 30); // 每 30ms 显示一批字符
+  }, 30);
 }
 
 function clearMessages() {
-  // Clear chat messages
   messages.value = [];
   userMessage.value = '';
   typewriterQueue.value = '';
   isTyping.value = false;
-
-  // Reset configuration
   selectedToken.value = null;
   selectedModel.value = null;
   temperature.value = 0.7;
   maxTokens.value = 2048;
 }
 
+// ---------------------------------------------------------------------------
+// Get actual token value
+// ---------------------------------------------------------------------------
+
+async function getPlainToken(): Promise<string> {
+  const apiBaseUrl = getApiBaseUrl();
+  const response = await fetch(`${apiBaseUrl}/admin/tokens/${selectedToken.value}/plain`, {
+    headers: {
+      'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+      'Cache-Control': 'no-cache',
+    },
+  });
+  if (!response.ok) throw new Error('Unable to get API Key');
+  const tokenData = await response.json();
+  return tokenData.token;
+}
+
+// ---------------------------------------------------------------------------
+// Build conversation history (excluding last empty assistant placeholder)
+// ---------------------------------------------------------------------------
+
+function getConversationHistory(): Array<{ role: string; content: string }> {
+  return messages.value
+    .slice(0, -1) // exclude assistant placeholder
+    .filter(m => m.content && m.content.trim())
+    .map(m => ({ role: m.role, content: m.content }));
+}
+
+// ---------------------------------------------------------------------------
+// Send via OpenAI Compatible (/v1/chat/completions)
+// ---------------------------------------------------------------------------
+
+async function sendViaOpenAI(plainToken: string, assistantMsgIndex: number) {
+  const apiBaseUrl = getApiBaseUrl();
+  const useStream = !isImageModel(selectedModel.value);
+
+  const chatResponse = await fetch(`${apiBaseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${plainToken}`,
+      'Cache-Control': 'no-cache',
+    },
+    body: JSON.stringify({
+      model: selectedModel.value,
+      messages: getConversationHistory(),
+      stream: useStream,
+      ...(temperature.value !== null && { temperature: temperature.value }),
+      ...(maxTokens.value !== null && { max_tokens: maxTokens.value }),
+    }),
+  });
+
+  if (!chatResponse.ok) {
+    const error = await chatResponse.json().catch(() => ({}));
+    throw new Error((error as Record<string, string>).detail || chatResponse.statusText || `HTTP ${chatResponse.status}`);
+  }
+
+  if (!useStream) {
+    loading.value = false;
+    const responseData = await chatResponse.json() as Record<string, unknown>;
+    const choices = responseData.choices as Array<Record<string, unknown>> | undefined;
+    const content = choices?.[0]?.message
+      ? (choices[0].message as Record<string, unknown>).content
+      : undefined;
+    if (typeof content === 'string') {
+      typewriterQueue.value = content;
+      startTypewriter(assistantMsgIndex);
+    }
+    return;
+  }
+
+  const reader = chatResponse.body?.getReader();
+  if (!reader) throw new Error('Unable to read response stream');
+
+  loading.value = false;
+  const decoder = new TextDecoder();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    const chunk = decoder.decode(value);
+    for (const line of chunk.split('\n')) {
+      if (!line.startsWith('data: ') || line.slice(6) === '[DONE]') continue;
+      try {
+        const parsed = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
+        const delta = choices?.[0]?.delta as Record<string, unknown> | undefined;
+        if (typeof delta?.content === 'string' && delta.content) {
+          typewriterQueue.value += delta.content;
+          if (!isTyping.value) startTypewriter(assistantMsgIndex);
+        }
+      } catch { /* ignore parse errors */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Send via Anthropic (/v1/messages)
+// ---------------------------------------------------------------------------
+
+async function sendViaAnthropic(plainToken: string, assistantMsgIndex: number) {
+  const apiBaseUrl = getApiBaseUrl();
+
+  const chatResponse = await fetch(`${apiBaseUrl}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': plainToken,
+      'Cache-Control': 'no-cache',
+    },
+    body: JSON.stringify({
+      model: selectedModel.value,
+      messages: getConversationHistory(),
+      stream: true,
+      max_tokens: maxTokens.value || 2048,
+      ...(temperature.value !== null && { temperature: temperature.value }),
+    }),
+  });
+
+  if (!chatResponse.ok) {
+    const error = await chatResponse.json().catch(() => ({}));
+    throw new Error((error as Record<string, string>).detail || chatResponse.statusText || `HTTP ${chatResponse.status}`);
+  }
+
+  const reader = chatResponse.body?.getReader();
+  if (!reader) throw new Error('Unable to read response stream');
+
+  loading.value = false;
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // keep incomplete line in buffer
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const parsed = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        // Anthropic SSE: content_block_delta with text_delta
+        if (parsed.type === 'content_block_delta') {
+          const delta = parsed.delta as Record<string, unknown> | undefined;
+          if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+            typewriterQueue.value += delta.text;
+            if (!isTyping.value) startTypewriter(assistantMsgIndex);
+          }
+        }
+      } catch { /* ignore parse errors */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Send via Gemini SDK (/v1beta/models/{model}:streamGenerateContent)
+// ---------------------------------------------------------------------------
+
+async function sendViaGemini(plainToken: string, assistantMsgIndex: number) {
+  const apiBaseUrl = getApiBaseUrl();
+  const model = selectedModel.value || '';
+
+  // Convert conversation to Gemini format
+  const history = getConversationHistory();
+  const contents = history.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+
+  const body: Record<string, unknown> = { contents };
+  const genConfig: Record<string, unknown> = {};
+  if (temperature.value !== null) genConfig.temperature = temperature.value;
+  if (maxTokens.value !== null) genConfig.maxOutputTokens = maxTokens.value;
+  if (Object.keys(genConfig).length) body.generationConfig = genConfig;
+
+  const url = `${apiBaseUrl}/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${plainToken}`;
+
+  const chatResponse = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!chatResponse.ok) {
+    const error = await chatResponse.json().catch(() => ({}));
+    throw new Error((error as Record<string, string>).detail || (error as Record<string, Record<string, string>>).error?.message || chatResponse.statusText || `HTTP ${chatResponse.status}`);
+  }
+
+  const reader = chatResponse.body?.getReader();
+  if (!reader) throw new Error('Unable to read response stream');
+
+  loading.value = false;
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const parsed = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        // Gemini SSE: candidates[0].content.parts[0].text
+        const candidates = parsed.candidates as Array<Record<string, unknown>> | undefined;
+        if (!candidates?.length) continue;
+        const firstCandidate = candidates[0];
+        if (!firstCandidate) continue;
+        const content = firstCandidate.content as Record<string, unknown> | undefined;
+        const parts = content?.parts as Array<Record<string, unknown>> | undefined;
+        if (!parts?.length) continue;
+        for (const part of parts) {
+          if (typeof part.text === 'string' && part.text) {
+            typewriterQueue.value += part.text;
+            if (!isTyping.value) startTypewriter(assistantMsgIndex);
+          }
+        }
+      } catch { /* ignore parse errors */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main send function — dispatches to the correct SDK path
+// ---------------------------------------------------------------------------
+
 async function sendMessage() {
   if (!userMessage.value.trim()) return;
 
-  // Check configuration
   if (!selectedToken.value) {
-    Notify.create({
-      type: 'warning',
-      message: 'Please select API Key first',
-      position: 'top',
-    });
+    Notify.create({ type: 'warning', message: 'Please select API Key first', position: 'top' });
     return;
   }
-
   if (!selectedModel.value) {
-    Notify.create({
-      type: 'warning',
-      message: 'Please select model first',
-      position: 'top',
-    });
+    Notify.create({ type: 'warning', message: 'Please select model first', position: 'top' });
     return;
   }
 
-  const userMsg: Message = {
-    role: 'user',
-    content: userMessage.value,
-  };
-
+  const userMsg: Message = { role: 'user', content: userMessage.value };
   messages.value.push(userMsg);
   const currentMessage = userMessage.value;
   userMessage.value = '';
   loading.value = true;
-
-  // Scroll to bottom to show user message
   void scrollToBottom();
 
-  // Create assistant message placeholder immediately
+  // Create assistant placeholder
   const assistantMsgIndex = messages.value.length;
-  messages.value.push({
-    role: 'assistant',
-    content: '',
-  });
+  messages.value.push({ role: 'assistant', content: '', sdk: selectedSdk.value });
   void scrollToBottom();
 
   try {
-    const apiBaseUrl = getApiBaseUrl();
+    const plainToken = await getPlainToken();
 
-    // Get actual key of selected token
-    const response = await fetch(`${apiBaseUrl}/admin/tokens/${selectedToken.value}/plain`, {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-        'Cache-Control': 'no-cache',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error('Unable to get API Key');
-    }
-
-    const tokenData = await response.json();
-
-    const useStream = !isImageModel(selectedModel.value);
-
-    // Call API
-    const chatResponse = await fetch(`${apiBaseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${tokenData.token}`,
-        'Cache-Control': 'no-cache',
-      },
-      body: JSON.stringify({
-        model: selectedModel.value,
-        messages: messages.value.slice(0, -1)
-          .filter(m => m.content && m.content.trim())
-          .map(m => ({
-            role: m.role,
-            content: m.content,
-          })),
-        stream: useStream,
-        ...(temperature.value !== null && { temperature: temperature.value }),
-        ...(maxTokens.value !== null && { max_tokens: maxTokens.value }),
-      }),
-    });
-
-    if (!chatResponse.ok) {
-      let errorMessage = 'Request failed';
-      try {
-        const error = await chatResponse.json();
-        errorMessage = error.detail || error.message || errorMessage;
-      } catch {
-        errorMessage = chatResponse.statusText || `HTTP ${chatResponse.status}`;
-      }
-      throw new Error(errorMessage);
-    }
-
-    // --- Non-streaming path (image models) ---
-    if (!useStream) {
-      loading.value = false;
-      const responseData = await chatResponse.json() as Record<string, unknown>;
-      const { text, imageUrls } = parseNonStreamResponse(responseData);
-      const msg = messages.value[assistantMsgIndex];
-      if (msg) {
-        if (text) {
-          typewriterQueue.value = text;
-          startTypewriter(assistantMsgIndex);
-        }
-        if (imageUrls.length) {
-          msg.imageUrls = imageUrls;
-          messages.value = [...messages.value];
-          void scrollToBottom();
-        }
-      }
-      return;
-    }
-
-    // --- Streaming path (text/chat models) ---
-    const reader = chatResponse.body?.getReader();
-    const decoder = new TextDecoder();
-
-    if (!reader) {
-      throw new Error('Unable to read response stream');
-    }
-
-    loading.value = false;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
-
-          try {
-            const parsed = JSON.parse(data) as Record<string, unknown>;
-            const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
-            const delta = choices?.[0]?.delta as Record<string, unknown> | undefined;
-            if (!delta) continue;
-
-            // Text content (string)
-            if (typeof delta.content === 'string' && delta.content) {
-              typewriterQueue.value += delta.content;
-              if (!isTyping.value) startTypewriter(assistantMsgIndex);
-            }
-
-            // Array content parts
-            if (Array.isArray(delta.content)) {
-              for (const part of delta.content as Array<Record<string, unknown>>) {
-                if (part.type === 'text' && typeof part.text === 'string') {
-                  typewriterQueue.value += part.text;
-                  if (!isTyping.value) startTypewriter(assistantMsgIndex);
-                } else if (part.type === 'image_url') {
-                  const url = (part.image_url as Record<string, string> | undefined)?.url;
-                  if (url) {
-                    const msg = messages.value[assistantMsgIndex];
-                    if (msg) {
-                      if (!msg.imageUrls) msg.imageUrls = [];
-                      msg.imageUrls.push(url);
-                      messages.value = [...messages.value];
-                      void scrollToBottom();
-                    }
-                  }
-                }
-              }
-            }
-          } catch {
-            // Ignore parsing errors
-          }
-        }
-      }
+    switch (selectedSdk.value) {
+      case 'anthropic':
+        await sendViaAnthropic(plainToken, assistantMsgIndex);
+        break;
+      case 'gemini':
+        await sendViaGemini(plainToken, assistantMsgIndex);
+        break;
+      case 'openai':
+      default:
+        await sendViaOpenAI(plainToken, assistantMsgIndex);
+        break;
     }
   } catch (error) {
     Notify.create({
@@ -466,8 +591,6 @@ async function sendMessage() {
       message: 'Send failed: ' + (error instanceof Error ? error.message : 'Unknown error'),
       position: 'top',
     });
-
-    // Remove last two messages (user message and empty assistant message)
     messages.value = messages.value.slice(0, -2);
     userMessage.value = currentMessage;
   } finally {

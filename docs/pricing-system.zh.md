@@ -182,6 +182,11 @@ flowchart TD
     M2 --> N2[三级 Gemini 获取 + Upsert]
     N2 --> L2
 
+    K --> L3[调度器: 每天 UTC 03:00]
+    L3 --> M3[refresh_profile_cache_task]
+    M3 --> N3[查询 AWS API: profiles + FM]
+    N3 --> L3
+
     K --> Q[管理员 API: POST /admin/pricing/update]
     Q --> R[手动按需更新 AWS]
     R --> K
@@ -192,6 +197,7 @@ flowchart TD
     style I fill:#e8f5e9
     style N1 fill:#e1f5ff
     style N2 fill:#e8f5e9
+    style N3 fill:#fff4e1
     style J fill:#fff4e1
 ```
 
@@ -201,11 +207,15 @@ flowchart TD
 |------|-----------|------|
 | AWS 价格更新 | 每天 02:00 | `update_pricing_task()` |
 | Gemini 价格更新 | 每天 02:30 | `update_gemini_pricing_task()` |
+| Inference profile 缓存刷新 | 每天 03:00 | `refresh_profile_cache_task()` |
+
+> 03:00 UTC 的 profile 缓存刷新从 AWS API 更新可用的 inference profiles 和 foundation models 列表。此缓存供 `resolve_model()` 动态路由请求到正确区域，也供管理面板的模型列表接口仅展示实际可调用的模型。
 
 **实现文件：**
-- `backend/app/tasks/pricing_tasks.py` — 调度器启停、两个任务函数
+- `backend/app/tasks/pricing_tasks.py` — 调度器启停、所有任务函数（定价 + profile 缓存）
 - `backend/app/services/pricing_updater.py` — AWS 定价逻辑
 - `backend/app/services/gemini_pricing_updater.py` — Gemini 三级策略逻辑
+- `backend/app/services/bedrock.py` — `_ProfileCache` 类、`resolve_model()`、`refresh_profile_cache()`
 - `backend/main.py` — lifespan 启动/关闭
 
 **三种更新方式：**
@@ -488,6 +498,10 @@ WARNING - No pricing data was updated
 
 Gemini 价格更新爬取公开的 Google 定价页面，无需 `GEMINI_API_KEY`。
 
+### 动态区域解析（定价）
+
+`ModelPricing.calculate_cost()` 通过 `BedrockClient.resolve_model()` 动态确定定价区域。这确保了路由到 fallback 区域的模型（如 `zai.glm-5` → `us-west-2`）使用数据库中正确区域的价格。
+
 ### 自定义调度时间
 
 修改 `backend/app/tasks/pricing_tasks.py`：
@@ -498,6 +512,9 @@ scheduler.add_job(update_pricing_task, trigger=CronTrigger(hour=2, minute=0), ..
 
 # Gemini 价格 — 默认每天 UTC 02:30
 scheduler.add_job(update_gemini_pricing_task, trigger=CronTrigger(hour=2, minute=30), ...)
+
+# Inference profile 缓存 — 默认每天 UTC 03:00
+scheduler.add_job(refresh_profile_cache_task, trigger=CronTrigger(hour=3, minute=0), ...)
 ```
 
 ### 维护 Gemini 静态旧版价格表

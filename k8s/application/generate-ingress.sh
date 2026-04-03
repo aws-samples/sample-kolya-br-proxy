@@ -89,85 +89,16 @@ echo "   Frontend ACM Cert: ${FRONTEND_ACM_CERT:0:50}..."
 echo "   API ACM Cert: ${API_ACM_CERT:0:50}..."
 echo ""
 
-# Generate ingress-frontend.yaml
-echo "🔨 Generating ingress-frontend.yaml..."
-cat > ingress-frontend.yaml << EOF
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: kolya-br-proxy-frontend
-  namespace: kbp
-  annotations:
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-    alb.ingress.kubernetes.io/ssl-redirect: '443'
-    alb.ingress.kubernetes.io/certificate-arn: ${FRONTEND_ACM_CERT}
-    alb.ingress.kubernetes.io/load-balancer-name: kolya-br-proxy-frontend-alb
-    alb.ingress.kubernetes.io/tags: Environment=${ENVIRONMENT},Project=kolya-br-proxy,Service=frontend
-    # Connection optimizations
-    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
-    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
-    # Health check settings
-    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
-    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
-    alb.ingress.kubernetes.io/healthcheck-path: /
-    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
-    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
-spec:
-  ingressClassName: alb
-  rules:
-  - host: ${FRONTEND_DOMAIN}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: frontend
-            port:
-              number: 3000
-EOF
+# Export variables for envsubst
+export FRONTEND_ACM_CERT API_ACM_CERT ENVIRONMENT FRONTEND_DOMAIN API_DOMAIN
 
-# Generate ingress-api.yaml
+# Generate ingress-frontend.yaml from template
+echo "🔨 Generating ingress-frontend.yaml..."
+envsubst < ingress-frontend.yaml.template > ingress-frontend.yaml
+
+# Generate ingress-api.yaml from template
 echo "🔨 Generating ingress-api.yaml..."
-cat > ingress-api.yaml << EOF
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: kolya-br-proxy-api
-  namespace: kbp
-  annotations:
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
-    alb.ingress.kubernetes.io/ssl-redirect: '443'
-    alb.ingress.kubernetes.io/certificate-arn: ${API_ACM_CERT}
-    alb.ingress.kubernetes.io/load-balancer-name: kolya-br-proxy-api-alb
-    alb.ingress.kubernetes.io/tags: Environment=${ENVIRONMENT},Project=kolya-br-proxy,Service=api
-    # Streaming response optimizations
-    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
-    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30,load_balancing.algorithm.type=round_robin
-    # Health check settings
-    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
-    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
-    alb.ingress.kubernetes.io/healthcheck-path: /health/
-    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
-    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
-spec:
-  ingressClassName: alb
-  rules:
-  - host: ${API_DOMAIN}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: backend
-            port:
-              number: 8000
-EOF
+envsubst < ingress-api.yaml.template > ingress-api.yaml
 
 echo "✅ Ingress files generated successfully!"
 echo ""
