@@ -195,6 +195,208 @@ class TokenBucket:
         await self._local.acquire()
 
 
+class _ProfileCache:
+    """Caches inference profiles and foundation models from AWS Bedrock.
+
+    Populated at startup and refreshed daily.  ``resolve_model`` uses this
+    cache to decide:
+      * which inference-profile ID to use (``us.`` / ``global.`` / bare),
+      * which AWS region to send the request to.
+    """
+
+    TTL = 86400  # 24 hours
+
+    # Geo prefix priority for choosing the "best" local profile.
+    # Lower index = higher priority (prefer geo-locked over global).
+    _GEO_PRIORITY: dict[str, int] = {
+        "us.": 0,
+        "eu.": 1,
+        "apac.": 2,
+        "au.": 3,
+        "ca.": 4,
+        "jp.": 5,
+        "global.": 10,
+    }
+
+    def __init__(self) -> None:
+        self._local_profile_ids: set[str] = set()
+        self._local_profiles: dict[str, str] = {}  # bare_model → best profile_id
+        self._local_fm: set[str] = set()
+        self._fallback_fm: set[str] = set()
+        self._last_refresh: float = 0
+        self._lock = asyncio.Lock()
+
+    @property
+    def is_stale(self) -> bool:
+        return (time.time() - self._last_refresh) > self.TTL
+
+    @property
+    def is_empty(self) -> bool:
+        return not self._local_profile_ids and not self._local_fm
+
+    # ------------------------------------------------------------------
+
+    async def refresh(
+        self,
+        session: "aioboto3.Session",
+        region: str,
+        fallback_region: str,
+        config: "Config",
+    ) -> None:
+        """Fetch latest profiles and foundation models from AWS."""
+        async with self._lock:
+            await self._do_refresh(session, region, fallback_region, config)
+
+    async def _do_refresh(
+        self,
+        session: "aioboto3.Session",
+        region: str,
+        fallback_region: str,
+        config: "Config",
+    ) -> None:
+        from app.services.bedrock import BedrockClient
+
+        local_profile_ids: set[str] = set()
+        local_profiles: dict[str, str] = {}
+        local_fm: set[str] = set()
+        fallback_fm: set[str] = set()
+
+        try:
+            # 1. Local region inference profiles
+            async with session.client("bedrock", region_name=region) as client:
+                resp = await client.list_inference_profiles()
+                for p in resp.get("inferenceProfileSummaries", []):
+                    pid = p.get("inferenceProfileId", "")
+                    if not pid or p.get("status") != "ACTIVE":
+                        continue
+                    local_profile_ids.add(pid)
+
+                    # Build bare_model → best profile mapping
+                    bare = pid
+                    prefix_str = ""
+                    for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
+                        if pid.startswith(pfx):
+                            bare = pid[len(pfx) :]
+                            prefix_str = pfx
+                            break
+
+                    priority = self._GEO_PRIORITY.get(prefix_str, 5)
+                    existing = local_profiles.get(bare)
+                    if existing is None:
+                        local_profiles[bare] = pid
+                    else:
+                        # Replace only if new profile has higher priority (lower number)
+                        existing_pfx = ""
+                        for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
+                            if existing.startswith(pfx):
+                                existing_pfx = pfx
+                                break
+                        existing_priority = self._GEO_PRIORITY.get(existing_pfx, 5)
+                        if priority < existing_priority:
+                            local_profiles[bare] = pid
+
+            # 2. Local region foundation models
+            async with session.client("bedrock", region_name=region) as client:
+                resp = await client.list_foundation_models()
+                for m in resp.get("modelSummaries", []):
+                    mid = m.get("modelId", "")
+                    if mid and mid.count(":") <= 1:  # skip throughput variants
+                        local_fm.add(mid)
+
+            # 3. Fallback region foundation models (only those not in local)
+            if fallback_region != region:
+                async with session.client(
+                    "bedrock", region_name=fallback_region
+                ) as client:
+                    resp = await client.list_foundation_models()
+                    for m in resp.get("modelSummaries", []):
+                        mid = m.get("modelId", "")
+                        if mid and mid.count(":") <= 1 and mid not in local_fm:
+                            # Also exclude models already covered by a local profile
+                            if mid not in local_profiles:
+                                fallback_fm.add(mid)
+
+            self._local_profile_ids = local_profile_ids
+            self._local_profiles = local_profiles
+            self._local_fm = local_fm
+            self._fallback_fm = fallback_fm
+            self._last_refresh = time.time()
+
+            logger.info(
+                f"Profile cache refreshed: {len(local_profile_ids)} profiles, "
+                f"{len(local_fm)} local FM, {len(fallback_fm)} fallback FM"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to refresh profile cache: {e}", exc_info=True)
+            # Keep stale data if refresh fails
+
+    def get_all_available_models(self) -> list[dict]:
+        """Return all available models for the admin model list.
+
+        Returns a list of dicts with model info, combining local profiles,
+        local foundation models, and fallback foundation models.
+        """
+        from app.services.bedrock import BedrockClient
+
+        models: list[dict] = []
+
+        # Profiles (cross-region)
+        for pid in sorted(self._local_profile_ids):
+            bare = pid
+            prefix = None
+            for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
+                if pid.startswith(pfx):
+                    bare = pid[len(pfx) :]
+                    prefix = pfx.rstrip(".")
+                    break
+            # Skip embedding/rerank
+            if any(kw in bare for kw in ("embed-", "rerank-")):
+                continue
+            models.append(
+                {
+                    "model_id": pid,
+                    "base_model_id": bare,
+                    "is_cross_region": True,
+                    "cross_region_type": prefix,
+                    "is_fallback": False,
+                }
+            )
+
+        # Local foundation models (not already covered by profiles)
+        profile_bases = set(self._local_profiles.keys())
+        for mid in sorted(self._local_fm):
+            if mid in profile_bases:
+                continue
+            if any(kw in mid for kw in ("embed-", "rerank-")):
+                continue
+            models.append(
+                {
+                    "model_id": mid,
+                    "base_model_id": mid,
+                    "is_cross_region": False,
+                    "cross_region_type": None,
+                    "is_fallback": False,
+                }
+            )
+
+        # Fallback foundation models
+        for mid in sorted(self._fallback_fm):
+            if any(kw in mid for kw in ("embed-", "rerank-")):
+                continue
+            models.append(
+                {
+                    "model_id": mid,
+                    "base_model_id": mid,
+                    "is_cross_region": False,
+                    "cross_region_type": None,
+                    "is_fallback": True,
+                }
+            )
+
+        return models
+
+
 class BedrockClient:
     """AWS Bedrock client using async aioboto3."""
 
@@ -245,6 +447,18 @@ class BedrockClient:
         self.session = aioboto3.Session(**session_kwargs)
         self.region_name = settings.AWS_REGION
 
+        # Profile cache — populated by refresh_profile_cache()
+        self._profile_cache = _ProfileCache()
+
+    async def refresh_profile_cache(self) -> None:
+        """Refresh the inference profile / foundation model cache."""
+        await self._profile_cache.refresh(
+            self.session,
+            self.region_name,
+            self.FALLBACK_REGION,
+            self.config,
+        )
+
     @classmethod
     def get_instance(cls) -> "BedrockClient":
         """Get the singleton BedrockClient instance. Created on first call."""
@@ -255,16 +469,8 @@ class BedrockClient:
 
     MAX_CACHE_BREAKPOINTS = 4
 
-    # Models that require cross-region inference profile
-    # These models don't support direct on-demand invocation
-    CROSS_REGION_MODEL_PREFIXES = (
-        "amazon.nova-",
-        "anthropic.claude-haiku-4",
-        "anthropic.claude-sonnet-4",
-        "anthropic.claude-opus-4",
-        "anthropic.claude-3-5-haiku",
-        "anthropic.claude-3-5-sonnet-v2",
-    )
+    # Fallback region — has the broadest model catalog.
+    FALLBACK_REGION = "us-west-2"
 
     # Valid cross-region inference profile prefixes
     INFERENCE_PROFILE_PREFIXES = ("global.", "us.", "eu.", "apac.", "au.", "ca.", "jp.")
@@ -299,11 +505,6 @@ class BedrockClient:
     }
 
     @classmethod
-    def is_cross_region_model(cls, base_model_id: str) -> bool:
-        """Check if a base model ID requires cross-region inference profile."""
-        return any(base_model_id.startswith(p) for p in cls.CROSS_REGION_MODEL_PREFIXES)
-
-    @classmethod
     def get_geo_prefix(cls, aws_region: str) -> str:
         """
         Get the geographic inference profile prefix for an AWS region.
@@ -322,21 +523,62 @@ class BedrockClient:
         region_prefix = aws_region.split("-")[0]
         return cls.REGION_TO_GEO_PREFIX.get(region_prefix, "us")
 
-    def get_model_id(self, model_name: str) -> str:
+    def resolve_model(self, model_name: str) -> tuple[str, str]:
+        """Resolve a model name into ``(model_id, region)`` for the Bedrock API.
+
+        Uses the cached profile / foundation-model data populated by
+        ``refresh_profile_cache()``.
+
+        Resolution order:
+        1. Has geo prefix and known locally → pass through, local region.
+        2. Has geo prefix but NOT known locally → strip prefix, re-resolve.
+        3. Bare ID found in local profiles → return best profile, local region.
+        4. Bare ID found in local foundation models → bare ID, local region.
+        5. Bare ID found in fallback foundation models → bare ID, fallback region.
+        6. Unknown → bare ID, local region (best effort).
         """
-        Get Bedrock model ID from model name.
+        cache = self._profile_cache
 
-        The model_name stored in the database is already a valid Bedrock
-        model ID (with geographic prefix for cross-region models, e.g.
-        "us.amazon.nova-pro-v1:0"), so it is passed through as-is.
+        # Step 1 / 1b: model already has a geo prefix
+        for prefix in self.INFERENCE_PROFILE_PREFIXES:
+            if model_name.startswith(prefix):
+                if model_name in cache._local_profile_ids:
+                    # 1a — known locally
+                    return model_name, self.region_name
+                # 1b — not available locally, strip and re-resolve
+                bare = model_name[len(prefix) :]
+                logger.info(
+                    f"Profile {model_name} not available in {self.region_name}, "
+                    f"re-resolving bare model: {bare}"
+                )
+                return self._resolve_bare(bare)
 
-        Args:
-            model_name: Bedrock model ID, with or without inference profile prefix
+        return self._resolve_bare(model_name)
 
-        Returns:
-            Bedrock model ID (passed through unchanged)
-        """
-        return model_name
+    def _resolve_bare(self, bare: str) -> tuple[str, str]:
+        """Resolve a bare model ID (no geo prefix) using the cache."""
+        cache = self._profile_cache
+
+        # Step 2: local inference profile
+        profile_id = cache._local_profiles.get(bare)
+        if profile_id:
+            return profile_id, self.region_name
+
+        # Step 3: local foundation model
+        if bare in cache._local_fm:
+            return bare, self.region_name
+
+        # Step 4: fallback foundation model
+        if bare in cache._fallback_fm:
+            logger.info(
+                f"Model {bare} not in {self.region_name}, "
+                f"routing to fallback {self.FALLBACK_REGION}"
+            )
+            return bare, self.FALLBACK_REGION
+
+        # Step 5: unknown — best effort
+        logger.warning(f"Model {bare} not found in cache, trying local region")
+        return bare, self.region_name
 
     @staticmethod
     def _new_cache_marker(ttl: str | None = None) -> dict:
@@ -942,14 +1184,18 @@ class BedrockClient:
         self, model_name: str, request: BedrockRequest
     ) -> BedrockResponse:
         """Inner invoke logic with retry, called under semaphore."""
-        model_id = self.get_model_id(model_name)
+        model_id, target_region = self.resolve_model(model_name)
         use_converse = not self.is_anthropic_model(model_id)
 
         if use_converse:
             converse_params = self._build_converse_params(request, model_id)
             logger.info(
                 "Using Converse API for non-Anthropic model",
-                extra={"model": model_name, "model_id": model_id},
+                extra={
+                    "model": model_name,
+                    "model_id": model_id,
+                    "region": target_region,
+                },
             )
         else:
             body = self._build_anthropic_body(request)
@@ -964,7 +1210,7 @@ class BedrockClient:
 
                 async with self.session.client(
                     "bedrock-runtime",
-                    region_name=self.region_name,
+                    region_name=target_region,
                     config=self.config,
                 ) as client:
                     if use_converse:
@@ -1120,14 +1366,18 @@ class BedrockClient:
         self, model_name: str, request: BedrockRequest
     ) -> AsyncGenerator[BedrockStreamEvent, None]:
         """Inner streaming logic with retry, called under semaphore."""
-        model_id = self.get_model_id(model_name)
+        model_id, target_region = self.resolve_model(model_name)
         use_converse = not self.is_anthropic_model(model_id)
 
         if use_converse:
             converse_params = self._build_converse_params(request, model_id)
             logger.info(
                 "Using ConverseStream API for non-Anthropic model",
-                extra={"model": model_name, "model_id": model_id},
+                extra={
+                    "model": model_name,
+                    "model_id": model_id,
+                    "region": target_region,
+                },
             )
         else:
             body = self._build_anthropic_body(request)
@@ -1143,7 +1393,7 @@ class BedrockClient:
 
                 async with self.session.client(
                     "bedrock-runtime",
-                    region_name=self.region_name,
+                    region_name=target_region,
                     config=self.config,
                 ) as client:
                     if use_converse:

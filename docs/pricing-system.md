@@ -183,6 +183,11 @@ flowchart TD
     M2 --> N2[3-tier Gemini fetch + upsert]
     N2 --> L2
 
+    K --> L3[Scheduler: Daily UTC 03:00]
+    L3 --> M3[refresh_profile_cache_task]
+    M3 --> N3[Query AWS APIs: profiles + FMs]
+    N3 --> L3
+
     K --> Q[Admin API: POST /admin/pricing/update]
     Q --> R[Manual AWS update on demand]
     R --> K
@@ -193,6 +198,7 @@ flowchart TD
     style I fill:#e8f5e9
     style N1 fill:#e1f5ff
     style N2 fill:#e8f5e9
+    style N3 fill:#fff4e1
     style J fill:#fff4e1
 ```
 
@@ -202,11 +208,15 @@ flowchart TD
 |-----|-----------|------|
 | AWS pricing update | Daily 02:00 | `update_pricing_task()` |
 | Gemini pricing update | Daily 02:30 | `update_gemini_pricing_task()` |
+| Inference profile cache refresh | Daily 03:00 | `refresh_profile_cache_task()` |
+
+> The profile cache refresh at 03:00 UTC updates the list of available inference profiles and foundation models from AWS APIs. This cache is used by `resolve_model()` to dynamically route requests to the correct region, and by the admin model list endpoint to show only actually-callable models.
 
 **Implementation files:**
-- `backend/app/tasks/pricing_tasks.py` — `start_scheduler()`, `stop_scheduler()`, both task functions
+- `backend/app/tasks/pricing_tasks.py` — `start_scheduler()`, `stop_scheduler()`, all task functions (pricing + profile cache)
 - `backend/app/services/pricing_updater.py` — AWS pricing logic
 - `backend/app/services/gemini_pricing_updater.py` — Gemini three-tier logic
+- `backend/app/services/bedrock.py` — `_ProfileCache` class, `resolve_model()`, `refresh_profile_cache()`
 - `backend/main.py` — lifespan startup/shutdown
 
 **Three update methods:**
@@ -501,6 +511,10 @@ No extra configuration needed. Gemini pricing runs regardless of `GEMINI_API_KEY
 | `AWS_REGION` | Used for AWS Bedrock Price List API queries |
 | `GEMINI_API_KEY` | Used for chat requests; **not required** for pricing updates |
 
+### Dynamic Region Resolution for Pricing
+
+When calculating cost, the `ModelPricing.calculate_cost()` method determines the pricing region dynamically via `BedrockClient.resolve_model()`. This ensures that models routed to the fallback region (e.g. `zai.glm-5` → `us-west-2`) look up prices under the correct region in the database.
+
 ### Customize Scheduler Times
 
 Edit `backend/app/tasks/pricing_tasks.py`:
@@ -511,6 +525,9 @@ scheduler.add_job(update_pricing_task, trigger=CronTrigger(hour=2, minute=0), ..
 
 # Gemini pricing — default: daily 02:30 UTC
 scheduler.add_job(update_gemini_pricing_task, trigger=CronTrigger(hour=2, minute=30), ...)
+
+# Inference profile cache — default: daily 03:00 UTC
+scheduler.add_job(refresh_profile_cache_task, trigger=CronTrigger(hour=3, minute=0), ...)
 ```
 
 ### Maintaining the Gemini Static Legacy Table

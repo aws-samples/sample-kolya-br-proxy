@@ -667,7 +667,16 @@ Retrieve the decrypted plain token value.
 
 #### GET /admin/models/aws-available
 
-List available Bedrock models from AWS. Results are cached for 12 hours.
+List available models that the proxy can actually invoke from the deployment region. The response is built from the **inference profile cache** (`_ProfileCache`), which is populated at startup and refreshed daily at 03:00 UTC via AWS APIs.
+
+The list includes:
+- **Inference profiles** available in the deployment region (e.g. `us.anthropic.claude-sonnet-4-6`, `global.anthropic.claude-sonnet-4-5-20250929-v1:0`)
+- **Foundation models** available only in the fallback region (e.g. `zai.glm-5`, `deepseek.v3.2`) — marked with `is_fallback: true`
+- **Gemini models** (if `GEMINI_API_KEY` is configured) — appended dynamically
+
+Only models actually callable from the deployment region are shown. For example, if deployed in `us-west-1` where `global.anthropic.claude-sonnet-4-20250514-v1:0` is not available, it will not appear in the list.
+
+Results are cached in-memory for 12 hours.
 
 **Response**:
 
@@ -675,11 +684,24 @@ List available Bedrock models from AWS. Results are cached for 12 hours.
 {
   "models": [
     {
-      "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-      "model_name": "Claude 4.5 Sonnet",
-      "friendly_name": "claude-sonnet-4-5",
-      "provider": "bedrock",
-      "streaming_supported": true
+      "model_id": "us.anthropic.claude-sonnet-4-6",
+      "model_name": "anthropic.claude-sonnet-4-6",
+      "friendly_name": "anthropic.claude-sonnet-4-6",
+      "provider": "bedrock-converse",
+      "is_cross_region": true,
+      "cross_region_type": "us",
+      "streaming_supported": true,
+      "is_fallback": false
+    },
+    {
+      "model_id": "zai.glm-5",
+      "model_name": "zai.glm-5",
+      "friendly_name": "zai.glm-5",
+      "provider": "bedrock-converse",
+      "is_cross_region": false,
+      "cross_region_type": null,
+      "streaming_supported": true,
+      "is_fallback": true
     }
   ]
 }
