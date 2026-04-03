@@ -24,6 +24,7 @@ from app.services.anthropic_translator import (
 )
 from app.services.background_tasks import BackgroundTaskManager
 from app.services.bedrock import BedrockClient
+from app.services.gemini_client import is_gemini_model as _is_gemini_model
 from app.services.pricing import ModelPricing
 
 router = APIRouter()
@@ -94,6 +95,15 @@ async def create_message(
             raise HTTPException(
                 status_code=403,
                 detail=f"Token does not have access to model: {request_data.model}. Allowed models: {allowed_model_names}",
+            )
+
+        # Route Gemini models to Google API
+        if _is_gemini_model(request_data.model):
+            return await _handle_gemini_via_anthropic(
+                request_data=request_data,
+                request_id=request_id,
+                token=token,
+                start_time=start_time,
             )
 
         # Apply token-level prompt cache settings
@@ -382,3 +392,272 @@ async def record_usage(
         finally:
             await db.close()
         break
+
+
+# ---------------------------------------------------------------------------
+# Gemini routing via Anthropic Messages endpoint
+# ---------------------------------------------------------------------------
+
+
+async def _handle_gemini_via_anthropic(
+    request_data: "AnthropicMessagesRequest",
+    request_id: str,
+    token: APIToken,
+    start_time: float,
+):
+    """
+    Forward a Gemini model request received on the Anthropic Messages endpoint.
+
+    Converts Anthropic-format messages to Gemini native format, calls the
+    Google API, and converts the response back to Anthropic format.
+    """
+    import httpx
+
+    from app.services.gemini_client import (
+        GeminiClient,
+        extract_cached_tokens,
+    )
+
+    settings = get_settings()
+    if not settings.GEMINI_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini API key is not configured on this server",
+        )
+
+    # Convert Anthropic messages to OpenAI-style messages for the Gemini
+    # client which already has OpenAI→Gemini translation.
+    openai_messages = []
+    if request_data.system:
+        system_text = (
+            request_data.system
+            if isinstance(request_data.system, str)
+            else " ".join(b.text for b in request_data.system if hasattr(b, "text"))
+        )
+        if system_text:
+            openai_messages.append({"role": "system", "content": system_text})
+
+    for msg in request_data.messages:
+        content = msg.content
+        if isinstance(content, list):
+            # Extract text from content blocks
+            texts = []
+            for block in content:
+                if hasattr(block, "text"):
+                    texts.append(block.text)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+            content = "\n".join(texts) if texts else ""
+        openai_messages.append({"role": msg.role, "content": content})
+
+    payload = {
+        "model": request_data.model,
+        "messages": openai_messages,
+    }
+    if request_data.temperature is not None:
+        payload["temperature"] = request_data.temperature
+    if request_data.max_tokens:
+        payload["max_tokens"] = request_data.max_tokens
+
+    if request_data.stream:
+        return StreamingResponse(
+            _stream_gemini_as_anthropic(
+                payload=payload,
+                api_key=settings.GEMINI_API_KEY,
+                request_id=request_id,
+                model=request_data.model,
+                token=token,
+                start_time=start_time,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    # Non-streaming
+    try:
+        response_data = await GeminiClient.invoke(payload, settings.GEMINI_API_KEY)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"Gemini API error: {str(e)[:200]}",
+        )
+
+    # Convert OpenAI-format response to Anthropic format
+    choices = response_data.get("choices", [])
+    usage = response_data.get("usage", {})
+    content_text = ""
+    if choices:
+        msg = choices[0].get("message", {})
+        content_text = msg.get("content", "") or ""
+
+    cached_tokens = extract_cached_tokens(response_data)
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    non_cached_prompt = max(0, prompt_tokens - cached_tokens)
+
+    # Record usage
+    background_tasks.create_task(
+        record_usage(
+            token_id=token.id,
+            user_id=token.user_id,
+            model=request_data.model,
+            request_id=request_id,
+            prompt_tokens=non_cached_prompt,
+            completion_tokens=completion_tokens,
+            cache_read_input_tokens=cached_tokens,
+        ),
+        task_name=f"record_usage_{request_id}",
+    )
+
+    duration = time.time() - start_time
+    logger.info(
+        f"Anthropic→Gemini non-streaming done: request_id={request_id}, "
+        f"duration={round(duration, 3)}s, "
+        f"prompt={non_cached_prompt}, completion={completion_tokens}"
+    )
+
+    return {
+        "id": request_id,
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": content_text}],
+        "model": request_data.model,
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": non_cached_prompt,
+            "output_tokens": completion_tokens,
+        },
+    }
+
+
+async def _stream_gemini_as_anthropic(
+    payload: dict,
+    api_key: str,
+    request_id: str,
+    model: str,
+    token: APIToken,
+    start_time: float,
+) -> AsyncGenerator[str, None]:
+    """
+    Stream Gemini response converted to Anthropic SSE format.
+
+    The Gemini client yields OpenAI-format SSE chunks; we convert each to
+    Anthropic streaming events.
+    """
+    import json as _json
+    from app.services.gemini_client import (
+        GeminiClient,
+        extract_cached_tokens_from_chunk,
+    )
+
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_cached_tokens = 0
+    block_started = False
+
+    try:
+        # Send message_start event
+        yield (
+            "event: message_start\n"
+            f"data: {_json.dumps({'type': 'message_start', 'message': {'id': request_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
+        )
+
+        async for chunk in GeminiClient.invoke_stream(payload, api_key):
+            for line in chunk.splitlines():
+                if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                    continue
+
+                try:
+                    data = _json.loads(line[6:])
+                except (ValueError, TypeError):
+                    continue
+
+                # Extract usage
+                usage = data.get("usage")
+                if usage:
+                    total_prompt_tokens = usage.get(
+                        "prompt_tokens", total_prompt_tokens
+                    )
+                    total_completion_tokens = usage.get(
+                        "completion_tokens", total_completion_tokens
+                    )
+                    cached = extract_cached_tokens_from_chunk(data)
+                    if cached is not None:
+                        total_cached_tokens = cached
+
+                # Extract text delta
+                choices = data.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+                text = delta.get("content")
+                if not isinstance(text, str) or not text:
+                    continue
+
+                # Send content_block_start on first text
+                if not block_started:
+                    yield (
+                        "event: content_block_start\n"
+                        f"data: {_json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    )
+                    block_started = True
+
+                # Send content_block_delta
+                yield (
+                    "event: content_block_delta\n"
+                    f"data: {_json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
+                )
+
+        # Close content block
+        if block_started:
+            yield (
+                "event: content_block_stop\n"
+                f"data: {_json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+            )
+
+        # Send message_delta with usage
+        yield (
+            "event: message_delta\n"
+            f"data: {_json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'output_tokens': total_completion_tokens}})}\n\n"
+        )
+
+        # Send message_stop
+        yield (
+            f"event: message_stop\ndata: {_json.dumps({'type': 'message_stop'})}\n\n"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Anthropic→Gemini streaming failed: model={model}, "
+            f"request_id={request_id}, error={e}",
+            exc_info=True,
+        )
+        yield (
+            "event: error\n"
+            f"data: {_json.dumps({'type': 'error', 'error': {'type': 'server_error', 'message': str(e)}})}\n\n"
+        )
+
+    # Record usage
+    non_cached_prompt = max(0, total_prompt_tokens - total_cached_tokens)
+    background_tasks.create_task(
+        record_usage(
+            token_id=token.id,
+            user_id=token.user_id,
+            model=model,
+            request_id=request_id,
+            prompt_tokens=non_cached_prompt,
+            completion_tokens=total_completion_tokens,
+            cache_read_input_tokens=total_cached_tokens,
+        ),
+        task_name=f"record_usage_{request_id}",
+    )
+
+    duration = time.time() - start_time
+    logger.info(
+        f"Anthropic→Gemini streaming done: request_id={request_id}, "
+        f"duration={round(duration, 3)}s, "
+        f"prompt={non_cached_prompt}, completion={total_completion_tokens}"
+    )

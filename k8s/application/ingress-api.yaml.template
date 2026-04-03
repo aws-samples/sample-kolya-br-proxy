@@ -8,11 +8,11 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
-    alb.ingress.kubernetes.io/certificate-arn: YOUR_API_ACM_CERTIFICATE_ARN
+    alb.ingress.kubernetes.io/certificate-arn: ${API_ACM_CERT}
     alb.ingress.kubernetes.io/load-balancer-name: kolya-br-proxy-api-alb
-    alb.ingress.kubernetes.io/tags: Environment=non-prod,Project=kolya-br-proxy,Service=api
+    alb.ingress.kubernetes.io/tags: Environment=${ENVIRONMENT},Project=kolya-br-proxy,Service=api
     # Streaming response optimizations
-    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=4000
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
     alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30,load_balancing.algorithm.type=round_robin
     # Health check settings
     alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
@@ -33,10 +33,3 @@ spec:
             name: backend
             port:
               number: 8000
-
-# INSTRUCTIONS:
-# This is a template file. Generate the actual ingress file using:
-#   ./generate-ingress.sh
-#
-# The script will read ACM certificate ARN from secrets.yaml and
-# generate the final ingress-api.yaml file.

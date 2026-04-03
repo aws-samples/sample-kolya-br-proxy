@@ -76,6 +76,7 @@ graph LR
 | Dual API compatibility | OpenAI-compatible (`/v1/chat/completions`) and Anthropic Messages API (`/v1/messages`); clients only change `base_url` and `api_key` |
 | Configurable API key prefix | Keys default to `kbr_` prefix; `sk-ant-api03` prefix available for Claude Code / Anthropic SDK compatibility |
 | Strip thinking blocks from history | Bedrock doesn't support adaptive signature-only thinking blocks, so they are removed from conversation history before forwarding |
+| Dynamic model resolution | `_ProfileCache` queries AWS APIs at startup + daily 03:00 UTC to discover available inference profiles and foundation models; `resolve_model()` routes dynamically instead of using hardcoded prefix lists |
 | Singleton `BedrockClient` | One shared aioboto3 session + connection pool per process |
 | Asyncio semaphore (50) | Back-pressure to match connection pool size; prevents request queuing |
 | JWT for dashboard, API keys for gateway | Separate auth concerns; API keys are long-lived, JWTs are short-lived |
@@ -126,7 +127,7 @@ graph TD
     end
 
     subgraph Service_Layer ["Service Layer"]
-        BedrockSvc["BedrockClient<br/>(singleton, semaphore=50)"]
+        BedrockSvc["BedrockClient<br/>(singleton, semaphore=50,<br/>_ProfileCache)"]
         ReqTranslator["RequestTranslator<br/>(OpenAI -> Bedrock)"]
         ResTranslator["ResponseTranslator<br/>(Bedrock -> OpenAI)"]
         AnthReqTranslator["AnthropicRequestTranslator<br/>(Anthropic -> Bedrock)"]
@@ -172,9 +173,13 @@ Middleware is registered in `create_app()` in `backend/main.py`. FastAPI process
 # backend/main.py
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()                   # Initialize database connection pool
-    BedrockClient.get_instance()      # Create singleton Bedrock client
+    await init_db()                          # Initialize database connection pool
+    # Initialize pricing data if DB is empty (AWS + Gemini)
+    bedrock = BedrockClient.get_instance()   # Create singleton Bedrock client
+    await bedrock.refresh_profile_cache()    # Populate inference profile cache from AWS APIs
+    start_scheduler()                        # APScheduler: pricing @ 02:00/02:30, profile cache @ 03:00 UTC
     yield
+    stop_scheduler()
     # Shutdown: cleanup resources
 ```
 
@@ -850,7 +855,7 @@ For the complete translation pipeline documentation, see **[Request Translation]
 
 ## 8. Pricing Model
 
-Cost is calculated per request based on actual AWS Bedrock pricing for each model. The `ModelPricing` class in `backend/app/services/pricing.py` maintains a pricing table with per-token rates.
+Cost is calculated per request based on actual AWS Bedrock pricing for each model. The `ModelPricing` class in `backend/app/services/pricing.py` fetches per-token rates from the database. Pricing region is determined dynamically via `BedrockClient.resolve_model()`, which uses the inference profile cache to identify the actual region where the model runs.
 
 ### 8.1 Cost Calculation Flow
 

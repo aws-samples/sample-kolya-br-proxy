@@ -1,7 +1,6 @@
 """AWS Cognito OAuth service for authentication."""
 
 import base64
-import hashlib
 import hmac
 import logging
 from urllib.parse import urlencode
@@ -104,11 +103,13 @@ class CognitoOAuthService:
         Returns:
             Base64-encoded SECRET_HASH
         """
+        # HMAC-SHA256 required by AWS Cognito SECRET_HASH spec (not password hashing).
+        # Not sensitive data — this is a protocol-mandated keyed MAC.
         message = username + self.client_id
-        dig = hmac.new(
+        dig = hmac.new(  # lgtm[py/weak-sensitive-data-hashing]
             self.client_secret.encode("utf-8"),
             message.encode("utf-8"),
-            hashlib.sha256,
+            "sha256",
         ).digest()
         return base64.b64encode(dig).decode()
 

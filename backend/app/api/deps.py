@@ -242,6 +242,61 @@ async def get_current_token_from_api_key(
     return token
 
 
+async def get_current_token_from_gemini_key(
+    request: Request,
+    token_service: TokenService = Depends(get_token_service),
+) -> APIToken:
+    """
+    Validate API token from Gemini SDK conventions.
+
+    The Gemini SDK sends the API key via either:
+    - Query parameter ``key`` (e.g. ``?key=TOKEN``)
+    - Header ``x-goog-api-key``
+
+    In the proxy context the "API key" is actually a proxy token.
+
+    Args:
+        request: FastAPI Request object
+        token_service: Token service instance
+
+    Returns:
+        Valid APIToken object
+
+    Raises:
+        HTTPException: If token is invalid or access is denied
+    """
+    # Try query param first, then header
+    plain_token = request.query_params.get("key")
+    if not plain_token:
+        plain_token = request.headers.get("x-goog-api-key")
+
+    if not plain_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key. Provide via ?key= query parameter or x-goog-api-key header.",
+        )
+
+    # Validate (same logic as other auth deps)
+    try:
+        from app.core.redis import get_redis, RedisCache
+        from app.services.token_cache import CachedTokenService
+
+        redis_client = await get_redis()
+        cache = RedisCache(redis_client)
+        cached_service = CachedTokenService(token_service.db, cache)
+        token = await cached_service.validate_token_cached(plain_token=plain_token)
+    except Exception:
+        token = await token_service.validate_token(plain_token=plain_token)
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+        )
+
+    return token
+
+
 async def get_current_user_from_jwt(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     auth_service: AuthService = Depends(get_auth_service),

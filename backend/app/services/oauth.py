@@ -35,8 +35,11 @@ class OAuthService:
         state = secrets.token_urlsafe(32)
 
         # Generate PKCE code_verifier and code_challenge (S256)
+        # SHA-256 is mandated by RFC 7636 §4.2 — not used for password hashing.
         code_verifier = secrets.token_urlsafe(96)  # ~128 chars
-        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        digest = hashlib.sha256(
+            code_verifier.encode("ascii")
+        ).digest()  # CodeQL: false positive — PKCE S256 per RFC 7636
         code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
         # Store in database

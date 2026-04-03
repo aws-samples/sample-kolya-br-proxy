@@ -76,6 +76,7 @@ graph LR
 | 双 API 兼容 | OpenAI 兼容（`/v1/chat/completions`）和 Anthropic Messages API（`/v1/messages`）；客户端只需修改 `base_url` 和 `api_key` |
 | 可配置 API 密钥前缀 | 默认 `kbr_` 前缀；可选 `sk-ant-api03` 前缀以兼容 Claude Code / Anthropic SDK |
 | 剥离历史 thinking blocks | Bedrock 不支持 adaptive 模式的 signature-only thinking blocks，发送前自动从对话历史中移除 |
+| 动态模型路由 | `_ProfileCache` 在启动时 + 每天 UTC 03:00 查询 AWS API，发现可用的 inference profiles 和 foundation models；`resolve_model()` 基于缓存动态路由，替代硬编码前缀列表 |
 | 单例 `BedrockClient` | 每进程一个共享 aioboto3 会话 + 连接池 |
 | 异步信号量 (50) | 反压匹配连接池大小；防止请求排队 |
 | 面板用 JWT，网关用 API 密钥 | 分离认证关注点；API 密钥长期有效，JWT 短期有效 |
@@ -126,7 +127,7 @@ graph TD
     end
 
     subgraph Service_Layer ["Service Layer"]
-        BedrockSvc["BedrockClient<br/>(singleton, semaphore=50)"]
+        BedrockSvc["BedrockClient<br/>(singleton, semaphore=50,<br/>_ProfileCache)"]
         ReqTranslator["RequestTranslator<br/>(OpenAI -> Bedrock)"]
         ResTranslator["ResponseTranslator<br/>(Bedrock -> OpenAI)"]
         AnthReqTranslator["AnthropicRequestTranslator<br/>(Anthropic -> Bedrock)"]
@@ -170,13 +171,17 @@ graph TD
 # backend/main.py
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()                   # 初始化数据库连接池
-    BedrockClient.get_instance()      # 创建 Bedrock 客户端单例
+    await init_db()                          # 初始化数据库连接池
+    # 如果 DB 为空则初始化定价数据（AWS + Gemini）
+    bedrock = BedrockClient.get_instance()   # 创建 Bedrock 客户端单例
+    await bedrock.refresh_profile_cache()    # 从 AWS API 填充 inference profile 缓存
+    start_scheduler()                        # APScheduler：定价 @ 02:00/02:30，profile 缓存 @ 03:00 UTC
     yield
+    stop_scheduler()
     # 关闭：清理资源
 ```
 
-启动时初始化数据库连接池和 Bedrock 客户端单例；关闭时清理资源。
+启动时初始化数据库、定价数据、Bedrock 客户端和 inference profile 缓存；关闭时停止调度器并清理资源。
 
 ---
 
@@ -825,7 +830,7 @@ sequenceDiagram
 
 ## 8. 计费模型
 
-成本按每次请求基于各模型的实际 AWS Bedrock 定价计算。`backend/app/services/pricing.py` 中的 `ModelPricing` 类维护一个按令牌计费的价格表。
+成本按每次请求基于各模型的实际 AWS Bedrock 定价计算。`backend/app/services/pricing.py` 中的 `ModelPricing` 类从数据库获取按令牌计费的价格。定价区域通过 `BedrockClient.resolve_model()` 动态确定，该方法利用 inference profile 缓存识别模型实际运行的区域。
 
 ### 8.1 成本计算流程
 
