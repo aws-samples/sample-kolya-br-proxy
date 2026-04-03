@@ -174,7 +174,7 @@ build_backend() {
     print_info "Context: $SCRIPT_DIR (Dockerfile: backend/Dockerfile)"
     print_info "Target platform: linux/arm64"
 
-    if docker build --network host --platform linux/arm64 -f "$SCRIPT_DIR/backend/Dockerfile" -t "$image_latest" -t "$image_timestamp" "$SCRIPT_DIR" ; then
+    if docker build --no-cache --network host --platform linux/arm64 -f "$SCRIPT_DIR/backend/Dockerfile" -t "$image_latest" -t "$image_timestamp" "$SCRIPT_DIR" ; then
         print_success "Backend image built successfully"
     else
         print_error "Backend image build failed"
@@ -221,7 +221,7 @@ build_frontend() {
 
     cd "$SCRIPT_DIR/frontend"
 
-    if docker build --network host --platform linux/arm64 -t "$image_latest" -t "$image_timestamp" . ; then
+    if docker build --no-cache --network host --platform linux/arm64 -t "$image_latest" -t "$image_timestamp" . ; then
         print_success "Frontend image built successfully"
     else
         print_error "Frontend image build failed"
