@@ -132,7 +132,41 @@
           </q-card-section>
 
           <q-card-section class="q-pa-md bg-grey-10 chat-input">
+            <!-- Image upload preview -->
+            <div v-if="uploadedImages.length > 0" class="row q-gutter-xs q-mb-sm">
+              <div v-for="(img, idx) in uploadedImages" :key="idx" class="upload-preview-wrapper">
+                <img :src="`data:${img.mimeType};base64,${img.base64}`" class="upload-preview" />
+                <q-btn
+                  icon="close"
+                  size="xs"
+                  round
+                  flat
+                  color="white"
+                  class="upload-preview-remove"
+                  @click="uploadedImages.splice(idx, 1)"
+                />
+              </div>
+            </div>
+            <!-- Hidden file input -->
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept="image/*"
+              multiple
+              style="display: none"
+              @change="onFileSelected"
+            />
             <div class="row q-gutter-sm">
+              <q-btn
+                icon="attach_file"
+                color="grey-8"
+                round
+                unelevated
+                @click="fileInputRef?.click()"
+                :disable="loading"
+              >
+                <q-tooltip>Attach image</q-tooltip>
+              </q-btn>
               <q-input
                 v-model="userMessage"
                 outlined
@@ -150,7 +184,7 @@
                 unelevated
                 @click="sendMessage"
                 :loading="loading"
-                :disable="!userMessage"
+                :disable="!userMessage && uploadedImages.length === 0"
               />
             </div>
           </q-card-section>
@@ -190,6 +224,8 @@ const chatMessagesRef = ref<HTMLElement | null>(null);
 const messagesEndRef = ref<HTMLElement | null>(null);
 const typewriterQueue = ref<string>('');
 const isTyping = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const uploadedImages = ref<Array<{ base64: string; mimeType: string; name: string }>>([])
 
 // ---------------------------------------------------------------------------
 // SDK options based on selected model
@@ -197,27 +233,20 @@ const isTyping = ref(false);
 
 const sdkOptions = computed(() => {
   const model = selectedModel.value || '';
+  if (!model) return [];
+  // Gemini SDK protocol only works with Gemini models (direct Google API proxy).
+  // OpenAI & Anthropic protocols work with all models (routed via Bedrock/Gemini on the backend).
   if (model.includes('gemini')) {
     return [
+      { label: 'OpenAI', value: 'openai' },
+      { label: 'Anthropic', value: 'anthropic' },
       { label: 'Gemini SDK', value: 'gemini' },
-      { label: 'Anthropic', value: 'anthropic' },
-      { label: 'OpenAI', value: 'openai' },
     ];
   }
-  if (model.includes('anthropic')) {
-    return [
-      { label: 'Anthropic', value: 'anthropic' },
-      { label: 'OpenAI', value: 'openai' },
-    ];
-  }
-  // Other models (llama, nova, etc.)
-  if (model) {
-    return [
-      { label: 'Anthropic', value: 'anthropic' },
-      { label: 'OpenAI', value: 'openai' },
-    ];
-  }
-  return [];
+  return [
+    { label: 'OpenAI', value: 'openai' },
+    { label: 'Anthropic', value: 'anthropic' },
+  ];
 });
 
 // Auto-set default SDK when model changes
@@ -308,6 +337,35 @@ function clearMessages() {
   selectedModel.value = null;
   temperature.value = 0.7;
   maxTokens.value = 2048;
+  uploadedImages.value = [];
+}
+
+// ---------------------------------------------------------------------------
+// Image upload handling
+// ---------------------------------------------------------------------------
+
+function onFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  if (!input.files?.length) return;
+
+  for (const file of Array.from(input.files)) {
+    if (!file.type.startsWith('image/')) continue;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      // dataUrl format: "data:image/png;base64,iVBOR..."
+      const base64 = dataUrl.split(',')[1] || '';
+      uploadedImages.value.push({
+        base64,
+        mimeType: file.type,
+        name: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // Reset input so the same file can be selected again
+  input.value = '';
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +396,53 @@ function getConversationHistory(): Array<{ role: string; content: string }> {
     .map(m => ({ role: m.role, content: m.content }));
 }
 
+/** Build OpenAI-format messages with image_url support */
+function getOpenAIMessages(): Array<{ role: string; content: string | Array<Record<string, unknown>> }> {
+  return messages.value
+    .slice(0, -1)
+    .filter(m => m.content?.trim() || m.imageUrls?.length)
+    .map(m => {
+      if (m.imageUrls?.length && m.role === 'user') {
+        const parts: Array<Record<string, unknown>> = [];
+        for (const url of m.imageUrls) {
+          parts.push({ type: 'image_url', image_url: { url } });
+        }
+        if (m.content?.trim()) {
+          parts.push({ type: 'text', text: m.content });
+        }
+        return { role: m.role, content: parts };
+      }
+      return { role: m.role, content: m.content };
+    });
+}
+
+/** Build Anthropic-format messages with image source support */
+function getAnthropicMessages(): Array<{ role: string; content: string | Array<Record<string, unknown>> }> {
+  return messages.value
+    .slice(0, -1)
+    .filter(m => m.content?.trim() || m.imageUrls?.length)
+    .map(m => {
+      if (m.imageUrls?.length && m.role === 'user') {
+        const parts: Array<Record<string, unknown>> = [];
+        for (const url of m.imageUrls) {
+          // Extract base64 and media_type from data URL
+          const match = url.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            parts.push({
+              type: 'image',
+              source: { type: 'base64', media_type: match[1], data: match[2] },
+            });
+          }
+        }
+        if (m.content?.trim()) {
+          parts.push({ type: 'text', text: m.content });
+        }
+        return { role: m.role, content: parts };
+      }
+      return { role: m.role, content: m.content };
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Send via OpenAI Compatible (/v1/chat/completions)
 // ---------------------------------------------------------------------------
@@ -355,7 +460,7 @@ async function sendViaOpenAI(plainToken: string, assistantMsgIndex: number) {
     },
     body: JSON.stringify({
       model: selectedModel.value,
-      messages: getConversationHistory(),
+      messages: getOpenAIMessages(),
       stream: useStream,
       ...(temperature.value !== null && { temperature: temperature.value }),
       ...(maxTokens.value !== null && { max_tokens: maxTokens.value }),
@@ -419,11 +524,12 @@ async function sendViaAnthropic(plainToken: string, assistantMsgIndex: number) {
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': plainToken,
+      'X-Requested-With': 'XMLHttpRequest',
       'Cache-Control': 'no-cache',
     },
     body: JSON.stringify({
       model: selectedModel.value,
-      messages: getConversationHistory(),
+      messages: getAnthropicMessages(),
       stream: true,
       max_tokens: maxTokens.value || 2048,
       ...(temperature.value !== null && { temperature: temperature.value }),
@@ -477,10 +583,24 @@ async function sendViaGemini(plainToken: string, assistantMsgIndex: number) {
 
   // Convert conversation to Gemini format
   const history = getConversationHistory();
-  const contents = history.map(m => ({
+  const contents: Array<{ role: string; parts: Array<Record<string, unknown>> }> = history.map(m => ({
     role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
+    parts: [{ text: m.content }] as Array<Record<string, unknown>>,
   }));
+
+  // Build parts for the latest user message (last entry in contents)
+  // Include uploaded images as inlineData
+  if (uploadedImages.value.length > 0 && contents.length > 0) {
+    const lastContent = contents[contents.length - 1]!;
+    const newParts: Array<Record<string, unknown>> = [];
+    // Add images first
+    for (const img of uploadedImages.value) {
+      newParts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
+    }
+    // Add existing text parts
+    newParts.push(...lastContent.parts);
+    lastContent.parts = newParts;
+  }
 
   const body: Record<string, unknown> = { contents };
   const genConfig: Record<string, unknown> = {};
@@ -494,6 +614,7 @@ async function sendViaGemini(plainToken: string, assistantMsgIndex: number) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
       'Cache-Control': 'no-cache',
     },
     body: JSON.stringify(body),
@@ -523,7 +644,7 @@ async function sendViaGemini(plainToken: string, assistantMsgIndex: number) {
       if (!line.startsWith('data: ')) continue;
       try {
         const parsed = JSON.parse(line.slice(6)) as Record<string, unknown>;
-        // Gemini SSE: candidates[0].content.parts[0].text
+        // Gemini SSE: candidates[0].content.parts[].text or .inlineData
         const candidates = parsed.candidates as Array<Record<string, unknown>> | undefined;
         if (!candidates?.length) continue;
         const firstCandidate = candidates[0];
@@ -532,9 +653,22 @@ async function sendViaGemini(plainToken: string, assistantMsgIndex: number) {
         const parts = content?.parts as Array<Record<string, unknown>> | undefined;
         if (!parts?.length) continue;
         for (const part of parts) {
+          // Text content
           if (typeof part.text === 'string' && part.text) {
             typewriterQueue.value += part.text;
             if (!isTyping.value) startTypewriter(assistantMsgIndex);
+          }
+          // Image content (inlineData from Gemini image generation)
+          const inlineData = part.inlineData as Record<string, string> | undefined;
+          if (inlineData?.mimeType && inlineData?.data) {
+            const dataUrl = `data:${inlineData.mimeType};base64,${inlineData.data}`;
+            const currentMsg = messages.value[assistantMsgIndex];
+            if (currentMsg) {
+              if (!currentMsg.imageUrls) currentMsg.imageUrls = [];
+              currentMsg.imageUrls.push(dataUrl);
+              messages.value = [...messages.value];
+              void scrollToBottom();
+            }
           }
         }
       } catch { /* ignore parse errors */ }
@@ -547,7 +681,9 @@ async function sendViaGemini(plainToken: string, assistantMsgIndex: number) {
 // ---------------------------------------------------------------------------
 
 async function sendMessage() {
-  if (!userMessage.value.trim()) return;
+  const hasText = userMessage.value.trim().length > 0;
+  const hasImages = uploadedImages.value.length > 0;
+  if (!hasText && !hasImages) return;
 
   if (!selectedToken.value) {
     Notify.create({ type: 'warning', message: 'Please select API Key first', position: 'top' });
@@ -558,9 +694,16 @@ async function sendMessage() {
     return;
   }
 
-  const userMsg: Message = { role: 'user', content: userMessage.value };
+  // Build user message with optional image previews
+  const userImageUrls = uploadedImages.value.map(img => `data:${img.mimeType};base64,${img.base64}`);
+  const userMsg: Message = {
+    role: 'user',
+    content: userMessage.value,
+    ...(userImageUrls.length > 0 && { imageUrls: userImageUrls }),
+  };
   messages.value.push(userMsg);
   const currentMessage = userMessage.value;
+  const currentImages = [...uploadedImages.value];
   userMessage.value = '';
   loading.value = true;
   void scrollToBottom();
@@ -585,6 +728,8 @@ async function sendMessage() {
         await sendViaOpenAI(plainToken, assistantMsgIndex);
         break;
     }
+    // Clear uploaded images on success
+    uploadedImages.value = [];
   } catch (error) {
     Notify.create({
       type: 'negative',
@@ -593,6 +738,7 @@ async function sendMessage() {
     });
     messages.value = messages.value.slice(0, -2);
     userMessage.value = currentMessage;
+    uploadedImages.value = currentImages;
   } finally {
     loading.value = false;
   }
@@ -617,6 +763,28 @@ async function sendMessage() {
   border-radius: 8px;
   display: block;
   margin-top: 8px;
+}
+
+.upload-preview-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.upload-preview {
+  width: 60px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.upload-preview-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: rgba(0, 0, 0, 0.7) !important;
+  width: 20px;
+  height: 20px;
 }
 
 :deep(.no-spinners) {

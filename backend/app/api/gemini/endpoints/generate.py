@@ -39,6 +39,7 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 # Helper: extract model name from path param
 # ---------------------------------------------------------------------------
 
+
 def _normalize_model(model_path: str) -> str:
     """Extract clean model name from the path parameter.
 
@@ -53,6 +54,7 @@ def _normalize_model(model_path: str) -> str:
 # Helper: validate token access (quota + model permission)
 # ---------------------------------------------------------------------------
 
+
 async def _validate_access(
     token: APIToken,
     model_name: str,
@@ -61,9 +63,7 @@ async def _validate_access(
     """Check quota and model permission.  Raises HTTPException on failure."""
     # Quota check
     result = await db.execute(
-        select(func.sum(UsageRecord.cost_usd)).where(
-            UsageRecord.token_id == token.id
-        )
+        select(func.sum(UsageRecord.cost_usd)).where(UsageRecord.token_id == token.id)
     )
     total_used = result.scalar() or Decimal("0.00")
     token.calculate_used_usd(total_used)
@@ -86,7 +86,9 @@ async def _validate_access(
     allowed = [m.model_name for m in token_models]
 
     if not allowed:
-        raise HTTPException(status_code=403, detail="Token does not have access to any models")
+        raise HTTPException(
+            status_code=403, detail="Token does not have access to any models"
+        )
 
     if model_name not in allowed:
         raise HTTPException(
@@ -98,6 +100,7 @@ async def _validate_access(
 # ---------------------------------------------------------------------------
 # Helper: record usage (background)
 # ---------------------------------------------------------------------------
+
 
 async def _record_usage(
     token: APIToken,
@@ -155,6 +158,7 @@ async def _record_usage(
 # POST /v1beta/models/{model}:generateContent
 # ---------------------------------------------------------------------------
 
+
 @router.api_route(
     "/models/{model_path:path}:generateContent",
     methods=["POST"],
@@ -188,7 +192,9 @@ async def generate_content(
 
     # Read raw body and forward
     raw_body = await request.body()
-    url = f"{GEMINI_BASE_URL}/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
+    url = (
+        f"{GEMINI_BASE_URL}/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
+    )
 
     try:
         async with httpx.AsyncClient(timeout=3600) as client:
@@ -242,6 +248,7 @@ async def generate_content(
 # ---------------------------------------------------------------------------
 # POST /v1beta/models/{model}:streamGenerateContent
 # ---------------------------------------------------------------------------
+
 
 @router.api_route(
     "/models/{model_path:path}:streamGenerateContent",
