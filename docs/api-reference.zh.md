@@ -655,7 +655,16 @@ Authorization: Bearer <jwt_access_token>
 
 #### GET /admin/models/aws-available
 
-列出 AWS Bedrock 可用模型。结果缓存 12 小时。
+列出代理在当前部署区域实际可调用的模型。响应基于 **inference profile 缓存**（`_ProfileCache`）构建，该缓存在启动时填充，并在每天 UTC 03:00 通过 AWS API 刷新。
+
+列表包括：
+- **Inference profiles** — 部署区域可用的推理配置（如 `us.anthropic.claude-sonnet-4-6`、`global.anthropic.claude-sonnet-4-5-20250929-v1:0`）
+- **Foundation models** — 仅在 fallback 区域可用的基础模型（如 `zai.glm-5`、`deepseek.v3.2`）— 标记为 `is_fallback: true`
+- **Gemini 模型**（如果配置了 `GEMINI_API_KEY`）— 动态追加
+
+仅显示从部署区域实际可调用的模型。例如，如果部署在 `us-west-1`，而 `global.anthropic.claude-sonnet-4-20250514-v1:0` 在该区域不可用，则不会出现在列表中。
+
+结果在内存中缓存 12 小时。
 
 **响应**：
 
@@ -663,11 +672,24 @@ Authorization: Bearer <jwt_access_token>
 {
   "models": [
     {
-      "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-      "model_name": "Claude 4.5 Sonnet",
-      "friendly_name": "claude-sonnet-4-5",
-      "provider": "bedrock",
-      "streaming_supported": true
+      "model_id": "us.anthropic.claude-sonnet-4-6",
+      "model_name": "anthropic.claude-sonnet-4-6",
+      "friendly_name": "anthropic.claude-sonnet-4-6",
+      "provider": "bedrock-converse",
+      "is_cross_region": true,
+      "cross_region_type": "us",
+      "streaming_supported": true,
+      "is_fallback": false
+    },
+    {
+      "model_id": "zai.glm-5",
+      "model_name": "zai.glm-5",
+      "friendly_name": "zai.glm-5",
+      "provider": "bedrock-converse",
+      "is_cross_region": false,
+      "cross_region_type": null,
+      "streaming_supported": true,
+      "is_fallback": true
     }
   ]
 }

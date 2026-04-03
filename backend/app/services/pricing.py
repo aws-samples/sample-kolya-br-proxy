@@ -77,9 +77,11 @@ class ModelPricing:
             if is_gemini_model(model):
                 region = "global"
             else:
-                from app.core.config import get_settings
+                from app.services.bedrock import BedrockClient
 
-                region = get_settings().AWS_REGION
+                # Use resolve_model to determine the actual region where
+                # the model runs — matches the routing in bedrock.py.
+                _, region = BedrockClient.get_instance().resolve_model(model)
 
         # Determine cache write multiplier (Bedrock only)
         write_multiplier = self.CACHE_WRITE_MULTIPLIER.get(

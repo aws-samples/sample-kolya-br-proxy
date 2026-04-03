@@ -31,6 +31,20 @@ async def update_pricing_task():
             logger.error(f"AWS pricing update task failed: {e}", exc_info=True)
 
 
+async def refresh_profile_cache_task():
+    """Background task to refresh the Bedrock inference profile cache."""
+    logger.info("Starting profile cache refresh task...")
+
+    try:
+        from app.services.bedrock import BedrockClient
+
+        bc = BedrockClient.get_instance()
+        await bc.refresh_profile_cache()
+        logger.info("Profile cache refresh completed")
+    except Exception as e:
+        logger.error(f"Profile cache refresh task failed: {e}", exc_info=True)
+
+
 async def update_gemini_pricing_task():
     """Background task to update Google Gemini model pricing."""
     logger.info("Starting Gemini pricing update task...")
@@ -57,6 +71,16 @@ def start_scheduler():
 
     scheduler = AsyncIOScheduler()
 
+    # Profile cache MUST refresh BEFORE pricing updates so the filter
+    # can correctly identify which cross-region profiles are available.
+    scheduler.add_job(
+        refresh_profile_cache_task,
+        trigger=CronTrigger(hour=1, minute=50),
+        id="refresh_profile_cache",
+        name="Refresh Bedrock inference profile cache",
+        replace_existing=True,
+    )
+
     # Schedule AWS pricing update daily at 2:00 AM UTC
     scheduler.add_job(
         update_pricing_task,
@@ -76,7 +100,9 @@ def start_scheduler():
     )
 
     scheduler.start()
-    logger.info("Pricing update scheduler started (AWS: 2:00 UTC, Gemini: 2:30 UTC)")
+    logger.info(
+        "Scheduler started (profile cache: 1:50, AWS pricing: 2:00, Gemini: 2:30 UTC)"
+    )
 
 
 def stop_scheduler():

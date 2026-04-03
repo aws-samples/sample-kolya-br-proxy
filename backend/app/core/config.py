@@ -154,14 +154,15 @@ class Settings(BaseSettings):
 
     # Uvicorn server settings
     UVICORN_TIMEOUT_KEEP_ALIVE: int = Field(
-        default=120, description="Keep-alive timeout for streaming responses (seconds)"
+        default=3700,
+        description="Keep-alive timeout (seconds). Must be > ALB idle_timeout (3600s).",
     )
     UVICORN_LIMIT_CONCURRENCY: int = Field(
         default=100, description="Maximum concurrent connections per worker"
     )
     UVICORN_LIMIT_MAX_REQUESTS: int = Field(
-        default=10000,
-        description="Max requests before worker restart (prevent memory leaks)",
+        default=0,
+        description="Max requests before worker restart (0=disabled). Set >0 only if memory leaks are observed.",
     )
 
     # Streaming settings
