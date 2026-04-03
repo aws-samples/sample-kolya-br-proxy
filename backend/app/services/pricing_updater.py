@@ -62,6 +62,9 @@ class PricingUpdater:
         # This auto-discovers new models so the static mapping table stays minimal
         PricingUpdater._dynamic_mapping_cache = self._build_dynamic_mapping()
 
+        # Track all base model IDs that already have pricing (from any source)
+        found_model_ids: Set[str] = set()
+
         # 1. Fetch from AWS Price List API (primary — all models)
         api_model_ids: Set[str] = set()
         try:
@@ -73,7 +76,9 @@ class PricingUpdater:
                 stats["sources"].append("api")
                 # Collect base model IDs found in API (without geo prefixes)
                 for d in api_pricing_data:
-                    api_model_ids.add(self._strip_prefix(d["model_id"]))
+                    base_id = self._strip_prefix(d["model_id"])
+                    api_model_ids.add(base_id)
+                    found_model_ids.add(base_id)
                 logger.info(
                     f"Updated {api_count} pricing records from AWS Price List API"
                 )
@@ -105,6 +110,8 @@ class PricingUpdater:
                     stats["scraper_count"] = scraper_count
                     stats["updated"] += scraper_count
                     stats["sources"].append("aws-scraper")
+                    for d in new_scraped:
+                        found_model_ids.add(self._strip_prefix(d["model_id"]))
                     logger.info(
                         f"Updated {scraper_count} pricing records from AWS scraper"
                     )
@@ -112,7 +119,23 @@ class PricingUpdater:
             logger.warning(f"Failed to scrape AWS pricing page: {e}")
             stats["failed"] += 1
 
-        # 3. Clean up stale cross-region pricing entries
+        # 3. Back-fill pricing from us-east-1 for models available locally
+        #    but missing from the target region's Price List data (e.g. GLM on
+        #    us-west-1 where AWS hasn't published regional pricing yet).
+        try:
+            backfill_count = await self._backfill_from_reference_region(
+                found_model_ids,
+            )
+            if backfill_count:
+                stats["updated"] += backfill_count
+                stats["sources"].append("backfill-us-east-1")
+                logger.info(
+                    f"Back-filled {backfill_count} pricing records from us-east-1"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to back-fill pricing from us-east-1: {e}")
+
+        # 4. Clean up stale cross-region pricing entries
         await self.cleanup_stale_cross_region_entries()
 
         # Set source summary
@@ -173,6 +196,128 @@ class PricingUpdater:
         except Exception as e:
             logger.debug(f"Could not clean stale cross-region pricing entries: {e}")
             return 0
+
+    # Regions to try (in order) when back-filling missing pricing.
+    _BACKFILL_REGIONS = ["us-east-1", "us-west-2"]
+
+    async def _backfill_from_reference_region(self, already_found: Set[str]) -> int:
+        """Back-fill pricing from a reference region for locally-available models.
+
+        Some models (e.g. GLM on us-west-1) are invocable via Bedrock in the
+        configured region but have no pricing entry in that region's Price List
+        data yet.  For those models we fetch the price from a reference region
+        (us-east-1, then us-west-2) and store it under the configured region so
+        cost calculation works.
+
+        Args:
+            already_found: Base model IDs already saved from the primary fetch.
+
+        Returns:
+            Number of back-filled records.
+        """
+        settings = get_settings()
+        target_region = settings.AWS_REGION
+
+        # Determine which locally-available models are still missing pricing
+        import boto3
+
+        bedrock = boto3.client("bedrock", region_name=target_region)
+        resp = bedrock.list_foundation_models()
+        local_model_ids = {
+            m["modelId"] for m in resp.get("modelSummaries", []) if m.get("modelId")
+        }
+        missing = local_model_ids - already_found
+        if not missing:
+            return 0
+
+        logger.info(
+            f"Back-fill: {len(missing)} locally-available models missing pricing, "
+            f"checking reference regions {self._BACKFILL_REGIONS}"
+        )
+
+        # Fetch the full Price List index once (already cached by httpx if warm)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{self.PRICE_LIST_API_URL}/offers/v1.0/aws/AmazonBedrock/current/index.json"
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        products = data.get("products", {})
+        terms = data.get("terms", {})
+
+        backfill_data: List[Dict] = []
+        filled: Set[str] = set()
+
+        for ref_region in self._BACKFILL_REGIONS:
+            if ref_region == target_region:
+                continue
+            for product_id, product in products.items():
+                attrs = product.get("attributes", {})
+                if attrs.get("regionCode") != ref_region:
+                    continue
+                if attrs.get("feature") != "On-demand Inference":
+                    continue
+
+                model_name = attrs.get("model", "")
+                inference_type = attrs.get("inferenceType", "")
+                model_id = self._map_model_name_to_id(model_name)
+                if not model_id or model_id not in missing or model_id in filled:
+                    continue
+
+                # We need both input and output — collect pair
+                if inference_type not in ("Input tokens", "Output tokens"):
+                    continue
+
+                # Find the complementary product
+                complement_type = (
+                    "Output tokens"
+                    if inference_type == "Input tokens"
+                    else "Input tokens"
+                )
+                complement_id = None
+                for pid2, p2 in products.items():
+                    a2 = p2.get("attributes", {})
+                    if (
+                        a2.get("regionCode") == ref_region
+                        and a2.get("model") == model_name
+                        and a2.get("inferenceType") == complement_type
+                        and a2.get("feature") == "On-demand Inference"
+                    ):
+                        complement_id = pid2
+                        break
+
+                if not complement_id:
+                    continue
+
+                if inference_type == "Input tokens":
+                    input_id, output_id = product_id, complement_id
+                else:
+                    input_id, output_id = complement_id, product_id
+
+                input_price = self._extract_price_from_terms(terms, input_id)
+                output_price = self._extract_price_from_terms(terms, output_id)
+
+                if input_price is not None and output_price is not None:
+                    backfill_data.append(
+                        {
+                            "model_id": model_id,
+                            "region": target_region,
+                            "input_price_per_token": input_price,
+                            "output_price_per_token": output_price,
+                        }
+                    )
+                    filled.add(model_id)
+                    logger.info(f"Back-filled pricing for {model_id} from {ref_region}")
+
+            # Stop trying more reference regions if nothing is missing
+            missing -= filled
+            if not missing:
+                break
+
+        if backfill_data:
+            return await self._save_pricing_data(backfill_data, "backfill")
+        return 0
 
     def _extract_price_from_terms(
         self, terms: dict, product_id: str
