@@ -86,6 +86,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # entries that are not in the profile cache (e.g. after a code
             # update that fixes filtering logic).
             await updater.cleanup_stale_cross_region_entries()
+            # Back-fill pricing for locally-available models that are
+            # missing from the DB (e.g. new models not yet in the region's
+            # Price List data).  Collects existing model IDs first.
+            try:
+                _settings = get_settings()
+                existing = await db.execute(
+                    select(ModelPricing.model_id).where(
+                        ModelPricing.region == _settings.AWS_REGION
+                    )
+                )
+                found_ids = {row[0] for row in existing.fetchall()}
+                backfill_count = await updater._backfill_from_reference_region(
+                    found_ids
+                )
+                if backfill_count:
+                    logger.info(
+                        f"Back-filled {backfill_count} pricing records on startup"
+                    )
+            except Exception as e:
+                logger.warning(f"Startup pricing back-fill failed: {e}")
 
     # Initialize Gemini pricing (scrapes public pricing page, no API key needed)
     async with async_session_maker() as db:
