@@ -87,16 +87,24 @@ def hash_token(token: str) -> str:
     """
     Hash an API token for secure storage and fast lookup.
 
-    Uses SHA256 for deterministic hashing (same input = same output).
-    This allows us to query by hash efficiently with database indexes.
+    Uses HMAC-SHA256 keyed with the JWT secret for deterministic hashing
+    (same input = same output). This allows efficient indexed DB lookups
+    while preventing offline rainbow-table attacks.
+
+    Note: API tokens are high-entropy (secrets.token_urlsafe(32)), so
+    a computationally expensive hash (bcrypt) is not required.
 
     Args:
         token: Plain API token
 
     Returns:
-        SHA256 hash of token (hex string)
+        HMAC-SHA256 hash of token (hex string)
     """
-    return hashlib.sha256(token.encode()).hexdigest()
+    import hmac
+
+    return hmac.new(
+        settings.JWT_SECRET_KEY.encode(), token.encode(), hashlib.sha256
+    ).hexdigest()
 
 
 def verify_token(plain_token: str, hashed_token: str) -> bool:
@@ -254,15 +262,20 @@ def hash_refresh_token(token: str) -> str:
     """
     Hash a refresh token for secure storage.
 
-    Uses SHA256 for deterministic hashing to allow efficient lookup.
+    Uses HMAC-SHA256 keyed with the JWT secret for deterministic hashing
+    to allow efficient lookup while preventing offline attacks.
 
     Args:
         token: Plain refresh token (JWT string)
 
     Returns:
-        SHA256 hash of token (hex string)
+        HMAC-SHA256 hash of token (hex string)
     """
-    return hashlib.sha256(token.encode()).hexdigest()
+    import hmac
+
+    return hmac.new(
+        settings.JWT_SECRET_KEY.encode(), token.encode(), hashlib.sha256
+    ).hexdigest()
 
 
 def generate_token_family_id() -> UUID:
