@@ -54,6 +54,11 @@
     "vaul": "^1.1.2",
     "zod": "^4.3.6"
   },
+  "pnpm": {
+    "overrides": {
+      "flatted": ">=3.4.2"
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@parcel/config-default": "^2.16.4",
