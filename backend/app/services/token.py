@@ -3,10 +3,13 @@ Token management service for API token operations.
 Handles token creation, validation, and access control.
 """
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
