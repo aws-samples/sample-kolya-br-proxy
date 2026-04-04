@@ -243,6 +243,7 @@ class PricingUpdater:
         # (e.g. GLM stored under us-west-1 but should be under us-west-2).
         try:
             from app.services.bedrock import BedrockClient
+
             bc = BedrockClient.get_instance()
             for mid in already_found & all_model_ids:
                 _, actual_region = bc.resolve_model(mid)
@@ -328,7 +329,10 @@ class PricingUpdater:
                     # for GLM models) so pricing aligns with cost calculation.
                     try:
                         from app.services.bedrock import BedrockClient
-                        _, actual_region = BedrockClient.get_instance().resolve_model(model_id)
+
+                        _, actual_region = BedrockClient.get_instance().resolve_model(
+                            model_id
+                        )
                     except Exception:
                         actual_region = target_region
 
