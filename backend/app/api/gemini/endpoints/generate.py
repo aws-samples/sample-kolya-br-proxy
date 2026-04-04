@@ -206,7 +206,7 @@ async def generate_content(
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Upstream Gemini API timed out")
     except httpx.ConnectError as e:
-        raise HTTPException(status_code=502, detail=f"Cannot reach Gemini API: {e}")
+        raise HTTPException(status_code=502, detail="Cannot reach Gemini API")
 
     # Forward error responses as-is
     if resp.status_code != 200:
@@ -363,7 +363,7 @@ async def _stream_proxy(
             f"request_id={request_id}, error={e}",
             exc_info=True,
         )
-        yield f'data: {{"error": {{"message": "{str(e)[:200]}"}}}}\n\n'
+        yield 'data: {"error": {"message": "Internal server error"}}\n\n'
 
     # Record usage
     background_tasks.create_task(

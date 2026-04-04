@@ -201,7 +201,7 @@ async def create_message(
             extra={"request_id": request_id, "error": str(e)},
             exc_info=True,
         )
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Invalid request")
     except Exception as e:
         logger.error(
             f"Anthropic messages failed: model={request_data.model}, request_id={request_id}, error={e}",
@@ -322,7 +322,7 @@ async def stream_anthropic_messages(
 
         error_data = {
             "type": "error",
-            "error": {"type": "server_error", "message": str(e)},
+            "error": {"type": "server_error", "message": "Internal server error"},
         }
         yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
 
@@ -482,7 +482,7 @@ async def _handle_gemini_via_anthropic(
     except httpx.HTTPStatusError as e:
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"Gemini API error: {str(e)[:200]}",
+            detail=f"Gemini API error: status {e.response.status_code}",
         )
 
     # Convert OpenAI-format response to Anthropic format
@@ -637,7 +637,7 @@ async def _stream_gemini_as_anthropic(
         )
         yield (
             "event: error\n"
-            f"data: {_json.dumps({'type': 'error', 'error': {'type': 'server_error', 'message': str(e)}})}\n\n"
+            f"data: {_json.dumps({'type': 'error', 'error': {'type': 'server_error', 'message': 'Internal server error'}})}\n\n"
         )
 
     # Record usage
