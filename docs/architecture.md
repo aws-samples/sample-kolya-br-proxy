@@ -658,8 +658,9 @@ sequenceDiagram
 
     Chat->>DB: SELECT models WHERE token_id = ?<br/>AND is_active AND NOT is_deleted
     DB-->>Chat: Allowed model names
-    Chat->>Chat: Check request.model in allowed_models
-    Note over Chat: 403 if model not allowed
+    Chat->>Chat: Normalize request.model + allowed_models<br/>(strip geo prefix + version suffix)
+    Chat->>Chat: Check normalized model in normalized allowed set
+    Note over Chat: 403 if model not allowed<br/>On match: replace request.model with Bedrock ID from DB
 
     Chat->>Translator: RequestTranslator.openai_to_bedrock(request)
     Translator-->>Chat: BedrockRequest
@@ -809,7 +810,7 @@ sequenceDiagram
     DB-->>TokenSvc: APIToken
     TokenSvc-->>Msg: Validated APIToken
 
-    Msg->>Msg: Quota check + model access check
+    Msg->>Msg: Quota check + model access check<br/>(normalizes Anthropic short names to Bedrock IDs)
 
     Msg->>Translator: to_bedrock_with_passthrough(request)
     Note over Translator: Near 1:1 mapping,<br/>preserves cache_control
