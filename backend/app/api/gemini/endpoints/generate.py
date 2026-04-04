@@ -205,7 +205,7 @@ async def generate_content(
             )
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Upstream Gemini API timed out")
-    except httpx.ConnectError as e:
+    except httpx.ConnectError:
         raise HTTPException(status_code=502, detail="Cannot reach Gemini API")
 
     # Forward error responses as-is
