@@ -9,8 +9,6 @@ from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
 
-logger = logging.getLogger(__name__)
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +19,8 @@ from app.core.security import (
     decrypt_token,
 )
 from app.models.token import APIToken
+
+logger = logging.getLogger(__name__)
 
 
 class TokenService:
