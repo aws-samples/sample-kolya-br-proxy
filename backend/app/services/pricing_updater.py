@@ -119,9 +119,9 @@ class PricingUpdater:
             logger.warning(f"Failed to scrape AWS pricing page: {e}")
             stats["failed"] += 1
 
-        # 3. Back-fill pricing from us-east-1 for models available locally
-        #    but missing from the target region's Price List data (e.g. GLM on
-        #    us-west-1 where AWS hasn't published regional pricing yet).
+        # 3. Back-fill pricing from reference regions for models available
+        #    via the fallback region (e.g. GLM routed to us-west-2) but
+        #    missing from the configured region's Price List data.
         try:
             backfill_count = await self._backfill_from_reference_region(
                 found_model_ids,
@@ -203,11 +203,12 @@ class PricingUpdater:
     async def _backfill_from_reference_region(self, already_found: Set[str]) -> int:
         """Back-fill pricing from a reference region for locally-available models.
 
-        Some models (e.g. GLM on us-west-1) are invocable via Bedrock in the
-        configured region but have no pricing entry in that region's Price List
-        data yet.  For those models we fetch the price from a reference region
-        (us-east-1, then us-west-2) and store it under the configured region so
-        cost calculation works.
+        Some models (e.g. GLM routed to the us-west-2 fallback) are invocable
+        via Bedrock but have no pricing entry in the configured region's Price
+        List data.  For those models we fetch the price from a reference region
+        (us-east-1, then us-west-2) and store it under the model's actual
+        routing region (determined by BedrockClient.resolve_model) so cost
+        calculation and display are correct.
 
         Args:
             already_found: Base model IDs already saved from the primary fetch.
@@ -237,6 +238,20 @@ class PricingUpdater:
                 logger.debug(f"Could not list models from {region}: {e}")
 
         missing = all_model_ids - already_found
+
+        # Also re-check models whose pricing is stored under the wrong region
+        # (e.g. GLM stored under us-west-1 but should be under us-west-2).
+        try:
+            from app.services.bedrock import BedrockClient
+            bc = BedrockClient.get_instance()
+            for mid in already_found & all_model_ids:
+                _, actual_region = bc.resolve_model(mid)
+                if actual_region != target_region:
+                    # Model routes to a different region — needs re-backfill
+                    missing.add(mid)
+        except Exception as e:
+            logger.debug(f"Could not check routing regions: {e}")
+
         if not missing:
             return 0
 
@@ -309,16 +324,43 @@ class PricingUpdater:
                 output_price = self._extract_price_from_terms(terms, output_id)
 
                 if input_price is not None and output_price is not None:
+                    # Use the model's actual routing region (e.g. us-west-2
+                    # for GLM models) so pricing aligns with cost calculation.
+                    try:
+                        from app.services.bedrock import BedrockClient
+                        _, actual_region = BedrockClient.get_instance().resolve_model(model_id)
+                    except Exception:
+                        actual_region = target_region
+
+                    # Clean up stale entry under wrong region if needed
+                    if actual_region != target_region:
+                        stale = await self.db.execute(
+                            select(ModelPricing).where(
+                                ModelPricing.model_id == model_id,
+                                ModelPricing.region == target_region,
+                            )
+                        )
+                        stale_rec = stale.scalar_one_or_none()
+                        if stale_rec:
+                            await self.db.delete(stale_rec)
+                            logger.info(
+                                f"Removed stale pricing for {model_id} "
+                                f"under wrong region {target_region}"
+                            )
+
                     backfill_data.append(
                         {
                             "model_id": model_id,
-                            "region": target_region,
+                            "region": actual_region,
                             "input_price_per_token": input_price,
                             "output_price_per_token": output_price,
                         }
                     )
                     filled.add(model_id)
-                    logger.info(f"Back-filled pricing for {model_id} from {ref_region}")
+                    logger.info(
+                        f"Back-filled pricing for {model_id} from {ref_region} "
+                        f"(routing region: {actual_region})"
+                    )
 
             # Stop trying more reference regions if nothing is missing
             missing -= filled

@@ -168,14 +168,19 @@ class TokenService:
         token = result.scalar_one_or_none()
 
         if not token:
+            logger.warning(
+                f"Token validation failed: no active token found for hash {token_hash[:8]}..."
+            )
             return None
 
         # Check expiration
         if token.is_expired:
+            logger.warning(f"Token {token.id} rejected: expired at {token.expires_at}")
             return None
 
         # Check quota
         if token.is_quota_exceeded:
+            logger.warning(f"Token {token.id} rejected: quota exceeded")
             return None
 
         # Check IP restrictions
