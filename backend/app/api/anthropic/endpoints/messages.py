@@ -93,9 +93,16 @@ async def create_message(
 
         def _normalize_model(name: str) -> str:
             import re
-            for prefix in ("global.anthropic.", "us.anthropic.", "eu.anthropic.", "ap.anthropic.", "anthropic."):
+
+            for prefix in (
+                "global.anthropic.",
+                "us.anthropic.",
+                "eu.anthropic.",
+                "ap.anthropic.",
+                "anthropic.",
+            ):
                 if name.startswith(prefix):
-                    name = name[len(prefix):]
+                    name = name[len(prefix) :]
                     break
             return re.sub(r"-v\d+(?::\d+)?$", "", name)
 
@@ -109,7 +116,14 @@ async def create_message(
             )
 
         # Resolve to the Bedrock model name stored in DB (in case client sent a short Anthropic name)
-        matched = next((m for m in allowed_model_names if _normalize_model(m) == normalized_requested), None)
+        matched = next(
+            (
+                m
+                for m in allowed_model_names
+                if _normalize_model(m) == normalized_requested
+            ),
+            None,
+        )
         if matched and matched != request_data.model:
             request_data.model = matched
 
