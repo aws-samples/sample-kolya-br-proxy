@@ -94,22 +94,16 @@ def hash_token(token: str) -> str:
     """
     Hash an API token for secure storage and fast lookup.
 
-    Uses PBKDF2-HMAC-SHA256 for deterministic hashing (same input = same
-    output). This satisfies CodeQL's requirement for computationally
-    expensive hashing while allowing efficient indexed DB lookups.
+    Uses SHA256 for deterministic hashing (same input = same output).
+    This allows us to query by hash efficiently with database indexes.
 
     Args:
         token: Plain API token
 
     Returns:
-        PBKDF2 hash of token (hex string)
+        SHA256 hash of token (hex string)
     """
-    return hashlib.pbkdf2_hmac(
-        "sha256",
-        token.encode(),
-        settings.JWT_SECRET_KEY.encode(),
-        iterations=1,
-    ).hex()
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def verify_token(plain_token: str, hashed_token: str) -> bool:

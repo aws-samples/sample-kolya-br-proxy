@@ -91,11 +91,41 @@ async def create_message(
                 detail="Token does not have access to any models",
             )
 
-        if request_data.model not in allowed_model_names:
+        def _normalize_model(name: str) -> str:
+            import re
+
+            for prefix in (
+                "global.anthropic.",
+                "us.anthropic.",
+                "eu.anthropic.",
+                "ap.anthropic.",
+                "anthropic.",
+            ):
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+                    break
+            return re.sub(r"-v\d+(?::\d+)?$", "", name)
+
+        normalized_requested = _normalize_model(request_data.model)
+        normalized_allowed = {_normalize_model(m) for m in allowed_model_names}
+
+        if normalized_requested not in normalized_allowed:
             raise HTTPException(
                 status_code=403,
                 detail=f"Token does not have access to model: {request_data.model}. Allowed models: {allowed_model_names}",
             )
+
+        # Resolve to the Bedrock model name stored in DB (in case client sent a short Anthropic name)
+        matched = next(
+            (
+                m
+                for m in allowed_model_names
+                if _normalize_model(m) == normalized_requested
+            ),
+            None,
+        )
+        if matched and matched != request_data.model:
+            request_data.model = matched
 
         # Route Gemini models to Google API
         if _is_gemini_model(request_data.model):

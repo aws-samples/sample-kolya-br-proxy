@@ -222,7 +222,7 @@ Create a message. Accepts Anthropic Messages API format requests and proxies the
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | string | *required* | Bedrock model ID (e.g. `global.anthropic.claude-sonnet-4-5-20250929-v1:0`) |
+| `model` | string | *required* | Bedrock model ID **or** Anthropic short name (e.g. `global.anthropic.claude-sonnet-4-5-20250929-v1:0` or `claude-sonnet-4-5-20250929`). The proxy normalizes both formats for access control and routes using the Bedrock ID. |
 | `messages` | array | *required* | Array of message objects (role: `user` or `assistant`) |
 | `max_tokens` | integer | *required* | Maximum tokens to generate |
 | `system` | string \| array | null | System prompt (string or array of content blocks with optional `cache_control`) |

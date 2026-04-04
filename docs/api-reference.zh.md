@@ -222,7 +222,7 @@ x-api-key: kbr_<your_token>
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `model` | string | *必填* | Bedrock 模型 ID（如 `global.anthropic.claude-sonnet-4-5-20250929-v1:0`） |
+| `model` | string | *必填* | Bedrock 模型 ID **或** Anthropic 短格式名称（如 `global.anthropic.claude-sonnet-4-5-20250929-v1:0` 或 `claude-sonnet-4-5-20250929`）。代理会自动归一化两种格式进行权限校验，并以 Bedrock ID 路由请求。 |
 | `messages` | array | *必填* | 消息对象数组（role: `user` 或 `assistant`） |
 | `max_tokens` | integer | *必填* | 最大生成 token 数 |
 | `system` | string \| array | null | 系统提示（字符串或含可选 `cache_control` 的内容块数组） |

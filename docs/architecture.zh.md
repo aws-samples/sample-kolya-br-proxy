@@ -658,8 +658,9 @@ sequenceDiagram
 
     Chat->>DB: SELECT models WHERE token_id = ?<br/>AND is_active AND NOT is_deleted
     DB-->>Chat: Allowed model names
-    Chat->>Chat: Check request.model in allowed_models
-    Note over Chat: 403 if model not allowed
+    Chat->>Chat: Normalize request.model + allowed_models<br/>（去除 geo 前缀和版本后缀）
+    Chat->>Chat: 检查归一化后的模型名是否在允许集合中
+    Note over Chat: 403 if model not allowed<br/>匹配后：将 request.model 替换为 DB 中的 Bedrock ID
 
     Chat->>Translator: RequestTranslator.openai_to_bedrock(request)
     Translator-->>Chat: BedrockRequest
@@ -779,7 +780,7 @@ sequenceDiagram
     DB-->>TokenSvc: APIToken
     TokenSvc-->>Msg: Validated APIToken
 
-    Msg->>Msg: 配额检查 + 模型访问检查
+    Msg->>Msg: 配额检查 + 模型访问检查<br/>（支持 Anthropic 短格式名称自动映射到 Bedrock ID）
 
     Msg->>Translator: to_bedrock_with_passthrough(request)
     Note over Translator: 近 1:1 映射，<br/>保留 cache_control
