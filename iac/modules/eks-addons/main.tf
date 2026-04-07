@@ -181,6 +181,14 @@ resource "aws_iam_policy" "eso" {
           "secretsmanager:DescribeSecret"
         ]
         Resource = aws_secretsmanager_secret.backend_secrets.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = aws_kms_key.secrets.arn
       }
     ]
   })
