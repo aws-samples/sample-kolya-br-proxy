@@ -261,8 +261,8 @@ def hash_refresh_token(token: str) -> str:
     """
     Hash a refresh token for secure storage.
 
-    Uses PBKDF2-HMAC-SHA256 for deterministic hashing to allow
-    efficient lookup while preventing offline attacks.
+    Uses PBKDF2-HMAC-SHA256 with 100 000 iterations for deterministic
+    hashing to allow efficient lookup while preventing offline attacks.
 
     Args:
         token: Plain refresh token (JWT string)
@@ -274,7 +274,7 @@ def hash_refresh_token(token: str) -> str:
         "sha256",
         token.encode(),
         settings.JWT_SECRET_KEY.encode(),
-        iterations=1,
+        iterations=100_000,
     ).hex()
 
 
