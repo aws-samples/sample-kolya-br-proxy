@@ -71,6 +71,7 @@
               dense
               dark
               type="date"
+              :min="minAllowedDate"
               style="width: 160px"
             />
             <q-input
@@ -80,6 +81,7 @@
               dense
               dark
               type="date"
+              :min="minAllowedDate"
               style="width: 160px"
             />
           </template>
@@ -314,6 +316,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
+import { Notify } from 'quasar';
 import { Line } from 'vue-chartjs';
 import {
   Chart as ChartJS,
@@ -369,6 +372,13 @@ const PROVIDER_COLORS: Record<string, string> = {
   Writer:    'brown-7',
   ZAI:       'red-8',
 };
+
+const MAX_QUERY_DAYS = 90;
+const minAllowedDate = computed(() => {
+  const d = new Date();
+  d.setDate(d.getDate() - MAX_QUERY_DAYS);
+  return d.toISOString().slice(0, 10);
+});
 
 const datePresetOptions = [
   { label: '24h', value: '24h' },
@@ -791,16 +801,37 @@ function applyDatePreset(preset: string) {
 }
 
 function applyCustomDates() {
-  if (customStart.value) {
-    const start = new Date(customStart.value);
-    start.setHours(0, 0, 0, 0);
-    monitorStore.dateRange.start = start.toISOString();
+  if (!customStart.value || !customEnd.value) return;
+
+  const start = new Date(customStart.value);
+  const end = new Date(customEnd.value);
+  const earliest = new Date();
+  earliest.setDate(earliest.getDate() - MAX_QUERY_DAYS);
+
+  if (start < earliest) {
+    Notify.create({
+      type: 'warning',
+      message: `Start date cannot be more than ${MAX_QUERY_DAYS} days ago`,
+      position: 'top',
+    });
+    customStart.value = minAllowedDate.value;
+    return;
   }
-  if (customEnd.value) {
-    const end = new Date(customEnd.value);
-    end.setHours(23, 59, 59, 999);
-    monitorStore.dateRange.end = end.toISOString();
+
+  const diffDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+  if (diffDays > MAX_QUERY_DAYS) {
+    Notify.create({
+      type: 'warning',
+      message: `Date range cannot exceed ${MAX_QUERY_DAYS} days`,
+      position: 'top',
+    });
+    return;
   }
+
+  start.setHours(0, 0, 0, 0);
+  monitorStore.dateRange.start = start.toISOString();
+  end.setHours(23, 59, 59, 999);
+  monitorStore.dateRange.end = end.toISOString();
 }
 
 watch(datePreset, (preset) => {

@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,45 @@ from app.models.user import User
 from app.services.usage_stats import UsageStatsService
 
 router = APIRouter()
+
+MAX_QUERY_DAYS = 90
+
+
+def _clamp_date_range(
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> tuple[datetime, datetime]:
+    """Clamp and validate date range to at most MAX_QUERY_DAYS.
+
+    Returns (start_date, end_date) as naive-UTC datetimes.
+    Raises HTTPException if the requested range exceeds the limit.
+    """
+    now = datetime.utcnow()
+    earliest_allowed = now - timedelta(days=MAX_QUERY_DAYS)
+
+    if end_date is None:
+        end_date = now
+    if end_date.tzinfo is not None:
+        end_date = end_date.replace(tzinfo=None)
+
+    if start_date is None:
+        start_date = earliest_allowed
+    if start_date.tzinfo is not None:
+        start_date = start_date.replace(tzinfo=None)
+
+    if start_date < earliest_allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"start_date cannot be more than {MAX_QUERY_DAYS} days ago",
+        )
+
+    if (end_date - start_date).days > MAX_QUERY_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Date range cannot exceed {MAX_QUERY_DAYS} days",
+        )
+
+    return start_date, end_date
 
 
 class UsageStatsResponse(BaseModel):
@@ -136,12 +175,7 @@ async def get_usage_by_token(
         start_date: Optional start date for date range
         end_date: Optional end date for date range
     """
-
-    # Convert timezone-aware datetime to naive UTC datetime
-    if start_date and start_date.tzinfo is not None:
-        start_date = start_date.replace(tzinfo=None)
-    if end_date and end_date.tzinfo is not None:
-        end_date = end_date.replace(tzinfo=None)
+    start_date, end_date = _clamp_date_range(start_date, end_date)
 
     query = (
         select(
@@ -156,7 +190,11 @@ async def get_usage_by_token(
             func.coalesce(func.sum(UsageRecord.total_tokens), 0).label("total_tokens"),
         )
         .join(APIToken, UsageRecord.token_id == APIToken.id)
-        .where(UsageRecord.user_id == current_user.id)
+        .where(
+            UsageRecord.user_id == current_user.id,
+            UsageRecord.created_at >= start_date,
+            UsageRecord.created_at <= end_date,
+        )
         .group_by(
             UsageRecord.token_id,
             APIToken.name,
@@ -168,12 +206,6 @@ async def get_usage_by_token(
 
     if token_id:
         query = query.where(UsageRecord.token_id == token_id)
-
-    if start_date:
-        query = query.where(UsageRecord.created_at >= start_date)
-
-    if end_date:
-        query = query.where(UsageRecord.created_at <= end_date)
 
     result = await db.execute(query)
     rows = result.all()
@@ -209,11 +241,7 @@ async def get_usage_by_model(
         start_date: Optional start date for date range
         end_date: Optional end date for date range
     """
-    # Convert timezone-aware datetime to naive UTC datetime
-    if start_date and start_date.tzinfo is not None:
-        start_date = start_date.replace(tzinfo=None)
-    if end_date and end_date.tzinfo is not None:
-        end_date = end_date.replace(tzinfo=None)
+    start_date, end_date = _clamp_date_range(start_date, end_date)
 
     query = (
         select(
@@ -224,19 +252,17 @@ async def get_usage_by_model(
             func.count(UsageRecord.id).label("total_requests"),
             func.coalesce(func.sum(UsageRecord.total_tokens), 0).label("total_tokens"),
         )
-        .where(UsageRecord.user_id == current_user.id)
+        .where(
+            UsageRecord.user_id == current_user.id,
+            UsageRecord.created_at >= start_date,
+            UsageRecord.created_at <= end_date,
+        )
         .group_by(UsageRecord.model)
         .order_by(func.sum(UsageRecord.cost_usd).desc())
     )
 
     if model:
         query = query.where(UsageRecord.model == model)
-
-    if start_date:
-        query = query.where(UsageRecord.created_at >= start_date)
-
-    if end_date:
-        query = query.where(UsageRecord.created_at <= end_date)
 
     result = await db.execute(query)
     rows = result.all()
@@ -331,11 +357,7 @@ async def get_aggregated_stats(
     - **token_ids**: Optional comma-separated token UUIDs (overrides token_id)
     - **tz**: IANA timezone name for grouping (default: UTC)
     """
-    # Convert timezone-aware datetime to naive UTC
-    if start_date.tzinfo is not None:
-        start_date = start_date.replace(tzinfo=None)
-    if end_date.tzinfo is not None:
-        end_date = end_date.replace(tzinfo=None)
+    start_date, end_date = _clamp_date_range(start_date, end_date)
 
     parsed_token_id = UUID(token_id) if token_id else None
     parsed_token_ids = (
@@ -376,10 +398,7 @@ async def get_token_summary(
     - **start_date**: Start of time range (required)
     - **end_date**: End of time range (required)
     """
-    if start_date.tzinfo is not None:
-        start_date = start_date.replace(tzinfo=None)
-    if end_date.tzinfo is not None:
-        end_date = end_date.replace(tzinfo=None)
+    start_date, end_date = _clamp_date_range(start_date, end_date)
 
     service = UsageStatsService(db)
     data = await service.get_usage_by_token(
@@ -414,10 +433,7 @@ async def get_tokens_timeseries(
     - **metric**: Metric to aggregate: calls, tokens, cost
     - **tz**: IANA timezone name for grouping (default: UTC)
     """
-    if start_date.tzinfo is not None:
-        start_date = start_date.replace(tzinfo=None)
-    if end_date.tzinfo is not None:
-        end_date = end_date.replace(tzinfo=None)
+    start_date, end_date = _clamp_date_range(start_date, end_date)
 
     parsed_ids = [UUID(tid.strip()) for tid in token_ids.split(",") if tid.strip()]
 

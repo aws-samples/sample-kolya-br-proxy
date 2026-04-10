@@ -46,6 +46,32 @@ api.interceptors.request.use(
   }
 );
 
+// Shared state for token refresh deduplication.
+// When multiple requests get 401 at the same time, only one refresh
+// request is sent; the others queue up and reuse its result.
+let isRefreshing = false;
+let refreshSubscribers: ((token: string) => void)[] = [];
+let refreshRejectSubscribers: ((err: Error) => void)[] = [];
+
+function onRefreshed(token: string) {
+  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers = [];
+  refreshRejectSubscribers = [];
+}
+
+function onRefreshFailed(err: Error) {
+  refreshRejectSubscribers.forEach((cb) => cb(err));
+  refreshSubscribers = [];
+  refreshRejectSubscribers = [];
+}
+
+function waitForRefresh(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    refreshSubscribers.push(resolve);
+    refreshRejectSubscribers.push(reject);
+  });
+}
+
 // Add response interceptor for retry logic and auth handling
 api.interceptors.response.use(
   (response) => response,
@@ -73,6 +99,19 @@ api.interceptors.response.use(
       if (!config._retry) {
         config._retry = true;
 
+        // If another request is already refreshing, queue this one
+        if (isRefreshing) {
+          try {
+            const newToken = await waitForRefresh();
+            config.headers['Authorization'] = `Bearer ${newToken}`;
+            return api(config);
+          } catch {
+            return Promise.reject(new Error('Token refresh failed'));
+          }
+        }
+
+        isRefreshing = true;
+
         try {
           // Try to refresh the token (cookie sent automatically via withCredentials)
           const response = await api.post(
@@ -90,9 +129,16 @@ api.interceptors.response.use(
           api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
           config.headers['Authorization'] = `Bearer ${access_token}`;
 
+          // Notify queued requests
+          onRefreshed(access_token);
+
           // Retry original request
           return api(config);
         } catch (refreshError) {
+          const err =
+            refreshError instanceof Error ? refreshError : new Error('Token refresh failed');
+          onRefreshFailed(err);
+
           // Refresh failed, redirect to login
           Notify.create({
             type: 'warning',
@@ -103,9 +149,9 @@ api.interceptors.response.use(
           if (typeof window !== 'undefined') {
             window.location.href = '/login';
           }
-          return Promise.reject(
-            refreshError instanceof Error ? refreshError : new Error('Token refresh failed')
-          );
+          return Promise.reject(err);
+        } finally {
+          isRefreshing = false;
         }
       }
     }

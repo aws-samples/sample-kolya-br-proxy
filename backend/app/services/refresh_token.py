@@ -133,14 +133,33 @@ class RefreshTokenService:
             return None, None, "Refresh token has been revoked"
 
         # TOKEN THEFT DETECTION:
-        # If this token already has children, it means it was already used
-        # This indicates potential token theft - revoke entire family
+        # If this token already has children, it means it was already used.
+        # However, in multi-pod deployments, concurrent requests may race
+        # to refresh the same token simultaneously (e.g., frontend sends
+        # multiple API calls, all get 401, all try to refresh).
+        # A short grace period distinguishes this benign race from real theft.
+        REUSE_GRACE_SECONDS = 10
+
         result = await self.db.execute(
             select(RefreshToken).where(RefreshToken.parent_token_id == token.id)
         )
         children = result.scalars().all()
 
         if children:
+            newest_child = max(children, key=lambda c: c.created_at)
+            age = (datetime.utcnow() - newest_child.created_at).total_seconds()
+
+            if age <= REUSE_GRACE_SECONDS:
+                # Concurrent refresh from another pod — not theft.
+                # Return error so the caller uses the token from the
+                # request that succeeded, but do NOT revoke the family.
+                logger.info(
+                    f"Concurrent refresh detected for user {token.user_id} "
+                    f"(child age {age:.1f}s <= {REUSE_GRACE_SECONDS}s grace). "
+                    f"Ignoring — not revoking family {token.family_id}"
+                )
+                return None, None, "Concurrent refresh detected, please retry"
+
             logger.warning(
                 f"Token reuse detected for user {token.user_id}. "
                 f"Revoking entire token family {token.family_id}"

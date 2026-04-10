@@ -39,6 +39,7 @@
               dense
               dark
               type="date"
+              :min="minAllowedDate"
               style="width: 160px"
             />
             <q-input
@@ -48,6 +49,7 @@
               dense
               dark
               type="date"
+              :min="minAllowedDate"
               style="width: 160px"
             />
             <q-select
@@ -138,6 +140,12 @@ const dashboardStore = useDashboardStore();
 const groupBy = ref<'token' | 'model'>('token');
 const selectedToken = ref<string | null>(null);
 const selectedModel = ref<string | null>(null);
+const MAX_QUERY_DAYS = 90;
+const minAllowedDate = computed(() => {
+  const d = new Date();
+  d.setDate(d.getDate() - MAX_QUERY_DAYS);
+  return d.toISOString().slice(0, 10);
+});
 const startDate = ref<string>('');
 const endDate = ref<string>('');
 const showActiveTokens = ref(true);

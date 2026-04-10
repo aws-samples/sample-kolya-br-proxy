@@ -4,7 +4,16 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, JSON
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    JSON,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import relationship
 
@@ -15,6 +24,10 @@ class UsageRecord(Base):
     """Usage record model for tracking API usage and costs."""
 
     __tablename__ = "usage_records"
+    __table_args__ = (
+        Index("ix_usage_records_user_id_created_at", "user_id", "created_at"),
+        Index("ix_usage_records_token_id_created_at", "token_id", "created_at"),
+    )
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
