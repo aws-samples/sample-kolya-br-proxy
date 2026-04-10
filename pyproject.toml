@@ -39,7 +39,7 @@ dependencies = [
     "redis[hiredis]>=5.0.0",
     "aiohttp>=3.13.4",
     "urllib3>=2.6.3",
-    "cryptography>=46.0.5",
+    "cryptography>=46.0.7",
     "requests>=2.33.0",
 ]
 
