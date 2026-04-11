@@ -9,7 +9,6 @@ All tests mock the Bedrock streaming layer — no real AWS calls.
 
 import asyncio
 import json
-import time
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -155,14 +154,11 @@ def _patch_bedrock_client(
     # Mock the session.client context manager
     @asynccontextmanager
     async def mock_client_cm(*args, **kwargs):
-        region = kwargs.get("region_name", primary_region)
-        # Find the right stream factory based on what's being called
         mock_cl = AsyncMock()
 
         # We figure out the model_id from the invoke call — but we need to
         # return the right stream. Use a side_effect that captures the call.
         async def mock_invoke(**invoke_kwargs):
-            body = json.loads(invoke_kwargs.get("body", "{}"))
             mid = invoke_kwargs.get("modelId", primary_model_id)
             factory = stream_factories.get(mid, _make_normal_stream)
             return {"body": factory()}
