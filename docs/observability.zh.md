@@ -325,6 +325,34 @@ Span 属性：
   └─ http receive
 ```
 
+### 常见问题：一次请求为何产生多个 Trace？
+
+在 X-Ray 中可能看到同一时刻出现两个 trace，看起来像是重复，但实际上是**客户端发了多个 HTTP 请求**。
+
+典型场景：Claude Code（CLI）在一次用户交互中会并发发送多个 API 请求：
+
+```
+用户在 Claude Code 中提问
+      │
+      ├─── POST /v1/messages (Opus)     → 主对话生成（较慢，4-5s）
+      │
+      └─── POST /v1/messages (Haiku)    → 辅助任务如生成标题（较快，1s）
+```
+
+在 X-Ray 中表现为两个独立 trace：
+
+| Trace | 模型 | 耗时 | 特征 |
+|-------|------|------|------|
+| Trace A | `claude-opus-4-6` | 4.6s | `http receive` 多（输入/思考重） |
+| Trace B | `claude-haiku-4-5` | 1.0s | `http send` 多（快速输出） |
+
+**鉴别方法**：
+- 检查 `bedrock.model_id` 属性 — 不同模型说明是客户端并发的多个请求
+- 检查时间戳 — 同一秒发起但耗时不同
+- 检查 User-Agent — 相同 UA 说明来自同一客户端
+
+这是客户端行为，不是 KBP 的 bug，不需要处理。
+
 ### 本地测试（Jaeger）
 
 ```bash

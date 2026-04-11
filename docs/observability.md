@@ -325,6 +325,34 @@ Client (browser/SDK)       KBP Server                 Bedrock
   └─ http receive
 ```
 
+### FAQ: Why Does One Request Produce Multiple Traces?
+
+You may see two traces appearing at the same timestamp in X-Ray, looking like duplicates. In reality, the **client sent multiple HTTP requests**.
+
+Typical scenario: Claude Code (CLI) sends multiple concurrent API requests in a single user interaction:
+
+```
+User asks a question in Claude Code
+      │
+      ├─── POST /v1/messages (Opus)     → Main conversation (slower, 4-5s)
+      │
+      └─── POST /v1/messages (Haiku)    → Auxiliary task like title generation (faster, 1s)
+```
+
+This appears as two independent traces in X-Ray:
+
+| Trace | Model | Duration | Characteristics |
+|-------|-------|----------|----------------|
+| Trace A | `claude-opus-4-6` | 4.6s | Many `http receive` spans (heavy input/thinking) |
+| Trace B | `claude-haiku-4-5` | 1.0s | Many `http send` spans (fast output) |
+
+**How to identify**:
+- Check the `bedrock.model_id` attribute — different models indicate concurrent client requests
+- Check timestamps — same second but different durations
+- Check User-Agent — same UA confirms same client
+
+This is client behavior, not a KBP bug. No action needed.
+
 ### Local Testing with Jaeger
 
 ```bash
