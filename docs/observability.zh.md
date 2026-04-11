@@ -27,21 +27,22 @@
 
 ### 架构
 
-```
-                    ┌─────────────────┐
-                    │   FastAPI App    │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-     ┌────────▼───────┐ ┌───▼────┐ ┌───────▼──────┐
-     │   结构化日志     │ │  EMF   │ │  OTel Spans  │
-     │  (JSON/text)    │ │  指标   │ │  (X-Ray)     │
-     └────────┬───────┘ └───┬────┘ └───────┬──────┘
-              │              │              │
-              ▼              ▼              ▼
-     CloudWatch Logs    CloudWatch     AWS X-Ray
-     Insights           Metrics        Console
+```mermaid
+graph TD
+    App[FastAPI App] --> Logs[结构化日志<br/>JSON / text]
+    App --> EMF[EMF 指标]
+    App --> OTel[OTel Spans]
+
+    Logs --> CWL[CloudWatch<br/>Logs Insights]
+    EMF --> CWM[CloudWatch<br/>Metrics]
+    OTel --> |OTLP HTTP :4318| ADOT[ADOT Collector]
+    ADOT --> XRay[AWS X-Ray<br/>Console]
+
+    style App fill:#4a90d9,color:#fff
+    style CWL fill:#ff9900,color:#fff
+    style CWM fill:#ff9900,color:#fff
+    style XRay fill:#ff9900,color:#fff
+    style ADOT fill:#527fff,color:#fff
 ```
 
 ---
@@ -159,6 +160,18 @@ CloudWatch Embedded Metrics Format 将指标以结构化 JSON 日志行形式输
 
 **关键关系**：`RequestDuration` 包含 `BedrockCallDuration`，两者之差即为代理开销（认证、格式转换、SSE 封装等）。
 
+```mermaid
+gantt
+    title 请求耗时分解
+    dateFormat X
+    axisFormat %s
+
+    section RequestDuration
+    认证 + 格式转换            :a1, 0, 50
+    BedrockCallDuration      :crit, a2, 50, 900
+    SSE 封装 + 响应            :a3, 950, 50
+```
+
 #### 流式故障转移指标
 
 | 指标 | 单位 | 维度 | 说明 |
@@ -266,15 +279,28 @@ python -m uvicorn main:app
 3. 在 CloudWatch 中，通过 Logs Insights 按 `trace_id` 过滤
 4. 点击跳转到 X-Ray 控制台查看完整调用链瀑布图
 
-```
-CloudWatch Logs Insights                     X-Ray Console
-┌─────────────────────────────┐        ┌──────────────────────┐
-│ filter trace_id = "1-abc.." │───────▶│ 调用链瀑布图          │
-│                             │        │ ├─ FastAPI handler    │
-│ 12:00:00 INFO  Auth OK      │        │ │  └─ bedrock.invoke │
-│ 12:00:01 INFO  Bedrock OK   │        │ │     duration: 1.2s │
-│ 12:00:01 INFO  200 returned │        │ └─ Response sent     │
-└─────────────────────────────┘        └──────────────────────┘
+```mermaid
+sequenceDiagram
+    participant Client as 客户端
+    participant FastAPI
+    participant Bedrock
+
+    Client->>FastAPI: POST /v1/chat/completions
+    Note right of FastAPI: 创建根 span<br/>trace_id = 1-abc...
+
+    FastAPI->>FastAPI: 认证通过
+    Note right of FastAPI: log: INFO 认证通过<br/>trace_id = 1-abc...
+
+    FastAPI->>Bedrock: bedrock.invoke span
+    Bedrock-->>FastAPI: 响应 (1.2s)
+    Note right of FastAPI: log: INFO Bedrock 成功<br/>trace_id = 1-abc...
+
+    FastAPI-->>Client: 200 OK
+    Note right of FastAPI: log: INFO 200 返回<br/>trace_id = 1-abc...
+
+    Note over FastAPI: CloudWatch Logs Insights:<br/>filter trace_id = "1-abc..."<br/>→ 显示全部 3 条日志
+
+    Note over Bedrock: X-Ray Console:<br/>调用链瀑布图，包含<br/>FastAPI + bedrock.invoke span
 ```
 
 ---

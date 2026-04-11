@@ -27,21 +27,22 @@ Production:  KBR_LOG_FORMAT=json, KBR_ENABLE_METRICS=true, KBR_OTEL_EXPORTER=xra
 
 ### Architecture
 
-```
-                    ┌─────────────────┐
-                    │   FastAPI App    │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-     ┌────────▼───────┐ ┌───▼────┐ ┌───────▼──────┐
-     │ Structured Logs │ │  EMF   │ │  OTel Spans  │
-     │  (JSON/text)    │ │Metrics │ │  (X-Ray)     │
-     └────────┬───────┘ └───┬────┘ └───────┬──────┘
-              │              │              │
-              ▼              ▼              ▼
-     CloudWatch Logs    CloudWatch     AWS X-Ray
-     Insights           Metrics        Console
+```mermaid
+graph TD
+    App[FastAPI App] --> Logs[Structured Logs<br/>JSON / text]
+    App --> EMF[EMF Metrics]
+    App --> OTel[OTel Spans]
+
+    Logs --> CWL[CloudWatch<br/>Logs Insights]
+    EMF --> CWM[CloudWatch<br/>Metrics]
+    OTel --> |OTLP HTTP :4318| ADOT[ADOT Collector]
+    ADOT --> XRay[AWS X-Ray<br/>Console]
+
+    style App fill:#4a90d9,color:#fff
+    style CWL fill:#ff9900,color:#fff
+    style CWM fill:#ff9900,color:#fff
+    style XRay fill:#ff9900,color:#fff
+    style ADOT fill:#527fff,color:#fff
 ```
 
 ---
@@ -159,6 +160,18 @@ All metrics use the namespace `KolyaBRProxy`.
 
 **Key relationship**: `RequestDuration` contains `BedrockCallDuration`. The difference is proxy overhead (auth, translation, SSE framing).
 
+```mermaid
+gantt
+    title Request Duration Breakdown
+    dateFormat X
+    axisFormat %s
+
+    section RequestDuration
+    Auth + Translation       :a1, 0, 50
+    BedrockCallDuration      :crit, a2, 50, 900
+    SSE Framing + Response   :a3, 950, 50
+```
+
 #### Stream Failover Metrics
 
 | Metric | Unit | Dimensions | Description |
@@ -266,15 +279,28 @@ When tracing is enabled, every log record automatically includes `trace_id` and 
 3. In CloudWatch, use Logs Insights to filter by `trace_id`
 4. Click through to X-Ray console for the full trace waterfall
 
-```
-CloudWatch Logs Insights                     X-Ray Console
-┌─────────────────────────────┐        ┌──────────────────────┐
-│ filter trace_id = "1-abc.." │───────▶│ Trace waterfall view │
-│                             │        │ ├─ FastAPI handler    │
-│ 12:00:00 INFO  Auth OK      │        │ │  └─ bedrock.invoke │
-│ 12:00:01 INFO  Bedrock OK   │        │ │     duration: 1.2s │
-│ 12:00:01 INFO  200 returned │        │ └─ Response sent     │
-└─────────────────────────────┘        └──────────────────────┘
+```mermaid
+sequenceDiagram
+    participant Client
+    participant FastAPI
+    participant Bedrock
+
+    Client->>FastAPI: POST /v1/chat/completions
+    Note right of FastAPI: Root span created<br/>trace_id = 1-abc...
+
+    FastAPI->>FastAPI: Auth OK
+    Note right of FastAPI: log: INFO Auth OK<br/>trace_id = 1-abc...
+
+    FastAPI->>Bedrock: bedrock.invoke span
+    Bedrock-->>FastAPI: Response (1.2s)
+    Note right of FastAPI: log: INFO Bedrock OK<br/>trace_id = 1-abc...
+
+    FastAPI-->>Client: 200 OK
+    Note right of FastAPI: log: INFO 200 returned<br/>trace_id = 1-abc...
+
+    Note over FastAPI: CloudWatch Logs Insights:<br/>filter trace_id = "1-abc..."<br/>→ shows all 3 logs
+
+    Note over Bedrock: X-Ray Console:<br/>trace waterfall with<br/>FastAPI + bedrock.invoke spans
 ```
 
 ---
