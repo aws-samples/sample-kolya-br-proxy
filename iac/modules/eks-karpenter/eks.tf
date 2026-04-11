@@ -27,7 +27,12 @@ module "eks" {
       aws-ebs-csi-driver = {}
     },
     var.enable_cloudwatch_observability ? {
-      amazon-cloudwatch-observability = {}
+      amazon-cloudwatch-observability = {
+        pod_identity_association = [{
+          role_arn        = aws_iam_role.cloudwatch_agent[0].arn
+          service_account = "cloudwatch-agent"
+        }]
+      }
     } : {}
   )
 
@@ -109,6 +114,59 @@ resource "aws_cloudwatch_log_group" "container_insights" {
   name              = each.value
   retention_in_days = var.workspace == "prod" ? 7 : 3
   tags              = var.default_tags
+}
+
+################################################################################
+# CloudWatch Observability addon IAM
+################################################################################
+
+data "aws_iam_policy_document" "cloudwatch_agent_assume_role" {
+  count = var.enable_cloudwatch_observability ? 1 : 0
+
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession"
+    ]
+  }
+}
+
+resource "aws_iam_role" "cloudwatch_agent" {
+  count = var.enable_cloudwatch_observability ? 1 : 0
+
+  name               = "${var.project_name_alias}-${var.workspace}-${var.account}-${var.region}-cw-agent"
+  assume_role_policy = data.aws_iam_policy_document.cloudwatch_agent_assume_role[0].json
+
+  tags = var.default_tags
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_agent_server" {
+  count = var.enable_cloudwatch_observability ? 1 : 0
+
+  role       = aws_iam_role.cloudwatch_agent[0].name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_agent_xray" {
+  count = var.enable_cloudwatch_observability ? 1 : 0
+
+  role       = aws_iam_role.cloudwatch_agent[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess"
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Add EBS CSI permissions to EKS node group role
