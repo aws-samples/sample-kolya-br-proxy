@@ -167,6 +167,30 @@ Middleware is registered in `create_app()` in `backend/main.py`. FastAPI process
 2. **SecurityMiddleware** -- origin validation, CSRF protection (`X-Requested-With`), security response headers (`X-Content-Type-Options`, `X-Frame-Options`, CSP)
 3. **CORSMiddleware** -- handles `OPTIONS` preflight, sets `Access-Control-*` headers
 
+### Per-API-Key Logging
+
+Every log line is automatically tagged with the API key name using Python `contextvars`. When a gateway request is authenticated, the `token_name` is set in a context variable and injected into all subsequent log output for that request.
+
+- **Log format**: `%(asctime)s - %(name)s - %(levelname)s - [%(token_name)s] %(message)s`
+- **Filtering**: `grep '\[key-name\]'` isolates all activity for a specific API key across all log files
+- **Scope**: Applies to all gateway request processing, including service layer and background tasks
+
+### Two-Level Stream Failover
+
+Streaming requests use a two-level failover mechanism to improve reliability when an upstream region or model is temporarily unavailable:
+
+| Level | Strategy | Client Impact |
+|---|---|---|
+| **Level 1 -- Cross-region** | Retry the same model via a different AWS region (using cross-region inference profiles) | Transparent; client sees no difference |
+| **Level 2 -- Model degradation** | Fall back to the next model in the configured fallback chain | Client notified via `x-actual-model` SSE comment in the stream |
+
+**How it works:** After sending the request upstream, the service layer waits for the first content chunk. If no content arrives within the timeout, the current attempt is abandoned and the next level is tried. All SSE events buffered during the failed attempt are discarded, preventing metadata leakage from partial responses.
+
+| Config | Default | Description |
+|---|---|---|
+| `STREAM_FIRST_CONTENT_TIMEOUT` | 600s | Maximum wait time for the first content chunk before triggering failover |
+| `STREAM_MODEL_FALLBACK_CHAIN` | (none) | Ordered list of fallback models for Level 2 degradation |
+
 ### Lifespan Events
 
 ```python

@@ -350,6 +350,36 @@ Terraform workspace（`prod` vs 其他）决定资源规格：
 
 ---
 
+## 后端环境变量
+
+以下环境变量控制后端运行时行为，可在 K8s ConfigMap 或通过 ESO 管理的 secrets 中设置。
+
+| 变量 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `KBR_STREAM_FIRST_CONTENT_TIMEOUT` | int | `600` | 流式请求开始后，等待首个内容块的超时秒数。超时后自动故障转移到下一个区域/模型。设为 `0` 禁用故障转移。 |
+| `KBR_STREAM_MODEL_FALLBACK_CHAIN` | string | `""` | 逗号分隔的模型降级链，用于二级降级。示例：`anthropic.claude-opus-4-0-20250514-v1:0,anthropic.claude-sonnet-4-20250514-v1:0`。空字符串表示禁用模型降级。 |
+
+---
+
+## 日志格式
+
+日志包含 `[token_name]` 字段，标识每条日志对应的 API Key，支持按 Key 过滤。
+
+```
+%(asctime)s - %(name)s - %(levelname)s - [%(token_name)s] %(message)s
+```
+
+无 token 上下文时该字段显示为 `[-]`。
+
+输出示例：
+
+```
+2026-04-11 08:23:01,234 - kolya_br_proxy.router - INFO - [my-team-key] streaming request to us-west-2
+2026-04-11 08:23:05,678 - kolya_br_proxy.router - WARNING - [-] health check from unknown caller
+```
+
+---
+
 ## Global Accelerator（步骤 5）
 
 AWS Global Accelerator 通过 AWS 骨干网络转发流量，可将远距离用户的访问延迟降低 40-60%。

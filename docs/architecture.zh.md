@@ -165,6 +165,30 @@ graph TD
 2. **SecurityMiddleware** -- 来源验证、CSRF 保护（`X-Requested-With`）、安全响应头（`X-Content-Type-Options`、`X-Frame-Options`、CSP）
 3. **CORSMiddleware** -- 处理 `OPTIONS` 预检请求，设置 `Access-Control-*` 头
 
+### 按 API 密钥标记日志
+
+每条日志自动携带 API 密钥名称，通过 Python `contextvars` 实现。网关请求认证通过后，`token_name` 被写入上下文变量，后续该请求的所有日志输出自动注入该标记。
+
+- **日志格式**：`%(asctime)s - %(name)s - %(levelname)s - [%(token_name)s] %(message)s`
+- **筛选方式**：`grep '\[key-name\]'` 即可隔离某个 API 密钥的全部活动日志
+- **生效范围**：覆盖网关请求处理的全链路，包括服务层和后台任务
+
+### 两级流式容灾
+
+流式请求采用两级容灾机制，在上游区域或模型临时不可用时提升可靠性：
+
+| 级别 | 策略 | 客户端感知 |
+|------|------|-----------|
+| **一级 -- 跨区域切换** | 通过不同 AWS 区域重试同一模型（利用跨区域 inference profiles） | 完全透明，客户端无感知 |
+| **二级 -- 模型降级** | 按配置的降级链切换到下一个备选模型 | 通过流中的 `x-actual-model` SSE 注释通知客户端 |
+
+**工作原理：** 请求发往上游后，服务层等待第一个内容块返回。如果在超时时间内未收到内容，当前尝试被放弃并触发下一级容灾。失败尝试期间缓冲的所有 SSE 事件会被丢弃，防止部分响应的元数据泄露到客户端。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `STREAM_FIRST_CONTENT_TIMEOUT` | 600s | 等待第一个内容块的最大时间，超时后触发容灾 |
+| `STREAM_MODEL_FALLBACK_CHAIN` | （无） | 二级降级的有序备选模型列表 |
+
 ### 生命周期事件
 
 ```python

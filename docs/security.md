@@ -1,6 +1,6 @@
-# Security Design: WAF, CORS & CSRF Protection
+# Security Design: WAF, CORS, CSRF & Token Security
 
-This document covers the security protection design in Kolya BR Proxy, including AWS WAF (rate limiting and managed rule sets at the ALB layer), Cross-Origin Resource Sharing (CORS), and Cross-Site Request Forgery (CSRF) protection — how these attacks work, why an API gateway must defend against them, and the specific implementation in this project.
+This document covers the security protection design in Kolya BR Proxy, including AWS WAF (rate limiting and managed rule sets at the ALB layer), Cross-Origin Resource Sharing (CORS), Cross-Site Request Forgery (CSRF) protection, API token hashing, refresh token hardening, and JWT library choices — how these attacks work, why an API gateway must defend against them, and the specific implementation in this project.
 
 ---
 
@@ -589,6 +589,79 @@ deploy-all.sh
 
 ---
 
+## API Token Hashing
+
+### Design
+
+API tokens are hashed before storage using **PBKDF2-HMAC-SHA256** with **600,000 iterations**, keyed with `JWT_SECRET_KEY`. This approach evolved through several iterations (SHA256 → HMAC-SHA256 → BLAKE2b → SHA3 → PBKDF2) to balance security and performance.
+
+The hashing scheme serves two purposes:
+
+1. **Secure storage** — Even if the database is compromised, the original tokens cannot be recovered from the hashes
+2. **Fast lookup** — The hash is deterministic (same input always produces the same output), so it is indexed in the database for O(1) lookup by hash
+
+Additionally, tokens are **encrypted with Fernet** (AES-128-CBC) using a key derived from `JWT_SECRET_KEY`. This allows administrators to retrieve the original token value when needed (e.g., for display in the admin dashboard), while the hash is used for authentication lookups.
+
+### Dual Storage Strategy
+
+| Field | Algorithm | Purpose |
+|-------|-----------|---------|
+| `token_hash` | PBKDF2-HMAC-SHA256 (600k iterations, keyed) | Authentication lookup (indexed) |
+| `encrypted_token` | Fernet (AES-128-CBC) | Admin retrieval of original token |
+
+### Why PBKDF2 Over Plain SHA256?
+
+Plain SHA256 is fast — an attacker with a leaked database can brute-force token hashes at billions of attempts per second. PBKDF2 with 600,000 iterations makes each attempt computationally expensive, increasing the cost of offline attacks by orders of magnitude. The `JWT_SECRET_KEY` as salt adds a server-side secret that an attacker must also possess to mount an offline attack.
+
+### Key Files
+
+- `backend/app/core/security.py` — `hash_token()`, `verify_token()`, `encrypt_token()`, `decrypt_token()`
+- `backend/app/services/token.py` — Token creation and validation service
+- `backend/app/services/token_cache.py` — Cached token lookup by hash
+
+---
+
+## Refresh Token Security Hardening
+
+### PBKDF2 Hashing for Refresh Tokens
+
+Refresh tokens (JWT strings) are hashed with **PBKDF2-HMAC-SHA256** using **100,000 iterations** before storage. This was increased from 1 iteration to 100,000 to provide meaningful resistance against offline brute-force attacks if the database is compromised.
+
+The hash is deterministic and keyed with `JWT_SECRET_KEY`, allowing efficient lookup while preventing offline attacks without the server secret.
+
+### Row-Level Locking for Token Rotation
+
+Refresh token rotation (issuing a new refresh token and invalidating the old one) uses **row-level locking** (`SELECT ... FOR UPDATE`) to prevent race conditions. Without this, concurrent requests using the same refresh token could both succeed, creating duplicate active tokens and breaking the rotation chain.
+
+The locking ensures that only one concurrent request can rotate a given refresh token — subsequent requests using the same token see it as already consumed and are rejected.
+
+### Key Files
+
+- `backend/app/core/security.py` — `hash_refresh_token()`
+- `backend/app/api/admin/endpoints/auth.py` — Refresh endpoint with row-level locking
+
+---
+
+## JWT Library Migration
+
+### python-jose → PyJWT
+
+The project migrated from **python-jose** to **PyJWT** for JWT encoding and decoding. The primary reasons:
+
+| Aspect | python-jose | PyJWT |
+|--------|------------|-------|
+| **Maintenance** | Largely unmaintained | Actively maintained |
+| **Security** | Known ecdsa timing attack vulnerability | No known vulnerabilities |
+| **Compatibility** | Lagging behind Python versions | Up-to-date |
+
+The migration was a drop-in replacement at the API level. The project enforces an **algorithm whitelist** (`HS256`, `HS384`, `HS512`) to prevent algorithm confusion attacks, regardless of library.
+
+### Key Files
+
+- `backend/app/core/security.py` — JWT encoding/decoding with PyJWT (`import jwt`)
+
+---
+
 ## Key Source Files
 
 | File | Responsibility |
@@ -599,7 +672,9 @@ deploy-all.sh
 | `backend/app/middleware/security.py` | SecurityMiddleware (Origin/Referer/custom header validation + security response headers) |
 | `backend/main.py` | CORS middleware configuration, SecurityMiddleware registration |
 | `backend/app/core/config.py` | `ALLOWED_ORIGINS` configuration and production validation |
-| `backend/app/core/security.py` | JWT/API Token generation, verification, encryption |
+| `backend/app/core/security.py` | JWT/API Token generation, PBKDF2 hashing, verification, Fernet encryption |
+| `backend/app/services/token.py` | API Token CRUD service (hash + encrypt on create, hash lookup on validate) |
+| `backend/app/services/token_cache.py` | Cached token validation by hash |
 | `backend/app/services/oauth.py` | OAuth State generation and validation (CSRF + PKCE) |
 | `backend/app/models/oauth_state.py` | OAuth State database model (10-minute expiry, one-time use, PKCE code_verifier) |
 | `backend/app/core/cookies.py` | HttpOnly cookie utilities for refresh token storage |

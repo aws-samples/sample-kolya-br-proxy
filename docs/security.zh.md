@@ -1,6 +1,6 @@
-# 安全设计：WAF、CORS 与 CSRF 防护
+# 安全设计：WAF、CORS、CSRF 与 Token 安全
 
-本文档介绍 Kolya BR Proxy 的安全防护设计，包括 AWS WAF（ALB 层的限流与托管规则集）、跨域资源共享（CORS）和跨站请求伪造（CSRF）的防护——攻击原理、为什么 API 网关必须防范这些攻击，以及本项目的具体实现。
+本文档介绍 Kolya BR Proxy 的安全防护设计，包括 AWS WAF（ALB 层的限流与托管规则集）、跨域资源共享（CORS）、跨站请求伪造（CSRF）的防护、API Token 哈希、Refresh Token 安全加固以及 JWT 库选型——攻击原理、为什么 API 网关必须防范这些攻击，以及本项目的具体实现。
 
 ---
 
@@ -589,6 +589,79 @@ deploy-all.sh
 
 ---
 
+## API Token 哈希
+
+### 设计
+
+API Token 在存储前使用 **PBKDF2-HMAC-SHA256** 进行哈希，迭代次数 **600,000 次**，以 `JWT_SECRET_KEY` 作为密钥。该方案经历了多次迭代演进（SHA256 → HMAC-SHA256 → BLAKE2b → SHA3 → PBKDF2），在安全性与性能之间取得平衡。
+
+哈希方案有两个目的：
+
+1. **安全存储** —— 即使数据库被泄露，也无法从哈希值反推出原始 Token
+2. **快速查找** —— 哈希是确定性的（相同输入始终产生相同输出），因此在数据库中建立索引，实现 O(1) 的哈希查找
+
+此外，Token 还使用 **Fernet**（AES-128-CBC）加密存储，密钥从 `JWT_SECRET_KEY` 派生。这使管理员在需要时可以检索原始 Token 值（如在管理面板中显示），而哈希值用于认证查找。
+
+### 双重存储策略
+
+| 字段 | 算法 | 用途 |
+|------|------|------|
+| `token_hash` | PBKDF2-HMAC-SHA256（60万次迭代，带密钥） | 认证查找（已建索引） |
+| `encrypted_token` | Fernet（AES-128-CBC） | 管理员检索原始 Token |
+
+### 为什么用 PBKDF2 而不是普通 SHA256？
+
+普通 SHA256 速度很快——攻击者拿到泄露的数据库后，可以每秒尝试数十亿次暴力破解 Token 哈希。PBKDF2 的 600,000 次迭代使每次尝试都需要大量计算，将离线攻击的成本提高了数个数量级。`JWT_SECRET_KEY` 作为盐值引入了服务端密钥，攻击者必须同时获取该密钥才能发起离线攻击。
+
+### 关键文件
+
+- `backend/app/core/security.py` — `hash_token()`、`verify_token()`、`encrypt_token()`、`decrypt_token()`
+- `backend/app/services/token.py` — Token 创建与验证服务
+- `backend/app/services/token_cache.py` — 基于哈希的缓存 Token 查找
+
+---
+
+## Refresh Token 安全加固
+
+### PBKDF2 哈希
+
+Refresh Token（JWT 字符串）在存储前使用 **PBKDF2-HMAC-SHA256** 进行哈希，迭代次数 **100,000 次**。该值从最初的 1 次提升到 100,000 次，以在数据库被泄露时提供有效的离线暴力破解抵抗能力。
+
+哈希是确定性的，以 `JWT_SECRET_KEY` 作为密钥，兼顾高效查找和离线攻击防护（攻击者必须同时拥有服务端密钥才能发起离线攻击）。
+
+### 行级锁防止竞态条件
+
+Refresh Token 轮换（签发新 Refresh Token 并作废旧 Token）使用**行级锁**（`SELECT ... FOR UPDATE`）防止竞态条件。如果没有行级锁，使用同一 Refresh Token 的并发请求可能同时成功，创建重复的活跃 Token 并破坏轮换链。
+
+行级锁确保同一时刻只有一个并发请求可以轮换给定的 Refresh Token——后续使用相同 Token 的请求会发现它已被消费，从而被拒绝。
+
+### 关键文件
+
+- `backend/app/core/security.py` — `hash_refresh_token()`
+- `backend/app/api/admin/endpoints/auth.py` — 带行级锁的刷新端点
+
+---
+
+## JWT 库迁移
+
+### python-jose → PyJWT
+
+本项目已从 **python-jose** 迁移到 **PyJWT** 进行 JWT 编解码。主要原因：
+
+| 方面 | python-jose | PyJWT |
+|------|------------|-------|
+| **维护状态** | 基本停止维护 | 活跃维护 |
+| **安全性** | 存在 ecdsa 时序攻击漏洞 | 无已知漏洞 |
+| **兼容性** | Python 版本支持滞后 | 保持更新 |
+
+迁移在 API 层面是无缝替换。项目强制使用**算法白名单**（`HS256`、`HS384`、`HS512`）防止算法混淆攻击，不受所用库的影响。
+
+### 关键文件
+
+- `backend/app/core/security.py` — 使用 PyJWT 进行 JWT 编解码（`import jwt`）
+
+---
+
 ## 关键源码文件
 
 | 文件 | 职责 |
@@ -599,7 +672,9 @@ deploy-all.sh
 | `backend/app/middleware/security.py` | SecurityMiddleware（Origin/Referer/自定义头验证 + 安全响应头） |
 | `backend/main.py` | CORS 中间件配置、SecurityMiddleware 注册 |
 | `backend/app/core/config.py` | `ALLOWED_ORIGINS` 配置和生产环境校验 |
-| `backend/app/core/security.py` | JWT/API Token 生成、验证、加密 |
+| `backend/app/core/security.py` | JWT/API Token 生成、PBKDF2 哈希、验证、Fernet 加密 |
+| `backend/app/services/token.py` | API Token CRUD 服务（创建时哈希+加密，验证时哈希查找） |
+| `backend/app/services/token_cache.py` | 基于哈希的缓存 Token 验证 |
 | `backend/app/services/oauth.py` | OAuth State 生成与验证（CSRF + PKCE） |
 | `backend/app/models/oauth_state.py` | OAuth State 数据库模型（10 分钟过期、一次性使用、PKCE code_verifier） |
 | `backend/app/core/cookies.py` | HttpOnly Cookie 工具模块（刷新令牌存储） |

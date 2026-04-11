@@ -8,6 +8,8 @@
   - [Prompt Cache 费用计算](#7-prompt-cache-费用计算)
   - [客户端断开检测](#8-客户端断开检测提前终止流式响应)
   - [ALB 负载均衡算法](#9-alb-负载均衡算法)
+  - [流式故障转移超时链](#10-流式故障转移超时链)
+  - [使用量表索引优化](#11-使用量表索引优化)
 - [超时配置详解](#超时配置详解)
 - [并发能力评估](#并发能力评估)
 - [性能优化建议](#性能优化建议)
@@ -368,13 +370,15 @@ async with async_session_maker() as session:
 
 #### 实现原理
 
-使用 SHA256 哈希实现 O(1) 数据库索引查找，替代 O(n) 线性扫描。
+使用 PBKDF2-HMAC-SHA256 哈希（600,000 次迭代）实现 O(1) 数据库索引查找，替代 O(n) 线性扫描。PBKDF2 有意设计为计算缓慢，使得对泄露哈希的暴力破解不可行，代价是每次哈希操作需要几百毫秒。由于每个 API 请求只计算一次哈希，这一权衡倾向于安全性而非原始速度，同时保留了 O(1) 查找。
 
 ```python
 # 生成 token 哈希（security.py）
 def hash_token(token: str) -> str:
-    """使用 SHA256 对 token 进行哈希"""
-    return hashlib.sha256(token.encode()).hexdigest()
+    """使用 PBKDF2-HMAC-SHA256 对 token 进行哈希（600,000 次迭代）"""
+    return hashlib.pbkdf2_hmac(
+        "sha256", token.encode(), salt, 600_000
+    ).hex()
 ```
 
 #### 工作流程
@@ -386,7 +390,7 @@ def hash_token(token: str) -> str:
 plain_token = generate_api_token()  # 生成: kbr_abc123def456...
 
 # 计算哈希值存入数据库
-token_hash = hash_token(plain_token)  # SHA256 哈希
+token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256 哈希
 
 # 数据库存储
 token = APIToken(
@@ -418,8 +422,8 @@ result = await db.execute(
 | 方法 | 查询方式 | 时间复杂度 | 实际耗时 | 说明 |
 |------|---------|-----------|---------|------|
 | **优化前** | 遍历所有 token 逐个解密比对 | O(n) | ~10 秒 | 20,000 个 token |
-| **优化后** | 哈希索引直接查询 | O(1) | ~0.5 毫秒 | 使用数据库索引 |
-| **性能提升** | - | - | **20,000 倍** | - |
+| **优化后** | PBKDF2 哈希 + 索引查询 | O(1) | ~300 毫秒 | PBKDF2 ~300ms + DB 索引 ~0.5ms |
+| **性能提升** | - | - | **约 33 倍** | 安全性与性能的权衡 |
 
 #### 性能测试结果
 
@@ -432,10 +436,10 @@ for token in all_tokens:  # 20,000 次循环
         return token
 # 耗时：~10 秒（每次解密 0.5ms × 20,000）
 
-# 优化后（哈希索引）
-token_hash = hash_token(plain_token)  # 0.01ms
+# 优化后（PBKDF2 哈希 + 索引）
+token_hash = hash_token(plain_token)  # ~300ms（PBKDF2，600k 次迭代）
 token = db.query(APIToken).filter_by(token_hash=token_hash).first()  # 0.5ms
-# 耗时：~0.5 毫秒（索引查询）
+# 耗时：~300 毫秒（PBKDF2 为主要耗时；DB 查找可忽略不计）
 ```
 
 #### 数据库索引
@@ -462,12 +466,12 @@ class APIToken(Base):
 # 假设数据库被攻击者获取
 # 攻击者看到的数据：
 {
-    "token_hash": "<sha256-hash>",        # SHA256 哈希
+    "token_hash": "<pbkdf2-hash>",         # PBKDF2-HMAC-SHA256 哈希
     "encrypted_token": "<fernet-token>"  # Fernet 加密
 }
 
 # 攻击者无法：
-# ❌ 从 token_hash 反推原始 token（SHA256 单向哈希）
+# ❌ 从 token_hash 反推原始 token（PBKDF2 单向哈希 + 计算代价高昂）
 # ❌ 解密 encrypted_token（需要 KBR_JWT_SECRET_KEY）
 # ❌ 使用 token_hash 调用 API（API 需要原始 token）
 ```
@@ -475,8 +479,8 @@ class APIToken(Base):
 **2. 无需密钥管理**
 
 ```python
-# 哈希查找：无需密钥
-token_hash = hashlib.sha256(token.encode()).hexdigest()  # 纯算法
+# 哈希查找：使用固定 salt（非逐用户密钥）
+token_hash = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 600_000).hex()
 
 # 对比：加密存储需要密钥
 _fernet = Fernet(_get_encryption_key())  # 需要 KBR_JWT_SECRET_KEY
@@ -495,9 +499,9 @@ encrypted = _fernet.encrypt(token.encode())
 
 ```python
 # 1. 哈希（用于查找）
-token_hash = hash_token(plain_token)  # SHA256，无密钥
+token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256，600k 次迭代
 # 用途：数据库索引查询，O(1) 性能
-# 安全：单向哈希，无法反推原文
+# 安全：单向哈希 + 计算代价高昂，难以暴力破解
 
 # 2. 加密（用于存储）
 encrypted_token = encrypt_token(plain_token)  # Fernet，需要密钥
@@ -511,7 +515,7 @@ encrypted_token = encrypt_token(plain_token)  # Fernet，需要密钥
 
 ```python
 # 每个 API 请求都需要验证 token
-# 使用哈希查找，0.5ms 完成
+# 使用 PBKDF2 哈希查找，约 300ms 完成
 
 @router.post("/v1/chat/completions")
 async def chat(token: str = Depends(get_api_token)):
@@ -552,7 +556,7 @@ start = time.time()
 token = await token_service.validate_token(plain_token)
 duration = time.time() - start
 
-if duration > 0.01:  # 超过 10ms
+if duration > 1.0:  # 超过 1 秒（PBKDF2 正常约 300ms）
     logger.warning("Slow token validation", extra={
         "duration": duration,
         "token_id": token.id if token else None
@@ -642,6 +646,79 @@ alb.ingress.kubernetes.io/target-group-attributes: >
 
 ---
 
+### 10. 流式故障转移超时链
+
+#### 问题
+
+当流成功连接到 Bedrock 但始终没有产出实际内容时（例如区域过载、模型在排队），连接会一直占用信号量槽位和客户端连接。Bedrock 的 `read_timeout`（300 秒）只在完全没有字节到达时触发 -- 元数据事件（如 `messageStart`、`contentBlockStart`）会重置 socket 计时器，但并没有给用户返回实际文本。
+
+#### 解决方案
+
+`STREAM_FIRST_CONTENT_TIMEOUT`（默认 600 秒）在流连接后启动计时器。如果在超时时间内没有收到**实际内容**（文本 delta、工具使用 delta 或 thinking delta），则放弃当前流并触发故障转移：
+
+- **L1 -- 同模型，不同区域：** 在另一个已配置的 AWS 区域重试请求
+- **L2 -- 备用模型：** 尝试 `STREAM_MODEL_FALLBACK_CHAIN` 中列出的模型（逗号分隔）
+
+如果所有故障转移目标都已耗尽，则将原始超时错误返回给客户端。
+
+#### 事件缓冲
+
+元数据事件（`messageStart`、`contentBlockStart`、usage 前导信息）在首个实际内容确认前会被**缓冲**。如果首内容超时触发，缓冲区被丢弃 -- 客户端不会看到来自失败尝试的部分元数据。一旦实际内容到达，缓冲区被刷出，流式传输正常继续。
+
+#### 配置
+
+```python
+STREAM_FIRST_CONTENT_TIMEOUT = 600   # 流连接后等待首个实际内容的秒数
+STREAM_MODEL_FALLBACK_CHAIN = ""     # 逗号分隔的备用模型，例如 "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+```
+
+#### 在超时层级中的位置
+
+```
+Bedrock read_timeout (300s)          -- 每次 chunk 的 socket 超时（完全无字节）
+  ↕
+STREAM_FIRST_CONTENT_TIMEOUT (600s)  -- 流已连接但无实际内容
+  ↕
+ALB idle timeout (600s)              -- 外层兜底（心跳保持连接活跃）
+```
+
+流式故障转移超时与 `read_timeout` **相互独立**。流可以接收元数据事件（保持 socket 活跃），但如果在配置的窗口内没有实际内容到达，仍然会触发故障转移。
+
+---
+
+### 11. 使用量表索引优化
+
+#### 配置位置
+- `backend/app/models/usage.py`
+
+#### 实现
+
+在 `usage_records` 表上创建复合索引，优化最常见的查询模式（用户用量仪表盘、管理员报表、时间范围聚合）：
+
+```python
+class UsageRecord(Base):
+    __table_args__ = (
+        Index("ix_usage_user_created", "user_id", "created_at"),
+        Index("ix_usage_token_created", "token_id", "created_at"),
+        Index("ix_usage_model_created", "model", "created_at"),
+    )
+```
+
+#### 90 天查询限制
+
+所有使用量查询强制执行最大 90 天窗口。这防止了对不断增长的 `usage_records` 表进行全表扫描，确保索引范围扫描保持高效：
+
+```python
+# 查询始终包含时间边界
+query = query.where(UsageRecord.created_at >= cutoff_date)
+```
+
+#### Refresh Token 竞态条件修复
+
+使用行级锁（`SELECT ... FOR UPDATE`）修复了并发 token 刷新中的竞态条件。如果没有锁，两个同时发起的刷新请求可能都读到相同的旧 token，导致产生重复替换。
+
+---
+
 ## 完整的并发处理架构
 
 ```
@@ -725,6 +802,7 @@ alb.ingress.kubernetes.io/target-group-attributes: >
 | **Uvicorn Keep-Alive** | `timeout_keep_alive` | 120 秒 | 空闲连接超时（不影响请求） |
 | **ALB 空闲超时（API）** | `idle_timeout` | **600 秒 (10 分钟)** | 外层兜底；必须大于 read_timeout，确保 Bedrock 错误先返回 |
 | **ALB 空闲超时（前端）** | `idle_timeout` | 300 秒 (5 分钟) | 前端静态资源 |
+| **流式故障转移** | `STREAM_FIRST_CONTENT_TIMEOUT` | **600 秒 (10 分钟)** | 流连接后，若超时内无实际内容则触发故障转移 |
 | **流式心跳** | `STREAM_HEARTBEAT_INTERVAL` | 15 秒 | 保持连接活跃 |
 
 ---
@@ -954,6 +1032,8 @@ Uvicorn (120 秒 keep-alive，不影响请求)
   ↓
 FastAPI Application (无超时限制)
   ↓
+流式故障转移 (600 秒首内容超时) ✅ L1: 同模型不同区域, L2: 备用模型
+  ↓
 Bedrock Client (300 秒读取超时) ✅ 覆盖 thinking 模型暂停
   ↓
 AWS Bedrock API
@@ -1094,6 +1174,10 @@ KBR_UVICORN_LIMIT_MAX_REQUESTS=10000
 
 # 流式响应心跳
 KBR_STREAM_HEARTBEAT_INTERVAL=15
+
+# 流式故障转移
+KBR_STREAM_FIRST_CONTENT_TIMEOUT=600
+KBR_STREAM_MODEL_FALLBACK_CHAIN=""
 ```
 
 ### Kubernetes 配置
@@ -1199,6 +1283,8 @@ resources:
 6. ✅ **超时保护**：心跳机制保持长连接
 7. ✅ **费用优化**：Prompt cache 差异化计价（详见[价格系统](./pricing-system.zh.md#prompt-cache-差异化计价)）
 8. ✅ **资源保护**：客户端断开检测，提前终止 Bedrock 流
+9. ✅ **流式故障转移**：首内容超时 + L1（区域）和 L2（模型）故障转移
+10. ✅ **数据库优化**：usage_records 复合索引 + 90 天查询限制，防止全表扫描
 
 ---
 

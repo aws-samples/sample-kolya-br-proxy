@@ -8,6 +8,8 @@ This document details the optimization measures and timeout configurations for h
   - [Prompt Cache Cost Calculation](#7-prompt-cache-cost-calculation)
   - [Client Disconnect Detection](#8-client-disconnect-detection-early-stream-termination)
   - [ALB Load Balancing Algorithm](#9-alb-load-balancing-algorithm)
+  - [Stream Failover Timeout Chain](#10-stream-failover-timeout-chain)
+  - [Usage Table Indexes](#11-usage-table-indexes)
 - [Timeout Configuration Details](#timeout-configuration-details)
 - [Concurrency Capacity Assessment](#concurrency-capacity-assessment)
 - [Performance Optimization Recommendations](#performance-optimization-recommendations)
@@ -368,13 +370,15 @@ async with async_session_maker() as session:
 
 #### Implementation Principle
 
-Uses SHA256 hashing to achieve O(1) database index lookup, replacing O(n) linear scanning.
+Uses PBKDF2-HMAC-SHA256 hashing (600,000 iterations) to achieve O(1) database index lookup, replacing O(n) linear scanning. PBKDF2 is intentionally slow to compute, making brute-force attacks on leaked hashes impractical, at the cost of a few hundred milliseconds per hash operation. Since each API request only computes one hash, this tradeoff favors security over raw speed while preserving O(1) lookup.
 
 ```python
 # Generate token hash (security.py)
 def hash_token(token: str) -> str:
-    """Hash token using SHA256"""
-    return hashlib.sha256(token.encode()).hexdigest()
+    """Hash token using PBKDF2-HMAC-SHA256 (600,000 iterations)"""
+    return hashlib.pbkdf2_hmac(
+        "sha256", token.encode(), salt, 600_000
+    ).hex()
 ```
 
 #### Workflow
@@ -386,7 +390,7 @@ def hash_token(token: str) -> str:
 plain_token = generate_api_token()  # Generates: kbr_abc123def456...
 
 # Calculate hash for database storage
-token_hash = hash_token(plain_token)  # SHA256 hash
+token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256 hash
 
 # Database storage
 token = APIToken(
@@ -418,8 +422,8 @@ result = await db.execute(
 | Method | Query Type | Time Complexity | Actual Time | Notes |
 |--------|-----------|----------------|-------------|-------|
 | **Before** | Iterate all tokens, decrypt and compare | O(n) | ~10 seconds | 20,000 tokens |
-| **After** | Hash index direct query | O(1) | ~0.5 milliseconds | Using database index |
-| **Improvement** | - | - | **20,000x faster** | - |
+| **After** | PBKDF2 hash + index query | O(1) | ~300 milliseconds | PBKDF2 ~300ms + DB index ~0.5ms |
+| **Improvement** | - | - | **~33x faster** | Security-performance tradeoff |
 
 #### Performance Test Results
 
@@ -432,10 +436,10 @@ for token in all_tokens:  # 20,000 iterations
         return token
 # Time: ~10 seconds (0.5ms per decryption × 20,000)
 
-# After optimization (hash index)
-token_hash = hash_token(plain_token)  # 0.01ms
+# After optimization (PBKDF2 hash + index)
+token_hash = hash_token(plain_token)  # ~300ms (PBKDF2, 600k iterations)
 token = db.query(APIToken).filter_by(token_hash=token_hash).first()  # 0.5ms
-# Time: ~0.5 milliseconds (index query)
+# Time: ~300 milliseconds (PBKDF2 dominates; DB lookup negligible)
 ```
 
 #### Database Index
@@ -462,12 +466,12 @@ class APIToken(Base):
 # Assume database is compromised by attacker
 # Attacker sees:
 {
-    "token_hash": "<sha256-hash>",        # SHA256 hash
+    "token_hash": "<pbkdf2-hash>",         # PBKDF2-HMAC-SHA256 hash
     "encrypted_token": "<fernet-token>"  # Fernet encryption
 }
 
 # Attacker cannot:
-# ❌ Reverse token_hash to original token (SHA256 is one-way)
+# ❌ Reverse token_hash to original token (PBKDF2 is one-way + computationally expensive)
 # ❌ Decrypt encrypted_token (requires KBR_JWT_SECRET_KEY)
 # ❌ Use token_hash to call API (API requires original token)
 ```
@@ -475,8 +479,8 @@ class APIToken(Base):
 **2. No Key Management Required**
 
 ```python
-# Hash lookup: No key needed
-token_hash = hashlib.sha256(token.encode()).hexdigest()  # Pure algorithm
+# Hash lookup: Uses a fixed salt (not a per-user secret key)
+token_hash = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 600_000).hex()
 
 # Compare: Encryption requires key
 _fernet = Fernet(_get_encryption_key())  # Requires KBR_JWT_SECRET_KEY
@@ -495,9 +499,9 @@ This project uses **hash + encryption** dual protection:
 
 ```python
 # 1. Hash (for lookup)
-token_hash = hash_token(plain_token)  # SHA256, no key
+token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256, 600k iterations
 # Purpose: Database index query, O(1) performance
-# Security: One-way hash, cannot reverse to original
+# Security: One-way hash + computationally expensive to brute-force
 
 # 2. Encryption (for storage)
 encrypted_token = encrypt_token(plain_token)  # Fernet, requires key
@@ -511,7 +515,7 @@ encrypted_token = encrypt_token(plain_token)  # Fernet, requires key
 
 ```python
 # Every API request needs token validation
-# Using hash lookup, completes in 0.5ms
+# Using PBKDF2 hash lookup, completes in ~300ms
 
 @router.post("/v1/chat/completions")
 async def chat(token: str = Depends(get_api_token)):
@@ -552,7 +556,7 @@ start = time.time()
 token = await token_service.validate_token(plain_token)
 duration = time.time() - start
 
-if duration > 0.01:  # More than 10ms
+if duration > 1.0:  # More than 1s (PBKDF2 takes ~300ms normally)
     logger.warning("Slow token validation", extra={
         "duration": duration,
         "token_id": token.id if token else None
@@ -642,6 +646,79 @@ All Pods share one rate limit → Pod 1: ████ (4 streams) ← next reque
 
 ---
 
+### 10. Stream Failover Timeout Chain
+
+#### Problem
+
+When a stream connects to Bedrock successfully but never produces real content (e.g., the region is overloaded, the model is stuck in a queue), the connection sits idle consuming a semaphore slot and a client connection. The Bedrock `read_timeout` (300s) only fires when no bytes arrive at all -- metadata events (e.g., `messageStart`, `contentBlockStart`) reset the socket timer without delivering actual text to the user.
+
+#### Solution
+
+`STREAM_FIRST_CONTENT_TIMEOUT` (default 600 seconds) starts a timer after the stream connects. If no **real content** (text delta, tool use delta, or thinking delta) arrives within the timeout, the current stream is abandoned and failover is triggered:
+
+- **L1 -- same model, different region:** retry the request in another configured AWS region
+- **L2 -- fallback model:** try models listed in `STREAM_MODEL_FALLBACK_CHAIN` (comma-separated)
+
+If all failover targets are exhausted, the original timeout error is returned to the client.
+
+#### Event Buffering
+
+Metadata events (`messageStart`, `contentBlockStart`, usage preambles) are **buffered** until the first real content is confirmed. If the first-content timeout fires, the buffer is discarded -- the client never sees partial metadata from a failed attempt. Once real content arrives, the buffer is flushed and streaming continues normally.
+
+#### Configuration
+
+```python
+STREAM_FIRST_CONTENT_TIMEOUT = 600   # Seconds to wait for first real content after stream connects
+STREAM_MODEL_FALLBACK_CHAIN = ""     # Comma-separated fallback models, e.g. "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+```
+
+#### Where It Sits in the Timeout Hierarchy
+
+```
+Bedrock read_timeout (300s)        -- per-chunk socket timeout (no bytes at all)
+  ↕
+STREAM_FIRST_CONTENT_TIMEOUT (600s) -- stream connected but no real content
+  ↕
+ALB idle timeout (600s)            -- outer fallback (heartbeats keep this alive)
+```
+
+The stream failover timeout is **independent** of `read_timeout`. A stream can receive metadata events (keeping the socket alive) yet still trigger a failover if no real content arrives within the configured window.
+
+---
+
+### 11. Usage Table Indexes
+
+#### Configuration Location
+- `backend/app/models/usage.py`
+
+#### Implementation
+
+Composite indexes on the `usage_records` table optimize the most common query patterns (per-user usage dashboards, admin reports, time-range aggregations):
+
+```python
+class UsageRecord(Base):
+    __table_args__ = (
+        Index("ix_usage_user_created", "user_id", "created_at"),
+        Index("ix_usage_token_created", "token_id", "created_at"),
+        Index("ix_usage_model_created", "model", "created_at"),
+    )
+```
+
+#### 90-Day Query Limit
+
+All usage queries enforce a maximum 90-day window. This prevents full table scans on the growing `usage_records` table and ensures index range scans stay fast:
+
+```python
+# Query always includes a time bound
+query = query.where(UsageRecord.created_at >= cutoff_date)
+```
+
+#### Refresh Token Race Condition Fix
+
+A race condition in concurrent token refresh was fixed using row-level locking (`SELECT ... FOR UPDATE`). Without the lock, two simultaneous refresh requests could both read the same old token and produce duplicate replacements.
+
+---
+
 ## Complete Concurrency Handling Architecture
 
 ```
@@ -725,6 +802,7 @@ All Pods share one rate limit → Pod 1: ████ (4 streams) ← next reque
 | **Uvicorn Keep-Alive** | `timeout_keep_alive` | 120 seconds | Idle connection timeout (doesn't affect requests) |
 | **ALB Idle (API)** | `idle_timeout` | **600 seconds (10 min)** | Outer fallback; must exceed read_timeout so Bedrock errors surface first |
 | **ALB Idle (Frontend)** | `idle_timeout` | 300 seconds (5 min) | Frontend static resources |
+| **Stream Failover** | `STREAM_FIRST_CONTENT_TIMEOUT` | **600 seconds (10 min)** | After stream connects, failover if no real content within timeout |
 | **Streaming Heartbeat** | `STREAM_HEARTBEAT_INTERVAL` | 15 seconds | Keep connection alive |
 
 ---
@@ -954,6 +1032,8 @@ Uvicorn (120-second keep-alive, doesn't affect requests)
   ↓
 FastAPI Application (no timeout limit)
   ↓
+Stream Failover (600-second first-content timeout) ✅ L1: same model different region, L2: fallback model
+  ↓
 Bedrock Client (300-second read timeout) ✅ Covers thinking model pauses
   ↓
 AWS Bedrock API
@@ -1094,6 +1174,10 @@ KBR_UVICORN_LIMIT_MAX_REQUESTS=10000
 
 # Streaming response heartbeat
 KBR_STREAM_HEARTBEAT_INTERVAL=15
+
+# Stream failover
+KBR_STREAM_FIRST_CONTENT_TIMEOUT=600
+KBR_STREAM_MODEL_FALLBACK_CHAIN=""
 ```
 
 ### Kubernetes Configuration
@@ -1199,6 +1283,8 @@ This project implements high-concurrency handling through **multi-layer concurre
 6. ✅ **Timeout Protection**: Heartbeat mechanism maintains long connections
 7. ✅ **Cost Optimization**: Prompt cache differentiated pricing (see [Pricing System](./pricing-system.md#prompt-cache-differentiated-pricing))
 8. ✅ **Resource Protection**: Client disconnect detection stops Bedrock stream early
+9. ✅ **Stream Failover**: First-content timeout with L1 (region) and L2 (model) failover
+10. ✅ **Database Optimization**: Composite indexes on usage_records + 90-day query limit prevent full table scans
 
 ---
 

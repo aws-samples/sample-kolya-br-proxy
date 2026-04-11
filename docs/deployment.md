@@ -350,6 +350,36 @@ The Terraform workspace (`prod` vs anything else) determines resource sizing:
 
 ---
 
+## Backend Environment Variables
+
+The following environment variables control backend runtime behavior. They can be set in the K8s ConfigMap or via ESO-managed secrets.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `KBR_STREAM_FIRST_CONTENT_TIMEOUT` | int | `600` | Seconds to wait for the first content chunk after a stream starts. If exceeded, the request fails over to the next region/model. Set to `0` to disable failover. |
+| `KBR_STREAM_MODEL_FALLBACK_CHAIN` | string | `""` | Comma-separated model fallback chain for Level 2 degradation. Example: `anthropic.claude-opus-4-0-20250514-v1:0,anthropic.claude-sonnet-4-20250514-v1:0`. Empty string disables model degradation. |
+
+---
+
+## Log Format
+
+Logs include a `[token_name]` field that identifies which API key produced each log line, enabling per-key filtering.
+
+```
+%(asctime)s - %(name)s - %(levelname)s - [%(token_name)s] %(message)s
+```
+
+When no token context is available the field shows `[-]`.
+
+Example output:
+
+```
+2026-04-11 08:23:01,234 - kolya_br_proxy.router - INFO - [my-team-key] streaming request to us-west-2
+2026-04-11 08:23:05,678 - kolya_br_proxy.router - WARNING - [-] health check from unknown caller
+```
+
+---
+
 ## Global Accelerator (Step 5)
 
 AWS Global Accelerator routes traffic over the AWS backbone network, reducing latency for geographically distant users by 40-60%.
