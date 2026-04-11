@@ -31,6 +31,7 @@ from app.services.gemini_client import (
     extract_cached_tokens,
     extract_cached_tokens_from_chunk,
 )
+from app.core.metrics import emit_request_metrics
 from app.services.pricing import ModelPricing
 from app.services.translator import RequestTranslator, ResponseTranslator
 
@@ -308,6 +309,18 @@ async def create_chat_completion(
             f"{cache_info}"
         )
 
+        await emit_request_metrics(
+            endpoint="/v1/chat/completions",
+            model=request_data.model,
+            duration_s=round(duration, 3),
+            input_tokens=openai_response.usage.prompt_tokens,
+            output_tokens=openai_response.usage.completion_tokens,
+            status_code=200,
+            is_streaming=False,
+            cache_write_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
+        )
+
         return openai_response
 
     except HTTPException:
@@ -551,6 +564,7 @@ async def stream_chat_completion(
         SSE formatted response chunks
     """
     settings = get_settings()
+    ttft: float | None = None
     total_input_tokens = 0
     total_output_tokens = 0
     total_cache_creation_tokens = 0
@@ -647,6 +661,9 @@ async def stream_chat_completion(
                 # Skip deltas for thinking blocks
                 if event.index is not None and event.index in thinking_blocks:
                     continue
+                # Measure time to first content token
+                if ttft is None:
+                    ttft = time.time() - start_time
                 # Stream content delta
                 if event.delta and "text" in event.delta:
                     chunk = ResponseTranslator.create_stream_chunk(
@@ -745,6 +762,19 @@ async def stream_chat_completion(
             f"prompt={total_input_tokens}, "
             f"completion={total_output_tokens}"
             f"{cache_info}"
+        )
+
+        await emit_request_metrics(
+            endpoint="/v1/chat/completions",
+            model=model,
+            duration_s=round(duration, 3),
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            status_code=200,
+            is_streaming=True,
+            ttft_s=round(ttft, 3) if ttft is not None else None,
+            cache_write_tokens=total_cache_creation_tokens,
+            cache_read_tokens=total_cache_read_tokens,
         )
 
     except Exception as e:

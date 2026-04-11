@@ -23,6 +23,7 @@ from app.services.anthropic_translator import (
     AnthropicResponseTranslator,
 )
 from app.services.background_tasks import BackgroundTaskManager
+from app.core.metrics import emit_request_metrics
 from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import is_gemini_model as _is_gemini_model
 from app.services.pricing import ModelPricing
@@ -222,6 +223,18 @@ async def create_message(
             f"{cache_info}"
         )
 
+        await emit_request_metrics(
+            endpoint="/v1/messages",
+            model=request_data.model,
+            duration_s=round(duration, 3),
+            input_tokens=anthropic_response.usage.input_tokens,
+            output_tokens=anthropic_response.usage.output_tokens,
+            status_code=200,
+            is_streaming=False,
+            cache_write_tokens=cache_creation_tokens,
+            cache_read_tokens=cache_read_tokens,
+        )
+
         return anthropic_response
 
     except HTTPException:
@@ -265,6 +278,7 @@ async def stream_anthropic_messages(
 
     """
     settings = get_settings()
+    ttft: float | None = None
     accumulated_usage = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -304,6 +318,10 @@ async def stream_anthropic_messages(
                 except (BrokenPipeError, ConnectionResetError):
                     return
                 last_heartbeat = current_time
+
+            # Measure time to first content token
+            if ttft is None and event.type == "content_block_delta":
+                ttft = time.time() - start_time
 
             # Convert Bedrock event to Anthropic SSE events
             sse_events = AnthropicResponseTranslator.bedrock_stream_to_anthropic_events(
@@ -352,6 +370,19 @@ async def stream_anthropic_messages(
             f"duration={round(duration, 3)}s, "
             f"input={total_input}, output={total_output}"
             f"{cache_info}"
+        )
+
+        await emit_request_metrics(
+            endpoint="/v1/messages",
+            model=model,
+            duration_s=round(duration, 3),
+            input_tokens=total_input,
+            output_tokens=total_output,
+            status_code=200,
+            is_streaming=True,
+            ttft_s=round(ttft, 3) if ttft is not None else None,
+            cache_write_tokens=total_cache_creation,
+            cache_read_tokens=total_cache_read,
         )
 
     except Exception as e:

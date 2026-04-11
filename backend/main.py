@@ -23,27 +23,11 @@ from app.api.health import health_router
 from app.middleware.security import SecurityMiddleware
 from app.services.bedrock import BedrockClient
 
-# Configure logging with per-API-key context
-from app.core.log_context import RequestContextFilter
+# Configure logging (reads LOG_LEVEL + LOG_FORMAT from settings)
+from app.core.json_formatter import configure_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - [%(token_name)s] %(message)s",
-)
-logging.getLogger().addFilter(RequestContextFilter())
+configure_logging()
 logger = logging.getLogger(__name__)
-
-
-class HealthCheckFilter(logging.Filter):
-    """Filter out health check access logs to reduce noise."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return '"GET /health/' not in msg
-
-
-# Apply filter to uvicorn access logger
-logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 
 @asynccontextmanager
@@ -51,6 +35,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup and shutdown events."""
     # Startup
     logger.info("Starting Kolya BR Proxy...")
+
+    # Configure observability (metrics + tracing)
+    from app.core.metrics import configure_metrics
+    from app.core.tracing import configure_tracing
+
+    configure_metrics()
+    configure_tracing()
 
     # Initialize database
     await init_db()
@@ -286,6 +277,16 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RequestValidationError, _validation_exception_handler)
     app.add_exception_handler(HTTPException, _http_exception_handler)
 
+    # Observability middleware (last add_middleware = outermost in ASGI stack)
+    from app.middleware.observability import ObservabilityMiddleware
+
+    app.add_middleware(ObservabilityMiddleware)
+
+    # Auto-instrument FastAPI routes for X-Ray tracing (no-op when disabled)
+    from app.core.tracing import instrument_app
+
+    instrument_app(app)
+
     # Include routers
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(gateway_router, prefix="/v1", tags=["ai-gateway"])
@@ -305,7 +306,7 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=settings.PORT,
         reload=settings.DEBUG,
-        log_level="info",
+        log_level=settings.LOG_LEVEL.lower(),
         timeout_keep_alive=settings.UVICORN_TIMEOUT_KEEP_ALIVE,
         limit_concurrency=settings.UVICORN_LIMIT_CONCURRENCY,
         limit_max_requests=settings.UVICORN_LIMIT_MAX_REQUESTS or None,

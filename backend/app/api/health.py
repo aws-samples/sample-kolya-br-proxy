@@ -96,23 +96,21 @@ async def liveness_check() -> Dict[str, Any]:
 @health_router.get("/metrics")
 async def metrics_endpoint() -> Dict[str, Any]:
     """
-    Basic metrics endpoint (Prometheus-compatible format can be added later).
+    Observability configuration status.
 
     Returns:
-        Dict containing basic system metrics
+        Dict containing current observability settings
     """
-    logger.info("Metrics endpoint requested")
-
     settings = get_settings()
 
     return {
         "service": "kolya-br-proxy",
         "timestamp": datetime.utcnow().isoformat(),
         "version": "1.0.0",
-        "debug_mode": settings.DEBUG,
-        "metrics": {
-            "health_checks_total": "counter",
-            "requests_total": "counter",
-            "request_duration_seconds": "histogram",
+        "observability": {
+            "log_level": settings.LOG_LEVEL,
+            "log_format": settings.LOG_FORMAT,
+            "metrics_enabled": settings.ENABLE_METRICS,
+            "tracing_exporter": settings.OTEL_EXPORTER or "disabled",
         },
     }
