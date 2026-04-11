@@ -5,7 +5,6 @@ Tests for structured JSON logging formatter and configure_logging().
 import json
 import logging
 
-import pytest
 
 from app.core.json_formatter import StructuredJsonFormatter, _HealthCheckFilter
 

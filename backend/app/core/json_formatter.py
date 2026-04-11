@@ -88,7 +88,7 @@ class _HealthCheckFilter(logging.Filter):
     """Filter out health check access logs to reduce noise."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return '\"GET /health/' not in record.getMessage()
+        return '"GET /health/' not in record.getMessage()
 
 
 def configure_logging() -> None:

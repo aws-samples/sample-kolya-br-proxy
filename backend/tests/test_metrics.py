@@ -3,7 +3,7 @@ Tests for CloudWatch EMF metrics module.
 """
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
 from app.core.metrics import (
     configure_metrics,
@@ -11,7 +11,6 @@ from app.core.metrics import (
     emit_bedrock_call_metrics,
     emit_failover_metrics,
     emit_http_metrics,
-    _configured,
 )
 
 

@@ -61,9 +61,7 @@ def configure_tracing() -> None:
     trace.set_tracer_provider(provider)
     set_global_textmap(AwsXRayPropagator())
 
-    logger.info(
-        "OpenTelemetry tracing enabled (exporter=%s)", settings.OTEL_EXPORTER
-    )
+    logger.info("OpenTelemetry tracing enabled (exporter=%s)", settings.OTEL_EXPORTER)
 
 
 def instrument_app(app) -> None:
