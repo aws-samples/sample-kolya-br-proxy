@@ -24,7 +24,7 @@ from app.schemas.openai import (
     ErrorResponse,
 )
 from app.services.background_tasks import BackgroundTaskManager
-from app.services.bedrock import BedrockClient
+from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import (
     GeminiClient,
     is_gemini_model as _is_gemini_model,
@@ -254,6 +254,7 @@ async def create_chat_completion(
                     http_request=http_request,
                     cache_ttl=request_data.bedrock_cache_ttl
                     or get_settings().PROMPT_CACHE_TTL,
+                    allowed_model_names=allowed_model_names,
                 ),
                 media_type="text/event-stream",
             )
@@ -529,6 +530,7 @@ async def stream_chat_completion(
     start_time: float,
     http_request: Request = None,
     cache_ttl: str = None,
+    allowed_model_names: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream chat completion responses with heartbeat to keep connection alive.
@@ -543,6 +545,7 @@ async def stream_chat_completion(
         start_time: Request start time
         http_request: Original HTTP request (for disconnect detection)
         cache_ttl: Effective cache TTL for pricing calculation
+        allowed_model_names: Token's allowed models (for failover)
 
     Yields:
         SSE formatted response chunks
@@ -559,8 +562,18 @@ async def stream_chat_completion(
     tool_use_blocks = {}  # {index: {"id": ..., "name": ..., "input": ""}}
     thinking_blocks = set()  # indices of thinking content blocks to skip
 
+    # Compute fallback models for stream failover
+    fb_models = get_fallback_models(allowed_model_names or [], model)
+
     try:
-        async for event in bedrock_client.invoke_stream(model, bedrock_request):
+        actual_model_emitted = False
+        async for event in bedrock_client.invoke_stream(
+            model, bedrock_request, fallback_models=fb_models
+        ):
+            # Emit x-actual-model SSE comment on Level 2 degradation
+            if event.actual_model and not actual_model_emitted:
+                yield f": x-actual-model {event.actual_model}\n\n"
+                actual_model_emitted = True
             # Check client disconnect (throttled to avoid overhead on every chunk)
             current_time = time.time()
             if http_request and current_time - last_heartbeat > 1.0:
