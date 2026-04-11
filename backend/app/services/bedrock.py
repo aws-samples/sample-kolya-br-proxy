@@ -699,6 +699,7 @@ class BedrockClient:
                 "bedrock.failover": True,
             },
         )
+        start_time = time.monotonic()
 
         try:
             async with self.session.client(
@@ -784,20 +785,23 @@ class BedrockClient:
                 for buffered in buffer:
                     yield buffered
 
-                elapsed = time.monotonic() - (deadline - content_timeout)
-                span.set_attribute("bedrock.duration_s", round(elapsed, 3))
                 logger.info(
                     "Bedrock streaming completed (failover path)",
                     extra={
                         "model_id": model_id,
                         "region": target_region,
-                        "duration_seconds": round(elapsed, 3),
+                        "duration_seconds": round(time.monotonic() - start_time, 3),
                     },
                 )
+        except GeneratorExit:
+            raise
         except BaseException as exc:
             span.record_exception(exc)
             raise
         finally:
+            span.set_attribute(
+                "bedrock.duration_s", round(time.monotonic() - start_time, 3)
+            )
             span.end()
 
     # ------------------------------------------------------------------
