@@ -11,6 +11,7 @@ from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.log_context import set_log_context
 from app.core.security import decode_jwt_token
 from app.models.token import APIToken
 from app.models.user import User
@@ -145,6 +146,7 @@ async def get_current_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    set_log_context(token_name=token.name, token_id=str(token.id))
     return token
 
 
@@ -190,6 +192,7 @@ async def get_current_token_flexible(
             detail="Invalid or expired API key",
         )
 
+    set_log_context(token_name=token.name, token_id=str(token.id))
     return token
 
 
@@ -239,6 +242,7 @@ async def get_current_token_from_api_key(
             detail="Invalid or expired API key",
         )
 
+    set_log_context(token_name=token.name, token_id=str(token.id))
     return token
 
 
@@ -294,6 +298,7 @@ async def get_current_token_from_gemini_key(
             detail="Invalid or expired API key",
         )
 
+    set_log_context(token_name=token.name, token_id=str(token.id))
     return token
 
 

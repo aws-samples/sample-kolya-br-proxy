@@ -23,10 +23,14 @@ from app.api.health import health_router
 from app.middleware.security import SecurityMiddleware
 from app.services.bedrock import BedrockClient
 
-# Configure logging
+# Configure logging with per-API-key context
+from app.core.log_context import RequestContextFilter
+
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - [%(token_name)s] %(message)s",
 )
+logging.getLogger().addFilter(RequestContextFilter())
 logger = logging.getLogger(__name__)
 
 
