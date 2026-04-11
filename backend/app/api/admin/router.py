@@ -5,7 +5,16 @@ All endpoints require JWT authentication.
 
 from fastapi import APIRouter
 
-from app.api.admin.endpoints import audit, auth, models, tokens, usage, pricing, monitor
+from app.api.admin.endpoints import (
+    audit,
+    auth,
+    models,
+    tokens,
+    usage,
+    pricing,
+    monitor,
+    observability,
+)
 
 admin_router = APIRouter()
 
@@ -29,6 +38,11 @@ admin_router.include_router(pricing.router, prefix="/pricing", tags=["admin-pric
 
 # Monitor endpoints (JWT auth required)
 admin_router.include_router(monitor.router, prefix="/monitor", tags=["admin-monitor"])
+
+# Observability runtime config (JWT auth required)
+admin_router.include_router(
+    observability.router, prefix="/observability", tags=["admin-observability"]
+)
 
 # TODO: Add more admin endpoints
 # admin_router.include_router(users.router, prefix="/users", tags=["admin-users"])

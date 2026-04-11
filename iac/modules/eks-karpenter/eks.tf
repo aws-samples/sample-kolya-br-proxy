@@ -12,19 +12,24 @@ module "eks" {
   vpc_id     = var.vpc_id
   subnet_ids = var.subnet_ids
 
-  addons = {
-    coredns = {}
-    eks-pod-identity-agent = {
-      before_compute = true
-    }
-    kube-proxy = {
-      before_compute = true
-    }
-    vpc-cni = {
-      before_compute = true
-    }
-    aws-ebs-csi-driver = {}
-  }
+  addons = merge(
+    {
+      coredns = {}
+      eks-pod-identity-agent = {
+        before_compute = true
+      }
+      kube-proxy = {
+        before_compute = true
+      }
+      vpc-cni = {
+        before_compute = true
+      }
+      aws-ebs-csi-driver = {}
+    },
+    var.enable_cloudwatch_observability ? {
+      amazon-cloudwatch-observability = {}
+    } : {}
+  )
 
   endpoint_private_access = true
   endpoint_public_access  = true
@@ -89,6 +94,21 @@ module "eks" {
   }
 
   tags = var.default_tags
+}
+
+# Pre-create CloudWatch log groups with short retention to minimize cost.
+# The observability addon will reuse these instead of creating groups with no expiry.
+resource "aws_cloudwatch_log_group" "container_insights" {
+  for_each = var.enable_cloudwatch_observability ? toset([
+    "/aws/containerinsights/${var.cluster_name}/application",
+    "/aws/containerinsights/${var.cluster_name}/dataplane",
+    "/aws/containerinsights/${var.cluster_name}/host",
+    "/aws/containerinsights/${var.cluster_name}/performance",
+  ]) : toset([])
+
+  name              = each.value
+  retention_in_days = var.workspace == "prod" ? 7 : 3
+  tags              = var.default_tags
 }
 
 # Add EBS CSI permissions to EKS node group role

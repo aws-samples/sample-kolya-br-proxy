@@ -147,6 +147,24 @@ class Settings(BaseSettings):
         description="Allowed redirect URIs for Cognito OAuth (comma-separated)",
     )
 
+    # Observability settings
+    LOG_LEVEL: str = Field(
+        default="INFO",
+        description="Log level: DEBUG, INFO, WARNING, ERROR",
+    )
+    LOG_FORMAT: str = Field(
+        default="text",
+        description="Log format: 'text' (human-readable) or 'json' (CloudWatch Logs Insights)",
+    )
+    ENABLE_METRICS: bool = Field(
+        default=False,
+        description="Enable CloudWatch EMF metrics emission",
+    )
+    OTEL_EXPORTER: str = Field(
+        default="",
+        description="OpenTelemetry exporter: '' (disabled), 'xray', 'otlp'",
+    )
+
     # System configuration
     INITIAL_USER_BALANCE_USD: float = Field(
         default=5.0, description="Initial balance for new users in USD"
@@ -206,6 +224,20 @@ class Settings(BaseSettings):
         # Remove quotes if present
         uris = self.COGNITO_REDIRECT_URIS.strip('"').strip("'")
         return [uri.strip() for uri in uris.split(",") if uri.strip()]
+
+    @validator("LOG_LEVEL")
+    def validate_log_level(cls, v):
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR"}
+        upper = v.upper()
+        if upper not in valid:
+            raise ValueError(f"LOG_LEVEL must be one of {valid}")
+        return upper
+
+    @validator("LOG_FORMAT")
+    def validate_log_format(cls, v):
+        if v not in ("text", "json"):
+            raise ValueError("LOG_FORMAT must be 'text' or 'json'")
+        return v
 
     @validator("JWT_SECRET_KEY")
     def validate_jwt_secret(cls, v):

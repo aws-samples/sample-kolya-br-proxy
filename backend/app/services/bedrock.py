@@ -19,8 +19,10 @@ from typing import AsyncGenerator, Optional
 import aioboto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from opentelemetry import trace
 
 from app.core.config import get_settings
+from app.core.metrics import emit_bedrock_call_metrics, emit_failover_metrics
 from app.schemas.bedrock import (
     BedrockContentBlock,
     BedrockRequest,
@@ -30,6 +32,7 @@ from app.schemas.bedrock import (
 )
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 class FirstContentTimeoutError(Exception):
@@ -1384,6 +1387,7 @@ class BedrockClient:
         """Inner invoke logic with retry, called under semaphore."""
         model_id, target_region = self.resolve_model(model_name)
         use_converse = not self.is_anthropic_model(model_id)
+        api_name = "converse" if use_converse else "invoke_model"
 
         if use_converse:
             converse_params = self._build_converse_params(request, model_id)
@@ -1406,89 +1410,122 @@ class BedrockClient:
             try:
                 start_time = time.time()
 
-                async with self.session.client(
-                    "bedrock-runtime",
-                    region_name=target_region,
-                    config=self.config,
-                ) as client:
-                    if use_converse:
-                        response = await client.converse(**converse_params)
-                        duration = time.time() - start_time
-                        bedrock_response = self._parse_converse_response(
-                            response, model_name
-                        )
-                    else:
-                        response = await client.invoke_model(
-                            body=json.dumps(body), **invoke_kwargs
-                        )
-                        duration = time.time() - start_time
+                with tracer.start_as_current_span(
+                    "bedrock.invoke",
+                    attributes={
+                        "bedrock.model": model_name,
+                        "bedrock.model_id": model_id,
+                        "bedrock.region": target_region,
+                        "bedrock.api": api_name,
+                        "bedrock.attempt": attempt + 1,
+                    },
+                ) as span:
+                    async with self.session.client(
+                        "bedrock-runtime",
+                        region_name=target_region,
+                        config=self.config,
+                    ) as client:
+                        if use_converse:
+                            response = await client.converse(**converse_params)
+                            duration = time.time() - start_time
+                            bedrock_response = self._parse_converse_response(
+                                response, model_name
+                            )
+                        else:
+                            response = await client.invoke_model(
+                                body=json.dumps(body), **invoke_kwargs
+                            )
+                            duration = time.time() - start_time
 
-                        # Parse Anthropic Messages API response
-                        response_body = json.loads(await response["body"].read())
+                            # Parse Anthropic Messages API response
+                            response_body = json.loads(await response["body"].read())
 
-                        # Build content blocks
-                        content_blocks = []
-                        for item in response_body.get("content", []):
-                            block_type = item.get("type")
-                            if block_type == "text":
-                                content_blocks.append(
-                                    BedrockContentBlock(type="text", text=item["text"])
-                                )
-                            elif block_type == "tool_use":
-                                content_blocks.append(
-                                    BedrockContentBlock(
-                                        type="tool_use",
-                                        id=item.get("id"),
-                                        name=item.get("name"),
-                                        input=item.get("input"),
+                            # Build content blocks
+                            content_blocks = []
+                            for item in response_body.get("content", []):
+                                block_type = item.get("type")
+                                if block_type == "text":
+                                    content_blocks.append(
+                                        BedrockContentBlock(
+                                            type="text", text=item["text"]
+                                        )
                                     )
-                                )
-                            elif block_type == "thinking":
-                                logger.debug(
-                                    "Skipping thinking content block in non-streaming response"
-                                )
-                                content_blocks.append(
-                                    BedrockContentBlock(type="thinking")
-                                )
+                                elif block_type == "tool_use":
+                                    content_blocks.append(
+                                        BedrockContentBlock(
+                                            type="tool_use",
+                                            id=item.get("id"),
+                                            name=item.get("name"),
+                                            input=item.get("input"),
+                                        )
+                                    )
+                                elif block_type == "thinking":
+                                    logger.debug(
+                                        "Skipping thinking content block in non-streaming response"
+                                    )
+                                    content_blocks.append(
+                                        BedrockContentBlock(type="thinking")
+                                    )
 
-                        # Usage — Anthropic format uses snake_case
-                        usage_data = response_body.get("usage", {})
-                        usage = BedrockUsage(
-                            input_tokens=usage_data.get("input_tokens", 0),
-                            output_tokens=usage_data.get("output_tokens", 0),
-                            cache_creation_input_tokens=usage_data.get(
-                                "cache_creation_input_tokens", 0
-                            ),
-                            cache_read_input_tokens=usage_data.get(
-                                "cache_read_input_tokens", 0
-                            ),
+                            # Usage — Anthropic format uses snake_case
+                            usage_data = response_body.get("usage", {})
+                            usage = BedrockUsage(
+                                input_tokens=usage_data.get("input_tokens", 0),
+                                output_tokens=usage_data.get("output_tokens", 0),
+                                cache_creation_input_tokens=usage_data.get(
+                                    "cache_creation_input_tokens", 0
+                                ),
+                                cache_read_input_tokens=usage_data.get(
+                                    "cache_read_input_tokens", 0
+                                ),
+                            )
+
+                            bedrock_response = BedrockResponse(
+                                id=response_body.get("id", ""),
+                                type="message",
+                                role="assistant",
+                                content=content_blocks,
+                                model=model_name,
+                                stop_reason=response_body.get(
+                                    "stop_reason", "end_turn"
+                                ),
+                                usage=usage,
+                            )
+
+                        span.set_attribute(
+                            "bedrock.input_tokens",
+                            bedrock_response.usage.input_tokens,
+                        )
+                        span.set_attribute(
+                            "bedrock.output_tokens",
+                            bedrock_response.usage.output_tokens,
+                        )
+                        span.set_attribute("bedrock.duration_s", round(duration, 3))
+
+                        cache_info = ""
+                        if bedrock_response.usage.cache_creation_input_tokens:
+                            cache_info += f", cache_write={bedrock_response.usage.cache_creation_input_tokens}"
+                        if bedrock_response.usage.cache_read_input_tokens:
+                            cache_info += f", cache_read={bedrock_response.usage.cache_read_input_tokens}"
+                        logger.info(
+                            f"Bedrock invocation successful: model={model_name}, "
+                            f"api={api_name}, "
+                            f"attempt={attempt + 1}, duration={round(duration, 3)}s, "
+                            f"input={bedrock_response.usage.input_tokens}, "
+                            f"output={bedrock_response.usage.output_tokens}"
+                            f"{cache_info}"
                         )
 
-                        bedrock_response = BedrockResponse(
-                            id=response_body.get("id", ""),
-                            type="message",
-                            role="assistant",
-                            content=content_blocks,
+                        await emit_bedrock_call_metrics(
                             model=model_name,
-                            stop_reason=response_body.get("stop_reason", "end_turn"),
-                            usage=usage,
+                            region=target_region,
+                            duration_s=round(duration, 3),
+                            api=api_name,
+                            attempt=attempt + 1,
+                            success=True,
                         )
 
-                    cache_info = ""
-                    if bedrock_response.usage.cache_creation_input_tokens:
-                        cache_info += f", cache_write={bedrock_response.usage.cache_creation_input_tokens}"
-                    if bedrock_response.usage.cache_read_input_tokens:
-                        cache_info += f", cache_read={bedrock_response.usage.cache_read_input_tokens}"
-                    logger.info(
-                        f"Bedrock invocation successful: model={model_name}, "
-                        f"api={'converse' if use_converse else 'invoke_model'}, "
-                        f"attempt={attempt + 1}, duration={round(duration, 3)}s, "
-                        f"input={bedrock_response.usage.input_tokens}, "
-                        f"output={bedrock_response.usage.output_tokens}"
-                        f"{cache_info}"
-                    )
-
-                    return bedrock_response
+                        return bedrock_response
 
             except ClientError as e:
                 error_code = e.response.get("Error", {}).get("Code", "Unknown")
@@ -1584,6 +1621,7 @@ class BedrockClient:
         )
 
         last_error: BaseException | None = None
+        failover_start: float | None = None
         for idx, (model_id, region, label) in enumerate(targets):
             is_last = idx == len(targets) - 1
             await self._rate_limiter.acquire()
@@ -1600,10 +1638,22 @@ class BedrockClient:
                         first_event = False
                         yield event
 
-                    # Stream completed successfully
+                    # Stream completed successfully — emit failover metric
+                    # if we are NOT on the primary target
+                    if idx > 0 and failover_start is not None:
+                        level = "L2" if is_degraded else "L1"
+                        await emit_failover_metrics(
+                            primary_model=primary_model_id,
+                            failover_target=model_id,
+                            level=level,
+                            duration_s=round(time.time() - failover_start, 3),
+                            success=True,
+                        )
                     return
 
             except FirstContentTimeoutError as exc:
+                if failover_start is None:
+                    failover_start = time.time()
                 last_error = exc
                 logger.warning(
                     "Stream failover: %s timed out (%s, region=%s, timeout=%ss).%s",
@@ -1619,6 +1669,8 @@ class BedrockClient:
                 error_code = exc.response.get("Error", {}).get("Code", "Unknown")
                 if error_code in ("ValidationException", "AccessDeniedException"):
                     raise
+                if failover_start is None:
+                    failover_start = time.time()
                 last_error = exc
                 logger.warning(
                     "Stream failover: %s failed with %s (%s, region=%s).%s",
@@ -1631,6 +1683,14 @@ class BedrockClient:
                 continue
 
         # All targets exhausted
+        if failover_start is not None:
+            await emit_failover_metrics(
+                primary_model=primary_model_id,
+                failover_target=model_id,
+                level="L2" if targets[-1][2].startswith("L2-") else "L1",
+                duration_s=round(time.time() - failover_start, 3),
+                success=False,
+            )
         raise last_error or RuntimeError("All failover targets exhausted")
 
     async def _invoke_stream_inner(
@@ -1639,6 +1699,7 @@ class BedrockClient:
         """Inner streaming logic with retry, called under semaphore."""
         model_id, target_region = self.resolve_model(model_name)
         use_converse = not self.is_anthropic_model(model_id)
+        api_name = "converse_stream" if use_converse else "invoke_model_stream"
 
         if use_converse:
             converse_params = self._build_converse_params(request, model_id)
@@ -1661,69 +1722,94 @@ class BedrockClient:
         for attempt in range(max_retries):
             try:
                 start_time = time.time()
+                span = tracer.start_span(
+                    "bedrock.invoke_stream",
+                    attributes={
+                        "bedrock.model": model_name,
+                        "bedrock.model_id": model_id,
+                        "bedrock.region": target_region,
+                        "bedrock.api": api_name,
+                        "bedrock.attempt": attempt + 1,
+                    },
+                )
 
-                async with self.session.client(
-                    "bedrock-runtime",
-                    region_name=target_region,
-                    config=self.config,
-                ) as client:
-                    if use_converse:
-                        response = await client.converse_stream(**converse_params)
-                    else:
-                        response = await client.invoke_model_with_response_stream(
-                            body=json.dumps(body), **invoke_kwargs
+                try:
+                    async with self.session.client(
+                        "bedrock-runtime",
+                        region_name=target_region,
+                        config=self.config,
+                    ) as client:
+                        if use_converse:
+                            response = await client.converse_stream(**converse_params)
+                        else:
+                            response = await client.invoke_model_with_response_stream(
+                                body=json.dumps(body), **invoke_kwargs
+                            )
+
+                        logger.info(
+                            "Bedrock streaming started",
+                            extra={
+                                "model": model_name,
+                                "model_id": model_id,
+                                "api": api_name,
+                                "attempt": attempt + 1,
+                            },
                         )
 
-                    logger.info(
-                        "Bedrock streaming started",
-                        extra={
-                            "model": model_name,
-                            "model_id": model_id,
-                            "api": "converse_stream"
-                            if use_converse
-                            else "invoke_model_stream",
-                            "attempt": attempt + 1,
-                        },
-                    )
+                        event_count = 0
 
-                    event_count = 0
+                        if use_converse:
+                            async for event in response["stream"]:
+                                stream_started = True
+                                bedrock_event = self._converse_stream_event_to_bedrock(
+                                    event
+                                )
+                                if bedrock_event:
+                                    yield bedrock_event
+                                    event_count += 1
+                        else:
+                            async for event in response["body"]:
+                                stream_started = True
+                                chunk_bytes = event.get("chunk", {}).get("bytes")
+                                if not chunk_bytes:
+                                    continue
 
-                    if use_converse:
-                        async for event in response["stream"]:
-                            stream_started = True
-                            bedrock_event = self._converse_stream_event_to_bedrock(
-                                event
-                            )
-                            if bedrock_event:
-                                yield bedrock_event
-                                event_count += 1
-                    else:
-                        async for event in response["body"]:
-                            stream_started = True
-                            chunk_bytes = event.get("chunk", {}).get("bytes")
-                            if not chunk_bytes:
-                                continue
+                                anthropic_event = json.loads(chunk_bytes)
+                                bedrock_event = self._anthropic_event_to_bedrock(
+                                    anthropic_event
+                                )
+                                if bedrock_event:
+                                    yield bedrock_event
+                                    event_count += 1
 
-                            anthropic_event = json.loads(chunk_bytes)
-                            bedrock_event = self._anthropic_event_to_bedrock(
-                                anthropic_event
-                            )
-                            if bedrock_event:
-                                yield bedrock_event
-                                event_count += 1
+                        duration = time.time() - start_time
+                        span.set_attribute("bedrock.duration_s", round(duration, 3))
+                        span.set_attribute("bedrock.events", event_count)
+                        logger.info(
+                            "Bedrock streaming completed",
+                            extra={
+                                "model": model_name,
+                                "duration_seconds": round(duration, 3),
+                                "events_processed": event_count,
+                            },
+                        )
 
-                    duration = time.time() - start_time
-                    logger.info(
-                        "Bedrock streaming completed",
-                        extra={
-                            "model": model_name,
-                            "duration_seconds": round(duration, 3),
-                            "events_processed": event_count,
-                        },
-                    )
+                        await emit_bedrock_call_metrics(
+                            model=model_name,
+                            region=target_region,
+                            duration_s=round(duration, 3),
+                            api=api_name,
+                            attempt=attempt + 1,
+                            success=True,
+                        )
 
-                    # Success — exit retry loop
-                    return
+                        # Success — exit retry loop
+                        return
+                except BaseException as exc:
+                    span.record_exception(exc)
+                    raise
+                finally:
+                    span.end()
 
             except ClientError as e:
                 error_code = e.response.get("Error", {}).get("Code", "Unknown")
