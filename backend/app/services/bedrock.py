@@ -688,96 +688,117 @@ class BedrockClient:
 
         content_received = False
         buffer: list[BedrockStreamEvent] = []  # hold events until content arrives
+        api_label = "converse_stream" if use_converse else "invoke_model_stream"
 
-        async with self.session.client(
-            "bedrock-runtime",
-            region_name=target_region,
-            config=self.config,
-        ) as client:
-            if use_converse:
-                response = await client.converse_stream(**converse_params)
-                event_source = response["stream"]
-            else:
-                response = await client.invoke_model_with_response_stream(
-                    body=json.dumps(body), **invoke_kwargs
+        span = tracer.start_span(
+            "bedrock.invoke_stream",
+            attributes={
+                "bedrock.model_id": model_id,
+                "bedrock.region": target_region,
+                "bedrock.api": api_label,
+                "bedrock.failover": True,
+            },
+        )
+
+        try:
+            async with self.session.client(
+                "bedrock-runtime",
+                region_name=target_region,
+                config=self.config,
+            ) as client:
+                if use_converse:
+                    response = await client.converse_stream(**converse_params)
+                    event_source = response["stream"]
+                else:
+                    response = await client.invoke_model_with_response_stream(
+                        body=json.dumps(body), **invoke_kwargs
+                    )
+                    event_source = response["body"]
+
+                logger.info(
+                    "Bedrock streaming started (failover path)",
+                    extra={
+                        "model_id": model_id,
+                        "region": target_region,
+                        "api": api_label,
+                        "content_timeout": content_timeout,
+                    },
                 )
-                event_source = response["body"]
 
-            api_label = "converse_stream" if use_converse else "invoke_model_stream"
-            logger.info(
-                "Bedrock streaming started (failover path)",
-                extra={
-                    "model_id": model_id,
-                    "region": target_region,
-                    "api": api_label,
-                    "content_timeout": content_timeout,
-                },
-            )
+                # Deadline starts NOW — covers the real-world case where the
+                # stream connection succeeds but zero events ever arrive.
+                deadline = time.monotonic() + content_timeout
 
-            # Deadline starts NOW — covers the real-world case where the
-            # stream connection succeeds but zero events ever arrive.
-            deadline = time.monotonic() + content_timeout
-
-            aiter = event_source.__aiter__()
-            while True:
-                # Apply per-__anext__ timeout only until content arrives
-                try:
-                    if not content_received:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise FirstContentTimeoutError(
-                                f"No content within {content_timeout}s"
+                aiter = event_source.__aiter__()
+                while True:
+                    # Apply per-__anext__ timeout only until content arrives
+                    try:
+                        if not content_received:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise FirstContentTimeoutError(
+                                    f"No content within {content_timeout}s"
+                                )
+                            raw_event = await asyncio.wait_for(
+                                aiter.__anext__(), timeout=remaining
                             )
-                        raw_event = await asyncio.wait_for(
-                            aiter.__anext__(), timeout=remaining
+                        else:
+                            raw_event = await aiter.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        raise FirstContentTimeoutError(
+                            f"No content within {content_timeout}s"
+                        )
+
+                    # Parse event
+                    if use_converse:
+                        bedrock_event = self._converse_stream_event_to_bedrock(
+                            raw_event
                         )
                     else:
-                        raw_event = await aiter.__anext__()
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
-                    raise FirstContentTimeoutError(
-                        f"No content within {content_timeout}s"
-                    )
+                        chunk_bytes = raw_event.get("chunk", {}).get("bytes")
+                        if not chunk_bytes:
+                            continue
+                        anthropic_event = json.loads(chunk_bytes)
+                        bedrock_event = self._anthropic_event_to_bedrock(
+                            anthropic_event
+                        )
 
-                # Parse event
-                if use_converse:
-                    bedrock_event = self._converse_stream_event_to_bedrock(raw_event)
-                else:
-                    chunk_bytes = raw_event.get("chunk", {}).get("bytes")
-                    if not chunk_bytes:
+                    if not bedrock_event:
                         continue
-                    anthropic_event = json.loads(chunk_bytes)
-                    bedrock_event = self._anthropic_event_to_bedrock(anthropic_event)
 
-                if not bedrock_event:
-                    continue
+                    if not content_received:
+                        buffer.append(bedrock_event)
+                        if self._is_content_event(bedrock_event):
+                            content_received = True
+                            # Flush buffer
+                            for buffered in buffer:
+                                yield buffered
+                            buffer.clear()
+                    else:
+                        yield bedrock_event
 
-                if not content_received:
-                    buffer.append(bedrock_event)
-                    if self._is_content_event(bedrock_event):
-                        content_received = True
-                        # Flush buffer
-                        for buffered in buffer:
-                            yield buffered
-                        buffer.clear()
-                else:
-                    yield bedrock_event
+                # Stream ended without error — flush any remaining buffered events
+                # (e.g. very short response that was all metadata)
+                for buffered in buffer:
+                    yield buffered
 
-            # Stream ended without error — flush any remaining buffered events
-            # (e.g. very short response that was all metadata)
-            for buffered in buffer:
-                yield buffered
-
-            elapsed = time.monotonic() - (deadline - content_timeout)
-            logger.info(
-                "Bedrock streaming completed (failover path)",
-                extra={
-                    "model_id": model_id,
-                    "region": target_region,
-                    "duration_seconds": round(elapsed, 3),
-                },
-            )
+                elapsed = time.monotonic() - (deadline - content_timeout)
+                span.set_attribute("bedrock.duration_s", round(elapsed, 3))
+                logger.info(
+                    "Bedrock streaming completed (failover path)",
+                    extra={
+                        "model_id": model_id,
+                        "region": target_region,
+                        "duration_seconds": round(elapsed, 3),
+                    },
+                )
+        except BaseException as exc:
+            span.record_exception(exc)
+            raise
+        finally:
+            span.end()
 
     # ------------------------------------------------------------------
 
