@@ -12,19 +12,24 @@ module "eks" {
   vpc_id     = var.vpc_id
   subnet_ids = var.subnet_ids
 
-  addons = {
-    coredns = {}
-    eks-pod-identity-agent = {
-      before_compute = true
-    }
-    kube-proxy = {
-      before_compute = true
-    }
-    vpc-cni = {
-      before_compute = true
-    }
-    aws-ebs-csi-driver = {}
-  }
+  addons = merge(
+    {
+      coredns = {}
+      eks-pod-identity-agent = {
+        before_compute = true
+      }
+      kube-proxy = {
+        before_compute = true
+      }
+      vpc-cni = {
+        before_compute = true
+      }
+      aws-ebs-csi-driver = {}
+    },
+    var.enable_cloudwatch_observability ? {
+      amazon-cloudwatch-observability = {}
+    } : {}
+  )
 
   endpoint_private_access = true
   endpoint_public_access  = true

@@ -96,6 +96,9 @@ module "eks_karpenter" {
   # Additional security groups for EKS nodes
   additional_security_group_ids = [module.vpc.eks_nodes_security_group_id]
 
+  # Observability: CloudWatch log collection + Container Insights (prod only)
+  enable_cloudwatch_observability = local.workspace == "prod"
+
   # Tags
   default_tags = local.default_tags
 

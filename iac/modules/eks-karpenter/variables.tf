@@ -52,3 +52,9 @@ variable "additional_security_group_ids" {
   type        = list(string)
   default     = []
 }
+
+variable "enable_cloudwatch_observability" {
+  description = "Enable CloudWatch Observability addon (FluentBit log collection + Container Insights)"
+  type        = bool
+  default     = false
+}
