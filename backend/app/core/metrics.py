@@ -45,6 +45,23 @@ def configure_metrics() -> None:
     logger.info("CloudWatch EMF metrics enabled")
 
 
+class _metrics_logger_context:
+    """Async context manager for MetricsLogger that auto-flushes on exit."""
+
+    def __init__(self):
+        from aws_embedded_metrics import MetricsLogger
+        from aws_embedded_metrics.environment.environment_detector import resolve_environment
+
+        self._logger = MetricsLogger(resolve_environment)
+
+    async def __aenter__(self):
+        return self._logger
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._logger.flush()
+        return False
+
+
 async def emit_request_metrics(
     *,
     endpoint: str,
@@ -62,23 +79,20 @@ async def emit_request_metrics(
     if not _configured:
         return
 
-    from aws_embedded_metrics import MetricsLogger
-    from aws_embedded_metrics.unit import Unit
-
-    async with MetricsLogger() as ml:
+    async with _metrics_logger_context() as ml:
         ml.set_dimensions(
             {"Endpoint": endpoint, "Model": model, "Streaming": str(is_streaming)}
         )
-        ml.put_metric("RequestDuration", duration_s, Unit.SECONDS)
-        ml.put_metric("RequestCount", 1, Unit.COUNT)
-        ml.put_metric("TokensInput", input_tokens, Unit.COUNT)
-        ml.put_metric("TokensOutput", output_tokens, Unit.COUNT)
+        ml.put_metric("RequestDuration", duration_s, "Seconds")
+        ml.put_metric("RequestCount", 1, "Count")
+        ml.put_metric("TokensInput", input_tokens, "Count")
+        ml.put_metric("TokensOutput", output_tokens, "Count")
         if cache_write_tokens:
-            ml.put_metric("CacheWriteTokens", cache_write_tokens, Unit.COUNT)
+            ml.put_metric("CacheWriteTokens", cache_write_tokens, "Count")
         if cache_read_tokens:
-            ml.put_metric("CacheReadTokens", cache_read_tokens, Unit.COUNT)
+            ml.put_metric("CacheReadTokens", cache_read_tokens, "Count")
         if ttft_s is not None:
-            ml.put_metric("TimeToFirstToken", ttft_s, Unit.SECONDS)
+            ml.put_metric("TimeToFirstToken", ttft_s, "Seconds")
         ml.set_property("StatusCode", status_code)
 
 
@@ -95,12 +109,9 @@ async def emit_bedrock_call_metrics(
     if not _configured:
         return
 
-    from aws_embedded_metrics import MetricsLogger
-    from aws_embedded_metrics.unit import Unit
-
-    async with MetricsLogger() as ml:
+    async with _metrics_logger_context() as ml:
         ml.set_dimensions({"Model": model, "Region": region, "API": api})
-        ml.put_metric("BedrockCallDuration", duration_s, Unit.SECONDS)
+        ml.put_metric("BedrockCallDuration", duration_s, "Seconds")
         ml.set_property("Attempt", attempt)
         ml.set_property("Success", success)
 
@@ -117,13 +128,10 @@ async def emit_failover_metrics(
     if not _configured:
         return
 
-    from aws_embedded_metrics import MetricsLogger
-    from aws_embedded_metrics.unit import Unit
-
-    async with MetricsLogger() as ml:
+    async with _metrics_logger_context() as ml:
         ml.set_dimensions({"Level": level, "PrimaryModel": primary_model})
-        ml.put_metric("FailoverTriggered", 1, Unit.COUNT)
-        ml.put_metric("StreamFailoverDuration", duration_s, Unit.SECONDS)
+        ml.put_metric("FailoverTriggered", 1, "Count")
+        ml.put_metric("StreamFailoverDuration", duration_s, "Seconds")
         ml.set_property("FailoverTarget", failover_target)
         ml.set_property("Success", success)
 
@@ -139,11 +147,8 @@ async def emit_http_metrics(
     if not _configured:
         return
 
-    from aws_embedded_metrics import MetricsLogger
-    from aws_embedded_metrics.unit import Unit
-
-    async with MetricsLogger() as ml:
+    async with _metrics_logger_context() as ml:
         ml.set_dimensions({"Method": method, "Path": path})
-        ml.put_metric("HttpRequestDuration", duration_s, Unit.SECONDS)
-        ml.put_metric("HttpRequestCount", 1, Unit.COUNT)
+        ml.put_metric("HttpRequestDuration", duration_s, "Seconds")
+        ml.put_metric("HttpRequestCount", 1, "Count")
         ml.set_property("StatusCode", status_code)
