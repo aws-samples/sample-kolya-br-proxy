@@ -96,7 +96,7 @@ module "eks" {
   tags = var.default_tags
 }
 
-# Pre-create CloudWatch log groups with short retention (3 days) to minimize cost.
+# Pre-create CloudWatch log groups with short retention to minimize cost.
 # The observability addon will reuse these instead of creating groups with no expiry.
 resource "aws_cloudwatch_log_group" "container_insights" {
   for_each = var.enable_cloudwatch_observability ? toset([
@@ -107,7 +107,7 @@ resource "aws_cloudwatch_log_group" "container_insights" {
   ]) : toset([])
 
   name              = each.value
-  retention_in_days = 3
+  retention_in_days = var.workspace == "prod" ? 7 : 3
   tags              = var.default_tags
 }
 
