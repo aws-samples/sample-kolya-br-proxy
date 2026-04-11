@@ -172,7 +172,7 @@ class Settings(BaseSettings):
 
     # Stream failover settings
     STREAM_FIRST_CONTENT_TIMEOUT: int = Field(
-        default=15,
+        default=600,
         description="Seconds to wait for first content chunk after stream starts. "
         "If exceeded, failover to next region/model. 0 disables failover.",
     )
