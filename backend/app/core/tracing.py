@@ -18,7 +18,7 @@ def configure_tracing() -> None:
 
     Reads ``OTEL_EXPORTER`` from settings:
     - ``""`` (empty) → tracing disabled, no imports
-    - ``"xray"`` → OTLP HTTP exporter to localhost:4318 (ADOT collector)
+    - ``"xray"`` → OTLP HTTP exporter to CloudWatch Agent DaemonSet (port 4316)
     - ``"otlp"`` → OTLP HTTP exporter using ``OTEL_EXPORTER_OTLP_ENDPOINT`` env
     """
     settings = get_settings()
@@ -61,11 +61,37 @@ def configure_tracing() -> None:
         logger.warning("Unknown OTEL_EXPORTER value: %s", settings.OTEL_EXPORTER)
         return
 
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    processor = _FilteringSpanProcessor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
     set_global_textmap(AwsXRayPropagator())
 
     logger.info("OpenTelemetry tracing enabled (exporter=%s)", settings.OTEL_EXPORTER)
+
+
+class _FilteringSpanProcessor:
+    """SpanProcessor that drops CORS preflight (OPTIONS) spans before export."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def on_start(self, span, parent_context=None):
+        self._inner.on_start(span, parent_context)
+
+    def on_end(self, span):
+        # Drop OPTIONS spans — CORS preflight adds noise to X-Ray
+        method = span.attributes.get("http.method") or span.attributes.get(
+            "http.request.method"
+        )
+        if method == "OPTIONS":
+            return
+        self._inner.on_end(span)
+
+    def shutdown(self):
+        self._inner.shutdown()
+
+    def force_flush(self, timeout_millis=30000):
+        self._inner.force_flush(timeout_millis)
 
 
 def instrument_app(app) -> None:
@@ -76,5 +102,10 @@ def instrument_app(app) -> None:
 
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-    FastAPIInstrumentor.instrument_app(app, excluded_urls="health")
-    logger.info("FastAPI auto-instrumentation enabled (excluded: /health*)")
+    FastAPIInstrumentor.instrument_app(
+        app,
+        excluded_urls="health,admin",
+    )
+    logger.info(
+        "FastAPI auto-instrumentation enabled (excluded: /health*, /admin*, OPTIONS)"
+    )
