@@ -22,14 +22,18 @@ class ObservabilityMiddleware:
 
         path = scope.get("path", "")
 
-        # Skip health checks — they are high-frequency noise
-        if path.startswith("/health"):
+        # Skip health checks, admin routes, and CORS preflight — noise
+        method = scope.get("method", "")
+        if (
+            path.startswith("/health")
+            or path.startswith("/admin")
+            or method == "OPTIONS"
+        ):
             return await self.app(scope, receive, send)
 
         if not is_metrics_enabled():
             return await self.app(scope, receive, send)
 
-        method = scope.get("method", "UNKNOWN")
         start = time.time()
         status_code = 200
 
