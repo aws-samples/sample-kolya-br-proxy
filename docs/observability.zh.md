@@ -276,38 +276,54 @@ Span 属性：
 #### 请求流示意
 
 ```
-用户(浏览器/SDK)        KBP Server                 Bedrock
-    │                      │                          │
-    │── POST /v1/messages ──▶│                          │
-    │                      │  [http receive 开始]      │
-    │                      │                          │
-    │                      │── invoke_stream ──────────▶│
-    │                      │                          │
-    │                      │◀── SSE chunk 1 ───────────│
-    │◀── [http send] ────────│                          │
-    │                      │◀── SSE chunk 2 ───────────│
-    │◀── [http send] ────────│                          │
-    │                      │◀── SSE chunk N ───────────│
-    │◀── [http send] ────────│                          │
-    │                      │                          │
-    │                      │◀── [stream end] ──────────│
-    │◀── [http send: DONE] ──│                          │
-    │                      │  [http receive 结束]      │
+用户(浏览器/SDK)              KBP Server (ASGI)                      Bedrock
+    │                            │                                    │
+    │── POST /v1/messages ──────▶│                                    │
+    │                            │  [http receive] 接收请求头          │
+    │                            │  [http receive] 接收请求体          │
+    │                            │                                    │
+    │                            │  认证 + 格式转换                     │
+    │                            │                                    │
+    │◀── 200 OK ─────────────────│  [http send] 发送响应头             │
+    │    content-type:           │   (200, text/event-stream)        │
+    │    text/event-stream       │                                    │
+    │                            │                                    │
+    │                            │──── invoke_stream ────────────────▶│
+    │                            │       [bedrock.invoke_stream]      │
+    │                            │                                    │
+    │                            │  [http receive] 等待客户端断开（并行运行）
+    │                            │                                    │
+    │                            │◀── SSE chunk 1 ──────────────────│
+    │◀── [http send] ───────────│                                    │
+    │                            │◀── SSE chunk 2 ──────────────────│
+    │◀── [http send] ───────────│                                    │
+    │                            │◀── SSE chunk N ──────────────────│
+    │◀── [http send] ───────────│                                    │
+    │                            │                                    │
+    │                            │◀── [stream end] ─────────────────│
+    │◀── [http send: DONE] ─────│                                    │
+    │                            │  [http receive] 流结束，返回        │
 ```
 
-- **`http receive` ≈ `bedrock.invoke_stream`**：时间几乎相同，差值是请求解析 + 格式转换的开销
-- **多个 `http send`（0ms）**：每个对应一次 SSE event 推送
+要点：
+- **流式开始前 2 个 `http receive`**：第一个接收请求头，第二个接收请求体
+- **`bedrock.invoke_stream` 之前的 `http send`**：发送 HTTP 200 响应头 + SSE content-type，这发生在**任何内容生成之前** — 是 SSE 协议的"开始流式"信号
+- **`bedrock.invoke_stream` 之后的 `http receive`**：ASGI receive 循环等待客户端断开，与流式输出**并行运行**
+- **`http send` × N（0ms）**：每个对应一次 SSE chunk 推送
 
 #### Trace 示例：流式请求（正常路径）
 
 ```
 [POST /v1/messages]  ──────────────────────────── 3.5s
-  ├─ http receive  ─────────────────────────── 3.4s
-  ├─ http send × N                               0ms（每次 SSE chunk）
-  └─ bedrock.invoke_stream         ─────────── 3.3s
-       bedrock.model_id: anthropic.claude-sonnet-4-20250514-v1:0
-       bedrock.region:   us-west-2
-       bedrock.api:      invoke_model_stream
+  ├─ http receive                                 0ms  (请求头)
+  ├─ http receive                                 0ms  (请求体)
+  ├─ http send                                    0ms  (响应头: 200 + SSE)
+  ├─ bedrock.invoke_stream         ─────────── 3.3s
+  │    bedrock.model_id: anthropic.claude-sonnet-4-20250514-v1:0
+  │    bedrock.region:   us-west-2
+  │    bedrock.api:      invoke_model_stream
+  ├─ http receive  ─────────────────────────── 3.4s  (等待断开，并行)
+  └─ http send × N                               0ms  (每次 SSE chunk)
 ```
 
 #### Trace 示例：Failover 超时切换

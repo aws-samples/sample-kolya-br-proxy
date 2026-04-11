@@ -276,38 +276,54 @@ In the X-Ray console trace detail view, you'll see these spans:
 #### Request Flow
 
 ```
-Client (browser/SDK)       KBP Server                 Bedrock
-    │                         │                          │
-    │── POST /v1/messages ───▶│                          │
-    │                         │  [http receive starts]   │
-    │                         │                          │
-    │                         │── invoke_stream ────────▶│
-    │                         │                          │
-    │                         │◀── SSE chunk 1 ──────────│
-    │◀── [http send] ───────────│                          │
-    │                         │◀── SSE chunk 2 ──────────│
-    │◀── [http send] ───────────│                          │
-    │                         │◀── SSE chunk N ──────────│
-    │◀── [http send] ───────────│                          │
-    │                         │                          │
-    │                         │◀── [stream end] ─────────│
-    │◀── [http send: DONE] ────│                          │
-    │                         │  [http receive ends]     │
+Client (browser/SDK)         KBP Server (ASGI)                     Bedrock
+    │                            │                                    │
+    │── POST /v1/messages ──────▶│                                    │
+    │                            │  [http receive] request headers    │
+    │                            │  [http receive] request body       │
+    │                            │                                    │
+    │                            │  Auth + format conversion          │
+    │                            │                                    │
+    │◀── 200 OK ─────────────────│  [http send] response headers     │
+    │    content-type:           │   (200, text/event-stream)        │
+    │    text/event-stream       │                                    │
+    │                            │                                    │
+    │                            │──── invoke_stream ────────────────▶│
+    │                            │       [bedrock.invoke_stream]      │
+    │                            │                                    │
+    │                            │  [http receive] wait for client disconnect (parallel)
+    │                            │                                    │
+    │                            │◀── SSE chunk 1 ──────────────────│
+    │◀── [http send] ───────────│                                    │
+    │                            │◀── SSE chunk 2 ──────────────────│
+    │◀── [http send] ───────────│                                    │
+    │                            │◀── SSE chunk N ──────────────────│
+    │◀── [http send] ───────────│                                    │
+    │                            │                                    │
+    │                            │◀── [stream end] ─────────────────│
+    │◀── [http send: DONE] ─────│                                    │
+    │                            │  [http receive] stream done       │
 ```
 
-- **`http receive` ≈ `bedrock.invoke_stream`**: Nearly identical duration; the difference is request parsing + format conversion overhead
-- **Multiple `http send` (0ms each)**: One per SSE event push
+Key points:
+- **`http receive` × 2 before streaming**: First receives request headers, second receives request body
+- **`http send` before `bedrock.invoke_stream`**: Sends the HTTP 200 response headers + SSE content-type. This happens **before** any content is generated — it's the SSE protocol's "start streaming" signal
+- **`http receive` after `bedrock.invoke_stream` starts**: ASGI receive loop waiting for client disconnect, runs **in parallel** with the streaming output
+- **`http send` × N (0ms each)**: One per SSE event chunk pushed to client
 
 #### Trace Example: Streaming Request (normal path)
 
 ```
 [POST /v1/messages]  ──────────────────────────── 3.5s
-  ├─ http receive  ─────────────────────────── 3.4s
-  ├─ http send × N                               0ms (per SSE chunk)
-  └─ bedrock.invoke_stream         ─────────── 3.3s
-       bedrock.model_id: anthropic.claude-sonnet-4-20250514-v1:0
-       bedrock.region:   us-west-2
-       bedrock.api:      invoke_model_stream
+  ├─ http receive                                 0ms  (request headers)
+  ├─ http receive                                 0ms  (request body)
+  ├─ http send                                    0ms  (response headers: 200 + SSE)
+  ├─ bedrock.invoke_stream         ─────────── 3.3s
+  │    bedrock.model_id: anthropic.claude-sonnet-4-20250514-v1:0
+  │    bedrock.region:   us-west-2
+  │    bedrock.api:      invoke_model_stream
+  ├─ http receive  ─────────────────────────── 3.4s  (disconnect wait, parallel)
+  └─ http send × N                               0ms  (per SSE chunk)
 ```
 
 #### Trace Example: Failover Timeout Switch
