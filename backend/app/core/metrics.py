@@ -50,7 +50,9 @@ class _metrics_logger_context:
 
     def __init__(self):
         from aws_embedded_metrics import MetricsLogger
-        from aws_embedded_metrics.environment.environment_detector import resolve_environment
+        from aws_embedded_metrics.environment.environment_detector import (
+            resolve_environment,
+        )
 
         self._logger = MetricsLogger(resolve_environment)
 
