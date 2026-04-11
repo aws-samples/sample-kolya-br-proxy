@@ -96,6 +96,21 @@ module "eks" {
   tags = var.default_tags
 }
 
+# Pre-create CloudWatch log groups with short retention (3 days) to minimize cost.
+# The observability addon will reuse these instead of creating groups with no expiry.
+resource "aws_cloudwatch_log_group" "container_insights" {
+  for_each = var.enable_cloudwatch_observability ? toset([
+    "/aws/containerinsights/${var.cluster_name}/application",
+    "/aws/containerinsights/${var.cluster_name}/dataplane",
+    "/aws/containerinsights/${var.cluster_name}/host",
+    "/aws/containerinsights/${var.cluster_name}/performance",
+  ]) : toset([])
+
+  name              = each.value
+  retention_in_days = 3
+  tags              = var.default_tags
+}
+
 # Add EBS CSI permissions to EKS node group role
 resource "aws_iam_role_policy_attachment" "node_group_ebs_csi_policy" {
   role       = module.eks.eks_managed_node_groups["core_node_group"].iam_role_name
