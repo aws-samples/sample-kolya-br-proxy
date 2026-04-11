@@ -338,7 +338,6 @@ async def update_profile(
 @router.get("/microsoft/login")
 async def microsoft_login(
     redirect_uri: str,
-    oauth_service_dep=None,
     db: AsyncSession = Depends(get_db),
 ):
     """
