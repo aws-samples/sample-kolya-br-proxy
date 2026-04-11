@@ -164,6 +164,10 @@ class Settings(BaseSettings):
         default="",
         description="OpenTelemetry exporter: '' (disabled), 'xray', 'otlp'",
     )
+    OTEL_ENDPOINT: str = Field(
+        default="",
+        description="OTLP HTTP endpoint for xray mode (e.g. http://HOST_IP:4316). Empty = auto-detect via NODE_IP env var.",
+    )
 
     # System configuration
     INITIAL_USER_BALANCE_USD: float = Field(

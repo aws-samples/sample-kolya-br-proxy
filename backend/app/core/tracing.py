@@ -48,8 +48,12 @@ def configure_tracing() -> None:
     )
 
     if settings.OTEL_EXPORTER == "xray":
+        # CloudWatch agent DaemonSet exposes OTLP HTTP on port 4316.
+        # NODE_IP is set via Kubernetes fieldRef status.hostIP.
+        node_ip = os.getenv("NODE_IP", "localhost")
+        endpoint = settings.OTEL_ENDPOINT or f"http://{node_ip}:4316/v1/traces"
         exporter = OTLPSpanExporter(
-            endpoint="http://localhost:4318/v1/traces",
+            endpoint=endpoint,
         )
     elif settings.OTEL_EXPORTER == "otlp":
         exporter = OTLPSpanExporter()  # reads OTEL_EXPORTER_OTLP_ENDPOINT
@@ -72,5 +76,5 @@ def instrument_app(app) -> None:
 
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-    FastAPIInstrumentor.instrument_app(app)
-    logger.info("FastAPI auto-instrumentation enabled")
+    FastAPIInstrumentor.instrument_app(app, excluded_urls="health")
+    logger.info("FastAPI auto-instrumentation enabled (excluded: /health*)")

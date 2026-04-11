@@ -44,7 +44,12 @@ output "karpenter_queue_name" {
 
 output "karpenter_node_iam_role_name" {
   description = "Name of the Karpenter node IAM role"
-  value       = module.karpenter.node_iam_role_name
+  value       = aws_iam_role.karpenter_node.name
+}
+
+output "karpenter_node_iam_role_arn" {
+  description = "ARN of the Karpenter node IAM role"
+  value       = aws_iam_role.karpenter_node.arn
 }
 
 output "karpenter_service_account" {

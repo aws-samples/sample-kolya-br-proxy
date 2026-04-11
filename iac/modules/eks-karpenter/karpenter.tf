@@ -6,13 +6,10 @@ module "karpenter" {
 
   create_pod_identity_association = true
 
-  create_node_iam_role          = true
-  node_iam_role_name            = "${var.project_name_alias}-${var.workspace}-${var.account}-${var.region}-kpnodeiamrole"
-  node_iam_role_use_name_prefix = false
-  node_iam_role_additional_policies = {
-    AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-    AmazonEBSCSIDriverPolicy           = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-  }
+  # Node IAM role is self-managed in karpenter-node-iam.tf to ensure
+  # create_before_destroy lifecycle on policy attachments.
+  create_node_iam_role = false
+  node_iam_role_arn    = aws_iam_role.karpenter_node.arn
 
   iam_role_name            = "karpenter-controller-${var.workspace}-${var.account}-${var.region}"
   iam_role_use_name_prefix = false

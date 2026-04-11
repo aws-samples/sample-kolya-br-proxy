@@ -20,6 +20,8 @@ spec:
     metadata:
       labels:
         app: backend
+      annotations:
+        instrumentation.opentelemetry.io/inject-python: "false"
     spec:
       serviceAccountName: backend
       nodeSelector:
@@ -105,6 +107,10 @@ spec:
               name: backend-secrets
               key: gemini-api-key
               optional: true
+        - name: NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
         resources:
           requests:
             cpu: ${BACKEND_CPU_REQUEST}
