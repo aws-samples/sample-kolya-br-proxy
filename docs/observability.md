@@ -35,14 +35,14 @@ graph TD
 
     Logs --> CWL[CloudWatch<br/>Logs Insights]
     EMF --> CWM[CloudWatch<br/>Metrics]
-    OTel --> |OTLP HTTP :4318| ADOT[ADOT Collector]
-    ADOT --> XRay[AWS X-Ray<br/>Console]
+    OTel --> |OTLP HTTP :4316| CWAgent[CloudWatch Agent<br/>DaemonSet]
+    CWAgent --> XRay[AWS X-Ray<br/>Console]
 
     style App fill:#4a90d9,color:#fff
     style CWL fill:#ff9900,color:#fff
     style CWM fill:#ff9900,color:#fff
     style XRay fill:#ff9900,color:#fff
-    style ADOT fill:#527fff,color:#fff
+    style CWAgent fill:#527fff,color:#fff
 ```
 
 ---
@@ -57,6 +57,7 @@ All settings use the `KBR_` prefix and are defined in `backend/app/core/config.p
 | `KBR_LOG_FORMAT` | `text` | Output format: `text` (human-readable) or `json` (CloudWatch) |
 | `KBR_ENABLE_METRICS` | `false` | Enable CloudWatch Embedded Metrics Format emission |
 | `KBR_OTEL_EXPORTER` | `""` (empty) | OpenTelemetry exporter: `""` (disabled), `xray`, `otlp` |
+| `KBR_OTEL_ENDPOINT` | `""` (empty) | OTLP HTTP endpoint override (xray mode). Empty = auto-detect `http://$NODE_IP:4316/v1/traces` |
 
 **Changing any setting requires a service restart** (pod rolling update in Kubernetes).
 
@@ -223,31 +224,106 @@ This captures the time from request receipt to the first actual content token re
 | `KBR_OTEL_EXPORTER` | Target | Use Case |
 |---------------------|--------|----------|
 | `""` (empty) | Disabled | Local development |
-| `xray` | `localhost:4318` (ADOT collector) | Production with ADOT DaemonSet |
+| `xray` | `http://$NODE_IP:4316` (CloudWatch Agent DaemonSet) | Production with CloudWatch Observability addon |
 | `otlp` | `OTEL_EXPORTER_OTLP_ENDPOINT` env | Custom OTLP endpoint (e.g., Jaeger) |
+
+> **Why port 4316 instead of standard 4318?** The CloudWatch Agent DaemonSet's OTLP HTTP receiver listens on port 4316. `NODE_IP` is injected via Kubernetes `fieldRef: status.hostIP` because `localhost` inside a container's network namespace refers to the pod itself, not the host where the DaemonSet runs.
+
+### Health Check Exclusion
+
+`/health/*` paths are excluded from tracing (via `FastAPIInstrumentor(excluded_urls="health")`) to avoid flooding X-Ray with high-frequency health probe traces.
+
+### Auto-Instrumentation Disabled
+
+The backend pod uses the annotation `instrumentation.opentelemetry.io/inject-python: "false"` to disable the CloudWatch Observability addon's Python auto-injection. Reason: the addon's auto-injection modifies the Python startup command, breaking the `app` module path and causing `ModuleNotFoundError`. The backend initializes OpenTelemetry manually in code (`tracing.py`) instead.
 
 ### What Gets Traced
 
 1. **Auto-instrumented** (via `FastAPIInstrumentor`):
-   - All FastAPI route handlers — one span per HTTP request
+   - All FastAPI routes (except `/health/*`) — one root span per HTTP request
    - Includes HTTP method, path, status code, duration
 
 2. **Manual spans** in `bedrock.py`:
-   - `bedrock.invoke` — non-streaming Bedrock API call
-   - `bedrock.invoke_stream` — streaming Bedrock API call
+   - `bedrock.invoke` — non-streaming Bedrock API call (`_invoke_inner`)
+   - `bedrock.invoke_stream` — streaming Bedrock API call (`_invoke_stream_inner` and `_try_stream_with_content_timeout`)
 
 Span attributes:
 
 | Attribute | Description |
 |-----------|-------------|
-| `bedrock.model` | User-facing model name |
+| `bedrock.model` | User-facing model name (non-failover paths only) |
 | `bedrock.model_id` | Resolved Bedrock model ID |
 | `bedrock.region` | Target AWS region |
 | `bedrock.api` | API used: `invoke_model`, `converse`, `invoke_model_stream`, `converse_stream` |
-| `bedrock.attempt` | Retry attempt number |
-| `bedrock.input_tokens` | Input token count (set after response) |
-| `bedrock.output_tokens` | Output token count (set after response) |
+| `bedrock.attempt` | Retry attempt number (non-failover paths only) |
+| `bedrock.failover` | `true` when using the failover timeout path (failover paths only) |
+| `bedrock.input_tokens` | Input token count (set after response, non-streaming only) |
+| `bedrock.output_tokens` | Output token count (set after response, non-streaming only) |
 | `bedrock.duration_s` | Call duration in seconds |
+
+### Understanding X-Ray Trace Structure
+
+In the X-Ray console trace detail view, you'll see these spans:
+
+| Span Name | Source | Meaning |
+|-----------|--------|---------|
+| `POST /v1/messages` etc. | FastAPIInstrumentor | Root span covering the entire HTTP request lifecycle |
+| `http receive` | ASGI layer | Server receiving the request body. In streaming requests this span lasts until the entire response is generated (ASGI receive loop waits for client disconnect), so it dominates the total time |
+| `http send` | ASGI layer | Server sending data to the client. Each SSE chunk produces one `http send` (typically 0ms) |
+| `bedrock.invoke` | Manual span | Non-streaming Bedrock API call duration |
+| `bedrock.invoke_stream` | Manual span | Streaming Bedrock API call duration |
+
+#### Request Flow
+
+```
+Client (browser/SDK)       KBP Server                 Bedrock
+    │                         │                          │
+    │── POST /v1/messages ───▶│                          │
+    │                         │  [http receive starts]   │
+    │                         │                          │
+    │                         │── invoke_stream ────────▶│
+    │                         │                          │
+    │                         │◀── SSE chunk 1 ──────────│
+    │◀── [http send] ───────────│                          │
+    │                         │◀── SSE chunk 2 ──────────│
+    │◀── [http send] ───────────│                          │
+    │                         │◀── SSE chunk N ──────────│
+    │◀── [http send] ───────────│                          │
+    │                         │                          │
+    │                         │◀── [stream end] ─────────│
+    │◀── [http send: DONE] ────│                          │
+    │                         │  [http receive ends]     │
+```
+
+- **`http receive` ≈ `bedrock.invoke_stream`**: Nearly identical duration; the difference is request parsing + format conversion overhead
+- **Multiple `http send` (0ms each)**: One per SSE event push
+
+#### Trace Example: Streaming Request (normal path)
+
+```
+[POST /v1/messages]  ──────────────────────────── 3.5s
+  ├─ http receive  ─────────────────────────── 3.4s
+  ├─ http send × N                               0ms (per SSE chunk)
+  └─ bedrock.invoke_stream         ─────────── 3.3s
+       bedrock.model_id: anthropic.claude-sonnet-4-20250514-v1:0
+       bedrock.region:   us-west-2
+       bedrock.api:      invoke_model_stream
+```
+
+#### Trace Example: Failover Timeout Switch
+
+```
+[POST /v1/messages]  ──────────────────────────── 8.2s
+  ├─ bedrock.invoke_stream (FAILED)  ──── 5.0s  ⚠️
+  │    bedrock.failover: true
+  │    exception: FirstContentTimeoutError
+  │
+  ├─ bedrock.invoke_stream           ──── 3.1s  ✅
+  │    bedrock.failover: true
+  │
+  ├─ http send × N
+  └─ http receive
+```
 
 ### Local Testing with Jaeger
 
@@ -317,42 +393,47 @@ KBR_ENABLE_METRICS: "true"
 KBR_OTEL_EXPORTER: "xray"
 ```
 
-### ADOT Collector DaemonSet
+### CloudWatch Observability Addon
 
-The AWS Distro for OpenTelemetry (ADOT) collector receives OTLP spans on port 4318 and exports them to X-Ray:
+Deployed via EKS addon `amazon-cloudwatch-observability`, which provides:
+- **Fluent Bit**: Container log collection → CloudWatch Logs
+- **CloudWatch Agent**: Container Insights metrics + OTLP HTTP receiver (port 4316) → X-Ray
+- **Python auto-injection** (disabled): Turned off via annotation `inject-python: "false"`
+
+```hcl
+# iac/modules/eks-karpenter/eks.tf
+amazon-cloudwatch-observability = {
+  pod_identity_association = [{
+    role_arn        = aws_iam_role.cloudwatch_agent[0].arn
+    service_account = "cloudwatch-agent"
+  }]
+}
+```
+
+### Backend Pod Key Configuration
 
 ```yaml
-# k8s/infrastructure/adot-collector.yaml
-apiVersion: apps/v1
-kind: DaemonSet
+# k8s/application/backend-deployment.yaml.template
 metadata:
-  name: adot-collector
-spec:
-  template:
-    spec:
-      containers:
-        - name: collector
-          image: public.ecr.aws/aws-observability/aws-otel-collector:latest
-          ports:
-            - containerPort: 4318  # OTLP HTTP receiver
+  annotations:
+    # Disable addon's Python auto-injection to avoid breaking module paths
+    instrumentation.opentelemetry.io/inject-python: "false"
+env:
+  # CloudWatch Agent DaemonSet runs on the host;
+  # localhost inside a container can't reach it, so we need the host IP
+  - name: NODE_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
 ```
 
 ### Required IAM Permissions
 
-The backend pod's service account needs:
+The CloudWatch Agent's ServiceAccount is associated with an IAM role via Pod Identity:
+- `CloudWatchAgentServerPolicy` — logs, metrics, Container Insights
+- `AWSXrayWriteOnlyAccess` — X-Ray trace export
 
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "xray:PutTraceSegments",
-    "xray:PutTelemetryRecords",
-    "xray:GetSamplingRules",
-    "xray:GetSamplingTargets"
-  ],
-  "Resource": "*"
-}
-```
+The backend pod itself does **not** need additional X-Ray permissions since traces are relayed through the CloudWatch Agent DaemonSet.
 
 ### Health Check Endpoint
 
@@ -386,10 +467,12 @@ The backend pod's service account needs:
 ### Traces not appearing in X-Ray
 
 1. Verify `KBR_OTEL_EXPORTER=xray` is set
-2. ADOT collector DaemonSet must be running and healthy
-3. Check collector can reach `localhost:4318` from the app pod
-4. Verify pod IAM role has `xray:PutTraceSegments` permission
-5. Check ADOT collector logs for export errors
+2. CloudWatch Agent DaemonSet must be running: `kubectl get ds -n amazon-cloudwatch`
+3. Verify `NODE_IP` env var is injected: `kubectl exec <pod> -- env | grep NODE_IP`
+4. Check pod can reach `http://$NODE_IP:4316`
+5. Verify CloudWatch Agent IAM role has `AWSXrayWriteOnlyAccess` policy
+6. Check CloudWatch Agent logs: `kubectl logs -n amazon-cloudwatch -l app.kubernetes.io/name=cloudwatch-agent`
+7. `/health/*` paths won't appear in traces (excluded by design)
 
 ### JSON logs not showing extra fields
 

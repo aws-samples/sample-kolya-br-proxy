@@ -35,14 +35,14 @@ graph TD
 
     Logs --> CWL[CloudWatch<br/>Logs Insights]
     EMF --> CWM[CloudWatch<br/>Metrics]
-    OTel --> |OTLP HTTP :4318| ADOT[ADOT Collector]
-    ADOT --> XRay[AWS X-Ray<br/>Console]
+    OTel --> |OTLP HTTP :4316| CWAgent[CloudWatch Agent<br/>DaemonSet]
+    CWAgent --> XRay[AWS X-Ray<br/>Console]
 
     style App fill:#4a90d9,color:#fff
     style CWL fill:#ff9900,color:#fff
     style CWM fill:#ff9900,color:#fff
     style XRay fill:#ff9900,color:#fff
-    style ADOT fill:#527fff,color:#fff
+    style CWAgent fill:#527fff,color:#fff
 ```
 
 ---
@@ -57,6 +57,7 @@ graph TD
 | `KBR_LOG_FORMAT` | `text` | 输出格式：`text`（人类可读）或 `json`（CloudWatch） |
 | `KBR_ENABLE_METRICS` | `false` | 启用 CloudWatch Embedded Metrics Format 指标 |
 | `KBR_OTEL_EXPORTER` | `""`（空） | OpenTelemetry 导出器：`""`（禁用）、`xray`、`otlp` |
+| `KBR_OTEL_ENDPOINT` | `""`（空） | OTLP HTTP 端点覆盖（xray 模式）。空 = 自动检测 `http://$NODE_IP:4316/v1/traces` |
 
 **修改任何设置需要重启服务**（Kubernetes 中通过 Pod 滚动更新）。
 
@@ -223,31 +224,106 @@ if ttft is None:
 | `KBR_OTEL_EXPORTER` | 目标 | 使用场景 |
 |---------------------|------|---------|
 | `""`（空） | 禁用 | 本地开发 |
-| `xray` | `localhost:4318`（ADOT collector） | 生产环境，配合 ADOT DaemonSet |
+| `xray` | `http://$NODE_IP:4316`（CloudWatch Agent DaemonSet） | 生产环境，配合 CloudWatch Observability addon |
 | `otlp` | `OTEL_EXPORTER_OTLP_ENDPOINT` 环境变量 | 自定义 OTLP 端点（如 Jaeger） |
+
+> **为什么是 4316 而不是标准 4318？** CloudWatch Agent DaemonSet 的 OTLP HTTP 接收器监听 4316 端口。`NODE_IP` 通过 Kubernetes `fieldRef: status.hostIP` 注入，因为在容器网络命名空间中 `localhost` 指向 Pod 自身，无法到达宿主机上的 DaemonSet。
+
+### 健康检查排除
+
+`/health/*` 路径已从追踪中排除（通过 `FastAPIInstrumentor(excluded_urls="health")`），避免高频健康探针产生大量无用 trace。
+
+### 自动埋点禁用
+
+后端 Pod 使用 annotation `instrumentation.opentelemetry.io/inject-python: "false"` 禁用 CloudWatch Observability addon 的 Python 自动注入。原因：addon 的自动注入会修改 Python 启动命令，破坏 `app` 模块路径导致 `ModuleNotFoundError`。后端通过代码内手动初始化 OpenTelemetry（`tracing.py`）来替代。
 
 ### 追踪内容
 
 1. **自动埋点**（通过 `FastAPIInstrumentor`）：
-   - 所有 FastAPI 路由处理器 — 每个 HTTP 请求一个 span
+   - 所有 FastAPI 路由（`/health/*` 除外）— 每个 HTTP 请求一个根 span
    - 包含 HTTP 方法、路径、状态码、耗时
 
 2. **手动 span**（`bedrock.py`）：
-   - `bedrock.invoke` — 非流式 Bedrock API 调用
-   - `bedrock.invoke_stream` — 流式 Bedrock API 调用
+   - `bedrock.invoke` — 非流式 Bedrock API 调用（`_invoke_inner`）
+   - `bedrock.invoke_stream` — 流式 Bedrock API 调用（`_invoke_stream_inner` 和 `_try_stream_with_content_timeout`）
 
 Span 属性：
 
 | 属性 | 说明 |
 |------|------|
-| `bedrock.model` | 用户面模型名称 |
+| `bedrock.model` | 用户面模型名称（仅非 failover 路径） |
 | `bedrock.model_id` | 解析后的 Bedrock 模型 ID |
 | `bedrock.region` | 目标 AWS 区域 |
 | `bedrock.api` | 使用的 API：`invoke_model`、`converse`、`invoke_model_stream`、`converse_stream` |
-| `bedrock.attempt` | 重试次数 |
-| `bedrock.input_tokens` | 输入 token 数（响应后设置） |
-| `bedrock.output_tokens` | 输出 token 数（响应后设置） |
+| `bedrock.attempt` | 重试次数（仅非 failover 路径） |
+| `bedrock.failover` | `true` 表示走 failover 超时路径（仅 failover 路径） |
+| `bedrock.input_tokens` | 输入 token 数（响应后设置，仅非流式） |
+| `bedrock.output_tokens` | 输出 token 数（响应后设置，仅非流式） |
 | `bedrock.duration_s` | 调用耗时（秒） |
+
+### X-Ray Trace 结构解读
+
+在 X-Ray 控制台的 Trace 详情页，你会看到以下 span：
+
+| Span 名称 | 来源 | 含义 |
+|-----------|------|------|
+| `POST /v1/messages` 等 | FastAPIInstrumentor | 根 span，覆盖整个 HTTP 请求生命周期 |
+| `http receive` | ASGI 层 | 服务端接收请求体。流式请求中此 span 持续到整个响应生成完毕（ASGI 的 receive 循环等待客户端断开），因此占据几乎全部时间 |
+| `http send` | ASGI 层 | 服务端向客户端发送数据。每次 SSE chunk 推送产生一个 `http send`（通常 0ms） |
+| `bedrock.invoke` | 手动埋点 | 非流式 Bedrock API 调用的耗时 |
+| `bedrock.invoke_stream` | 手动埋点 | 流式 Bedrock API 调用的耗时 |
+
+#### 请求流示意
+
+```
+用户(浏览器/SDK)        KBP Server                 Bedrock
+    │                      │                          │
+    │── POST /v1/messages ──▶│                          │
+    │                      │  [http receive 开始]      │
+    │                      │                          │
+    │                      │── invoke_stream ──────────▶│
+    │                      │                          │
+    │                      │◀── SSE chunk 1 ───────────│
+    │◀── [http send] ────────│                          │
+    │                      │◀── SSE chunk 2 ───────────│
+    │◀── [http send] ────────│                          │
+    │                      │◀── SSE chunk N ───────────│
+    │◀── [http send] ────────│                          │
+    │                      │                          │
+    │                      │◀── [stream end] ──────────│
+    │◀── [http send: DONE] ──│                          │
+    │                      │  [http receive 结束]      │
+```
+
+- **`http receive` ≈ `bedrock.invoke_stream`**：时间几乎相同，差值是请求解析 + 格式转换的开销
+- **多个 `http send`（0ms）**：每个对应一次 SSE event 推送
+
+#### Trace 示例：流式请求（正常路径）
+
+```
+[POST /v1/messages]  ──────────────────────────── 3.5s
+  ├─ http receive  ─────────────────────────── 3.4s
+  ├─ http send × N                               0ms（每次 SSE chunk）
+  └─ bedrock.invoke_stream         ─────────── 3.3s
+       bedrock.model_id: anthropic.claude-sonnet-4-20250514-v1:0
+       bedrock.region:   us-west-2
+       bedrock.api:      invoke_model_stream
+```
+
+#### Trace 示例：Failover 超时切换
+
+```
+[POST /v1/messages]  ──────────────────────────── 8.2s
+  ├─ bedrock.invoke_stream (FAILED)  ──── 5.0s  ⚠️
+  │    bedrock.failover: true
+  │    exception: FirstContentTimeoutError
+  │
+  ├─ bedrock.invoke_stream           ──── 3.1s  ✅
+  │    bedrock.failover: true
+  │
+  ├─ http send × N
+  └─ http receive
+```
 
 ### 本地测试（Jaeger）
 
@@ -317,42 +393,47 @@ KBR_ENABLE_METRICS: "true"
 KBR_OTEL_EXPORTER: "xray"
 ```
 
-### ADOT Collector DaemonSet
+### CloudWatch Observability Addon
 
-AWS Distro for OpenTelemetry (ADOT) collector 在端口 4318 接收 OTLP span 并导出到 X-Ray：
+通过 EKS addon `amazon-cloudwatch-observability` 部署 CloudWatch Agent DaemonSet，提供：
+- **Fluent Bit**：容器日志采集 → CloudWatch Logs
+- **CloudWatch Agent**：Container Insights 指标 + OTLP HTTP 接收器（端口 4316）→ X-Ray
+- **自动 Python 注入**（已禁用）：通过 annotation `inject-python: "false"` 关闭
+
+```hcl
+# iac/modules/eks-karpenter/eks.tf
+amazon-cloudwatch-observability = {
+  pod_identity_association = [{
+    role_arn        = aws_iam_role.cloudwatch_agent[0].arn
+    service_account = "cloudwatch-agent"
+  }]
+}
+```
+
+### 后端 Pod 关键配置
 
 ```yaml
-# k8s/infrastructure/adot-collector.yaml
-apiVersion: apps/v1
-kind: DaemonSet
+# k8s/application/backend-deployment.yaml.template
 metadata:
-  name: adot-collector
-spec:
-  template:
-    spec:
-      containers:
-        - name: collector
-          image: public.ecr.aws/aws-observability/aws-otel-collector:latest
-          ports:
-            - containerPort: 4318  # OTLP HTTP receiver
+  annotations:
+    # 禁用 addon 的 Python 自动注入，避免破坏模块路径
+    instrumentation.opentelemetry.io/inject-python: "false"
+env:
+  # CloudWatch Agent DaemonSet 运行在宿主机上，
+  # 容器内 localhost 无法访问，需要宿主机 IP
+  - name: NODE_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
 ```
 
 ### 所需 IAM 权限
 
-后端 Pod 的 ServiceAccount 需要：
+CloudWatch Agent 的 ServiceAccount 通过 Pod Identity 关联 IAM 角色，需要：
+- `CloudWatchAgentServerPolicy` — 日志、指标、Container Insights
+- `AWSXrayWriteOnlyAccess` — X-Ray trace 导出
 
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "xray:PutTraceSegments",
-    "xray:PutTelemetryRecords",
-    "xray:GetSamplingRules",
-    "xray:GetSamplingTargets"
-  ],
-  "Resource": "*"
-}
-```
+后端 Pod 本身**不需要**额外的 X-Ray 权限，因为 trace 通过 CloudWatch Agent DaemonSet 中转。
 
 ### 健康检查端点
 
@@ -386,10 +467,12 @@ spec:
 ### 追踪未出现在 X-Ray 中
 
 1. 确认 `KBR_OTEL_EXPORTER=xray` 已设置
-2. ADOT Collector DaemonSet 必须运行正常
-3. 检查应用 Pod 能访问 `localhost:4318`
-4. 确认 Pod IAM 角色有 `xray:PutTraceSegments` 权限
-5. 检查 ADOT Collector 日志是否有导出错误
+2. CloudWatch Agent DaemonSet 必须运行正常：`kubectl get ds -n amazon-cloudwatch`
+3. 确认 `NODE_IP` 环境变量已注入（`kubectl exec <pod> -- env | grep NODE_IP`）
+4. 检查 Pod 能访问 `http://$NODE_IP:4316`
+5. 确认 CloudWatch Agent IAM 角色有 `AWSXrayWriteOnlyAccess` 策略
+6. 检查 CloudWatch Agent 日志：`kubectl logs -n amazon-cloudwatch -l app.kubernetes.io/name=cloudwatch-agent`
+7. `/health/*` 路径不会出现在追踪中（已排除）
 
 ### JSON 日志没有 extra 字段
 
