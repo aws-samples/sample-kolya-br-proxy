@@ -1,47 +1,103 @@
 # Benchmark
 
-Locust-based load testing for kolya-br-proxy. Tests three API endpoints:
+Locust-based performance testing for kolya-br-proxy. Tests API endpoints for latency baseline, TTFT, throughput, and stability.
+
+Supported endpoints:
 - **OpenAI** `/v1/chat/completions` (Bearer token)
 - **Anthropic** `/v1/messages` (x-api-key)
 - **Gemini** `/v1beta/models/{model}:streamGenerateContent` (x-goog-api-key)
+
+> **Note:** Anthropic models (e.g. `claude-sonnet-4-6`) do not support the Gemini protocol. Only use `GeminiUser` with actual Gemini models.
 
 ## Setup
 
 ```bash
 uv sync --group dev   # locust is in dev dependencies
+mkdir -p benchmark/results
 ```
 
-## Usage
+## Quick Start
 
-### Web UI (recommended)
+### 1. Set environment variables
 
 ```bash
-BENCHMARK_API_TOKEN=sk-ant-api03_xxx \
-  locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun
+export BENCHMARK_API_TOKEN=sk-ant-api03_YOUR_TOKEN
+export BENCHMARK_OPENAI_MODEL=global.anthropic.claude-sonnet-4-6-v1:0
+export BENCHMARK_ANTHROPIC_MODEL=global.anthropic.claude-sonnet-4-6-v1:0
 ```
 
-Open http://localhost:8089, set users and spawn rate, start.
-
-### Headless
+For extended thinking scenarios:
 
 ```bash
-BENCHMARK_API_TOKEN=sk-ant-api03_xxx \
-  locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun \
-  --headless -u 10 -r 2 -t 5m --csv=benchmark/results/run
+export BENCHMARK_PROMPT_SIZE=large
+export BENCHMARK_THINKING_BUDGET=10000
+export BENCHMARK_MAX_TOKENS=16384   # must be > BENCHMARK_THINKING_BUDGET
 ```
 
-### Single endpoint
+### 2. Smoke test (verify connectivity, confirm 0 Fails)
 
 ```bash
-# Only OpenAI
-locust -f benchmark/locustfile.py --host ... OpenAIUser
+# Headless — quick validation
+uv run locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun \
+  --headless -u 1 -r 1 -t 30s OpenAIUser
 
-# Only Anthropic
-locust -f benchmark/locustfile.py --host ... AnthropicUser
-
-# Only Gemini
-locust -f benchmark/locustfile.py --host ... GeminiUser
+# Web UI — visual validation
+uv run locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun AnthropicUser
+# Open http://localhost:8089, set users=1, ramp up=1, run time=10s
 ```
+
+### 3. Latency baseline + TTFT (single endpoint)
+
+```bash
+uv run locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun \
+  --csv=benchmark/results/openai OpenAIUser
+
+uv run locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun \
+  --csv=benchmark/results/anthropic AnthropicUser
+```
+
+Web UI: users=3, ramp up=1, run time=5m.
+
+### 4. Mixed load (multiple endpoints together)
+
+```bash
+uv run locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun \
+  --csv=benchmark/results/mixed OpenAIUser AnthropicUser
+```
+
+Web UI: users=5, ramp up=1, run time=5m.
+
+### 5. Stability test
+
+Run with real business scenarios for extended periods to observe latency drift, memory leaks, or connection pool exhaustion.
+
+```bash
+uv run locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun \
+  --csv=benchmark/results/stability OpenAIUser AnthropicUser
+```
+
+Web UI: users=3, ramp up=1, run time=30m.
+
+### 6. Throughput limit (ramp up)
+
+```bash
+uv run locust -f benchmark/locustfile.py --host https://api.kbp.kolya.fun \
+  --csv=benchmark/results/rampup OpenAIUser AnthropicUser
+```
+
+Start at 3 users, manually increase to 5 → 10 → 20 in Web UI. Watch for the error rate inflection point.
+
+### 7. View results
+
+CSV files are saved in `benchmark/results/`:
+
+| File | Content |
+|------|---------|
+| `*_stats.csv` | Latency, RPS, error rate summary |
+| `*_stats_history.csv` | Time series data |
+| `*_failures.csv` | Failure details |
+
+Combine with **CloudWatch Dashboard** to view proxy-side metrics + X-Ray traces, and determine whether bottlenecks are in the proxy or Bedrock.
 
 ## Environment Variables
 
@@ -58,18 +114,8 @@ locust -f benchmark/locustfile.py --host ... GeminiUser
 
 ## Custom Metrics
 
-TTFT (Time to First Token) is reported as a custom `TTFT` request type in Locust.
-It appears as a separate row in the statistics table and chart.
-
-## Test Scenarios
-
-| Scenario | Users | Duration | Purpose |
-|----------|-------|----------|---------|
-| Smoke test | 1 | 2min | Verify connectivity |
-| Baseline | 3 | 5min | P50/P95/P99 latency |
-| Concurrency | 10-25 | 10min | Throughput ceiling, error rates |
-| Sustained | 5 | 30min | Stability, memory leaks |
-| Mixed | 10 | 10min | All three endpoints |
+- **TTFT** (Time to First Token) — reported as a custom `TTFT` request type in Locust, appears as a separate row in statistics.
+- **TTFT thinking** — when extended thinking is enabled, time to first thinking token is reported separately.
 
 ## Rate Limits
 
