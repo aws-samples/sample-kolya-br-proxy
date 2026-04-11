@@ -111,12 +111,14 @@ def stream_and_measure(response, api_format: str) -> dict:
             if not line.startswith("data: ") or line == "data: [DONE]":
                 continue
 
+            if ttft is not None and usage is not None:
+                continue
+
             try:
                 obj = json.loads(line[6:])
             except (json.JSONDecodeError, TypeError):
                 continue
 
-            # Thinking TTFT detection (Anthropic only)
             if (
                 ttft_thinking is None
                 and api_format == "anthropic"
@@ -124,7 +126,6 @@ def stream_and_measure(response, api_format: str) -> dict:
             ):
                 ttft_thinking = time.monotonic() - start
 
-            # TTFT detection (first actual text content)
             if ttft is None:
                 is_content = False
                 if api_format == "openai":
@@ -136,7 +137,6 @@ def stream_and_measure(response, api_format: str) -> dict:
                 if is_content:
                     ttft = time.monotonic() - start
 
-            # Usage extraction (keep last seen)
             if api_format == "openai":
                 u = _extract_openai_usage(obj)
             elif api_format == "anthropic":

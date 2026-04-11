@@ -183,14 +183,13 @@ class GeminiUser(HttpUser):
                 "Content-Type": "application/json",
             }
         )
-        self._model = GEMINI_MODEL
         self._payload = gemini_payload(PROMPT_SIZE, MAX_TOKENS, TEMPERATURE)
 
     @tag("gemini")
     @task(3)
     def stream_generate(self):
-        name = f"/v1beta/models/{self._model}:streamGenerateContent"
-        url = f"/v1beta/models/{self._model}:streamGenerateContent?alt=sse"
+        name = f"/v1beta/models/{GEMINI_MODEL}:streamGenerateContent"
+        url = f"/v1beta/models/{GEMINI_MODEL}:streamGenerateContent?alt=sse"
         with self.client.post(
             url,
             json=self._payload,
@@ -212,12 +211,12 @@ class GeminiUser(HttpUser):
     @tag("gemini")
     @task(1)
     def nonstream_generate(self):
-        url = f"/v1beta/models/{self._model}:generateContent"
+        url = f"/v1beta/models/{GEMINI_MODEL}:generateContent"
         with self.client.post(
             url,
             json=self._payload,
             catch_response=True,
-            name=f"/v1beta/models/{self._model}:generateContent",
+            name=f"/v1beta/models/{GEMINI_MODEL}:generateContent",
         ) as resp:
             if resp.status_code != 200:
                 resp.failure(f"HTTP {resp.status_code}")

@@ -128,7 +128,7 @@ def anthropic_payload(
             "model": model,
             "max_tokens": max_tokens,
             "system": _LARGE_SYSTEM,
-            "messages": _LARGE_MESSAGES,
+            "messages": [*_LARGE_MESSAGES],
         }
     if thinking_budget > 0:
         payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
