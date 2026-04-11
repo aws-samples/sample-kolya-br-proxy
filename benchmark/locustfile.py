@@ -10,7 +10,7 @@ Usage:
 
     # Single endpoint
     BENCHMARK_API_TOKEN=sk-ant-api03_xxx locust -f benchmark/locustfile.py \
-        --host https://api.kbp.kolya.fun -T openai
+        --host https://api.kbp.kolya.fun OpenAIUser
 """
 
 import json
@@ -25,14 +25,10 @@ from benchmark.config import (
     OPENAI_MODEL,
     PROMPT_SIZE,
     TEMPERATURE,
+    THINKING_BUDGET,
 )
 from benchmark.prompts import anthropic_payload, gemini_payload, openai_messages
 from benchmark.sse_client import fire_ttft_event, stream_and_measure
-
-
-# ---------------------------------------------------------------------------
-# OpenAI-compatible endpoint
-# ---------------------------------------------------------------------------
 
 
 class OpenAIUser(HttpUser):
@@ -103,11 +99,6 @@ class OpenAIUser(HttpUser):
                 resp.failure("Invalid JSON response")
 
 
-# ---------------------------------------------------------------------------
-# Anthropic Messages endpoint
-# ---------------------------------------------------------------------------
-
-
 class AnthropicUser(HttpUser):
     """Load test /v1/messages (Anthropic format)."""
 
@@ -122,11 +113,12 @@ class AnthropicUser(HttpUser):
                 "anthropic-version": "2023-06-01",
             }
         )
+        self._payload = anthropic_payload(
+            PROMPT_SIZE, ANTHROPIC_MODEL, MAX_TOKENS, THINKING_BUDGET
+        )
 
     def _body(self, stream: bool) -> dict:
-        payload = anthropic_payload(PROMPT_SIZE, ANTHROPIC_MODEL, MAX_TOKENS)
-        payload["stream"] = stream
-        return payload
+        return {**self._payload, "stream": stream}
 
     @tag("anthropic")
     @task(3)
@@ -147,6 +139,12 @@ class AnthropicUser(HttpUser):
                 resp.failure(result["error"])
             else:
                 resp.success()
+            if result["ttft_thinking_s"] is not None:
+                fire_ttft_event(
+                    f"{name} thinking",
+                    result["ttft_thinking_s"] * 1000,
+                    self.environment,
+                )
             if result["ttft_s"] is not None:
                 fire_ttft_event(name, result["ttft_s"] * 1000, self.environment)
 
@@ -172,11 +170,6 @@ class AnthropicUser(HttpUser):
                 resp.failure("Invalid JSON response")
 
 
-# ---------------------------------------------------------------------------
-# Gemini native endpoint
-# ---------------------------------------------------------------------------
-
-
 class GeminiUser(HttpUser):
     """Load test /v1beta/models/{model}:generateContent (Gemini format)."""
 
@@ -191,16 +184,16 @@ class GeminiUser(HttpUser):
             }
         )
         self._model = GEMINI_MODEL
+        self._payload = gemini_payload(PROMPT_SIZE, MAX_TOKENS, TEMPERATURE)
 
     @tag("gemini")
     @task(3)
     def stream_generate(self):
         name = f"/v1beta/models/{self._model}:streamGenerateContent"
         url = f"/v1beta/models/{self._model}:streamGenerateContent?alt=sse"
-        body = gemini_payload(PROMPT_SIZE)
         with self.client.post(
             url,
-            json=body,
+            json=self._payload,
             stream=True,
             catch_response=True,
             name=name,
@@ -220,10 +213,9 @@ class GeminiUser(HttpUser):
     @task(1)
     def nonstream_generate(self):
         url = f"/v1beta/models/{self._model}:generateContent"
-        body = gemini_payload(PROMPT_SIZE)
         with self.client.post(
             url,
-            json=body,
+            json=self._payload,
             catch_response=True,
             name=f"/v1beta/models/{self._model}:generateContent",
         ) as resp:

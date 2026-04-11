@@ -34,13 +34,13 @@ BENCHMARK_API_TOKEN=sk-ant-api03_xxx \
 
 ```bash
 # Only OpenAI
-locust -f benchmark/locustfile.py -T openai --host ...
+locust -f benchmark/locustfile.py --host ... OpenAIUser
 
 # Only Anthropic
-locust -f benchmark/locustfile.py -T anthropic --host ...
+locust -f benchmark/locustfile.py --host ... AnthropicUser
 
 # Only Gemini
-locust -f benchmark/locustfile.py -T gemini --host ...
+locust -f benchmark/locustfile.py --host ... GeminiUser
 ```
 
 ## Environment Variables
@@ -54,6 +54,7 @@ locust -f benchmark/locustfile.py -T gemini --host ...
 | `BENCHMARK_MAX_TOKENS` | `256` | Max output tokens |
 | `BENCHMARK_PROMPT_SIZE` | `small` | Prompt size: `small` (~50 tokens), `medium` (~500), `large` (~2000) |
 | `BENCHMARK_TEMPERATURE` | `0.7` | Sampling temperature |
+| `BENCHMARK_THINKING_BUDGET` | `0` | Extended thinking budget tokens (0=disabled, Anthropic only) |
 
 ## Custom Metrics
 

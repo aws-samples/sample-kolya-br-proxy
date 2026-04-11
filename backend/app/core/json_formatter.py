@@ -114,5 +114,5 @@ def configure_logging() -> None:
 
     root.addHandler(handler)
 
-    root.addFilter(RequestContextFilter())
+    handler.addFilter(RequestContextFilter())
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())

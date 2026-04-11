@@ -29,3 +29,6 @@ GEMINI_MODEL = os.getenv("BENCHMARK_GEMINI_MODEL", "gemini-2.5-flash")
 MAX_TOKENS = int(os.getenv("BENCHMARK_MAX_TOKENS", "256"))
 PROMPT_SIZE = os.getenv("BENCHMARK_PROMPT_SIZE", "small")  # small | medium | large
 TEMPERATURE = float(os.getenv("BENCHMARK_TEMPERATURE", "0.7"))
+
+# Extended thinking (Anthropic endpoint only, 0 = disabled)
+THINKING_BUDGET = int(os.getenv("BENCHMARK_THINKING_BUDGET", "0"))

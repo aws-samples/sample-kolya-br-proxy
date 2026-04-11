@@ -4,10 +4,6 @@ Three sizes (small/medium/large), each available in OpenAI, Anthropic, and
 Gemini native formats.
 """
 
-# ---------------------------------------------------------------------------
-# Raw prompt content
-# ---------------------------------------------------------------------------
-
 _SMALL_USER = "Explain what a hash table is in exactly two sentences."
 
 _MEDIUM_SYSTEM = (
@@ -91,11 +87,6 @@ _LARGE_MESSAGES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# OpenAI format (for /v1/chat/completions)
-# ---------------------------------------------------------------------------
-
-
 def openai_messages(size: str = "small") -> list[dict]:
     """Return messages array in OpenAI chat format."""
     if size == "small":
@@ -112,54 +103,54 @@ def openai_messages(size: str = "small") -> list[dict]:
     ]
 
 
-# ---------------------------------------------------------------------------
-# Anthropic format (for /v1/messages)
-# ---------------------------------------------------------------------------
-
-
 def anthropic_payload(
-    size: str = "small", model: str = "", max_tokens: int = 256
+    size: str = "small",
+    model: str = "",
+    max_tokens: int = 256,
+    thinking_budget: int = 0,
 ) -> dict:
     """Return full request body in Anthropic Messages format."""
     if size == "small":
-        return {
+        payload = {
             "model": model,
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": _SMALL_USER}],
         }
-    if size == "medium":
-        return {
+    elif size == "medium":
+        payload = {
             "model": model,
             "max_tokens": max_tokens,
             "system": _MEDIUM_SYSTEM,
             "messages": [{"role": "user", "content": _MEDIUM_USER}],
         }
-    # large
-    return {
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": _LARGE_SYSTEM,
-        "messages": _LARGE_MESSAGES,
-    }
+    else:
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "system": _LARGE_SYSTEM,
+            "messages": _LARGE_MESSAGES,
+        }
+    if thinking_budget > 0:
+        payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+        payload["temperature"] = 1  # thinking requires temperature=1
+    return payload
 
 
-# ---------------------------------------------------------------------------
-# Gemini native format (for /v1beta/models/{model}:generateContent)
-# ---------------------------------------------------------------------------
-
-
-def gemini_payload(size: str = "small") -> dict:
+def gemini_payload(
+    size: str = "small", max_tokens: int = 256, temperature: float = 0.7
+) -> dict:
     """Return request body in Gemini native format."""
+    gen_config = {"maxOutputTokens": max_tokens, "temperature": temperature}
     if size == "small":
         return {
             "contents": [{"role": "user", "parts": [{"text": _SMALL_USER}]}],
-            "generationConfig": {"maxOutputTokens": 256, "temperature": 0.7},
+            "generationConfig": gen_config,
         }
     if size == "medium":
         return {
             "systemInstruction": {"parts": [{"text": _MEDIUM_SYSTEM}]},
             "contents": [{"role": "user", "parts": [{"text": _MEDIUM_USER}]}],
-            "generationConfig": {"maxOutputTokens": 256, "temperature": 0.7},
+            "generationConfig": gen_config,
         }
     # large
     contents = []
@@ -169,5 +160,5 @@ def gemini_payload(size: str = "small") -> dict:
     return {
         "systemInstruction": {"parts": [{"text": _LARGE_SYSTEM}]},
         "contents": contents,
-        "generationConfig": {"maxOutputTokens": 256, "temperature": 0.7},
+        "generationConfig": gen_config,
     }

@@ -12,94 +12,66 @@ import time
 from locust import events
 
 
-def _is_openai_content(line: str) -> bool:
-    """Check if an OpenAI SSE data line contains a content delta."""
-    if not line.startswith("data: ") or line == "data: [DONE]":
-        return False
-    try:
-        obj = json.loads(line[6:])
-        for choice in obj.get("choices", []):
-            delta = choice.get("delta", {})
-            if delta.get("content"):
-                return True
-    except (json.JSONDecodeError, TypeError):
-        pass
+def _is_openai_content(obj: dict) -> bool:
+    """Check if a parsed OpenAI SSE chunk contains a content delta."""
+    for choice in obj.get("choices", []):
+        if choice.get("delta", {}).get("content"):
+            return True
     return False
 
 
-def _is_anthropic_content(line: str, prev_event: str) -> bool:
-    """Check if an Anthropic SSE data line contains a text delta."""
+def _is_anthropic_content(obj: dict, prev_event: str) -> bool:
+    """Check if a parsed Anthropic SSE chunk contains a text delta."""
     if prev_event != "content_block_delta":
         return False
-    if not line.startswith("data: "):
-        return False
-    try:
-        obj = json.loads(line[6:])
-        delta = obj.get("delta", {})
-        return delta.get("type") == "text_delta" and bool(delta.get("text"))
-    except (json.JSONDecodeError, TypeError):
-        return False
+    delta = obj.get("delta", {})
+    return delta.get("type") == "text_delta" and bool(delta.get("text"))
 
 
-def _is_gemini_content(line: str) -> bool:
-    """Check if a Gemini SSE data line contains generated text."""
-    if not line.startswith("data: "):
+def _is_anthropic_thinking(obj: dict, prev_event: str) -> bool:
+    """Check if a parsed Anthropic SSE chunk contains a thinking delta."""
+    if prev_event != "content_block_delta":
         return False
-    try:
-        obj = json.loads(line[6:])
-        for candidate in obj.get("candidates", []):
-            content = candidate.get("content", {})
-            for part in content.get("parts", []):
-                if part.get("text"):
-                    return True
-    except (json.JSONDecodeError, TypeError):
-        pass
+    delta = obj.get("delta", {})
+    return delta.get("type") == "thinking_delta" and bool(delta.get("thinking"))
+
+
+def _is_gemini_content(obj: dict) -> bool:
+    """Check if a parsed Gemini SSE chunk contains generated text."""
+    for candidate in obj.get("candidates", []):
+        for part in candidate.get("content", {}).get("parts", []):
+            if part.get("text"):
+                return True
     return False
 
 
-def _extract_openai_usage(line: str) -> dict | None:
-    """Extract usage from an OpenAI SSE chunk (sent near end of stream)."""
-    if not line.startswith("data: ") or line == "data: [DONE]":
-        return None
-    try:
-        obj = json.loads(line[6:])
-        usage = obj.get("usage")
-        if usage and usage.get("total_tokens"):
-            return usage
-    except (json.JSONDecodeError, TypeError):
-        pass
+def _extract_openai_usage(obj: dict) -> dict | None:
+    """Extract usage from a parsed OpenAI SSE chunk."""
+    usage = obj.get("usage")
+    if usage and usage.get("total_tokens"):
+        return usage
     return None
 
 
-def _extract_anthropic_usage(line: str, prev_event: str) -> dict | None:
-    """Extract usage from Anthropic message_delta event."""
-    if prev_event != "message_delta" or not line.startswith("data: "):
+def _extract_anthropic_usage(obj: dict, prev_event: str) -> dict | None:
+    """Extract usage from a parsed Anthropic message_delta chunk."""
+    if prev_event != "message_delta":
         return None
-    try:
-        obj = json.loads(line[6:])
-        usage = obj.get("usage", {})
-        if usage.get("output_tokens"):
-            return usage
-    except (json.JSONDecodeError, TypeError):
-        pass
+    usage = obj.get("usage", {})
+    if usage.get("output_tokens"):
+        return usage
     return None
 
 
-def _extract_gemini_usage(line: str) -> dict | None:
-    """Extract usage from Gemini usageMetadata."""
-    if not line.startswith("data: "):
-        return None
-    try:
-        obj = json.loads(line[6:])
-        meta = obj.get("usageMetadata", {})
-        if meta.get("totalTokenCount"):
-            return {
-                "prompt_tokens": meta.get("promptTokenCount", 0),
-                "completion_tokens": meta.get("candidatesTokenCount", 0),
-                "cached_tokens": meta.get("cachedContentTokenCount", 0),
-            }
-    except (json.JSONDecodeError, TypeError):
-        pass
+def _extract_gemini_usage(obj: dict) -> dict | None:
+    """Extract usage from parsed Gemini usageMetadata."""
+    meta = obj.get("usageMetadata", {})
+    if meta.get("totalTokenCount"):
+        return {
+            "prompt_tokens": meta.get("promptTokenCount", 0),
+            "completion_tokens": meta.get("candidatesTokenCount", 0),
+            "cached_tokens": meta.get("cachedContentTokenCount", 0),
+        }
     return None
 
 
@@ -115,9 +87,9 @@ def stream_and_measure(response, api_format: str) -> dict:
     """
     start = time.monotonic()
     ttft = None
+    ttft_thinking = None
     usage = None
     prev_event = ""
-    total_output_bytes = 0
 
     try:
         for raw_line in response.iter_lines():
@@ -129,50 +101,71 @@ def stream_and_measure(response, api_format: str) -> dict:
                 else raw_line.decode("utf-8", errors="replace")
             )
 
-            # Skip heartbeat comments
             if line.startswith(":"):
                 continue
 
-            # Track Anthropic event types
             if line.startswith("event: "):
                 prev_event = line[7:].strip()
                 continue
 
-            # TTFT detection
+            if not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+
+            try:
+                obj = json.loads(line[6:])
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            # Thinking TTFT detection (Anthropic only)
+            if (
+                ttft_thinking is None
+                and api_format == "anthropic"
+                and _is_anthropic_thinking(obj, prev_event)
+            ):
+                ttft_thinking = time.monotonic() - start
+
+            # TTFT detection (first actual text content)
             if ttft is None:
                 is_content = False
                 if api_format == "openai":
-                    is_content = _is_openai_content(line)
+                    is_content = _is_openai_content(obj)
                 elif api_format == "anthropic":
-                    is_content = _is_anthropic_content(line, prev_event)
+                    is_content = _is_anthropic_content(obj, prev_event)
                 elif api_format == "gemini":
-                    is_content = _is_gemini_content(line)
+                    is_content = _is_gemini_content(obj)
                 if is_content:
                     ttft = time.monotonic() - start
 
             # Usage extraction (keep last seen)
             if api_format == "openai":
-                u = _extract_openai_usage(line)
-                if u:
-                    usage = u
+                u = _extract_openai_usage(obj)
             elif api_format == "anthropic":
-                u = _extract_anthropic_usage(line, prev_event)
-                if u:
-                    usage = u
+                u = _extract_anthropic_usage(obj, prev_event)
             elif api_format == "gemini":
-                u = _extract_gemini_usage(line)
-                if u:
-                    usage = u
-
-            if line.startswith("data: "):
-                total_output_bytes += len(line)
+                u = _extract_gemini_usage(obj)
+            else:
+                u = None
+            if u:
+                usage = u
 
     except Exception as exc:
         total = time.monotonic() - start
-        return {"ttft_s": ttft, "total_s": total, "usage": usage, "error": str(exc)}
+        return {
+            "ttft_s": ttft,
+            "ttft_thinking_s": ttft_thinking,
+            "total_s": total,
+            "usage": usage,
+            "error": str(exc),
+        }
 
     total = time.monotonic() - start
-    return {"ttft_s": ttft, "total_s": total, "usage": usage, "error": None}
+    return {
+        "ttft_s": ttft,
+        "ttft_thinking_s": ttft_thinking,
+        "total_s": total,
+        "usage": usage,
+        "error": None,
+    }
 
 
 def fire_ttft_event(name: str, ttft_ms: float, env=None) -> None:
