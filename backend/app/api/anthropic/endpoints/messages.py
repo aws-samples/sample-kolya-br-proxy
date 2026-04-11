@@ -23,7 +23,7 @@ from app.services.anthropic_translator import (
     AnthropicResponseTranslator,
 )
 from app.services.background_tasks import BackgroundTaskManager
-from app.services.bedrock import BedrockClient
+from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import is_gemini_model as _is_gemini_model
 from app.services.pricing import ModelPricing
 
@@ -168,6 +168,7 @@ async def create_message(
                     start_time=start_time,
                     http_request=http_request,
                     cache_ttl=cache_ttl or get_settings().PROMPT_CACHE_TTL,
+                    allowed_model_names=allowed_model_names,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -253,6 +254,7 @@ async def stream_anthropic_messages(
     start_time: float,
     http_request: Request = None,
     cache_ttl: str = None,
+    allowed_model_names: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream Anthropic Messages API responses.
@@ -272,8 +274,18 @@ async def stream_anthropic_messages(
     last_heartbeat = time.time()
     client_disconnected = False
 
+    # Compute fallback models for stream failover
+    fb_models = get_fallback_models(allowed_model_names or [], model)
+
     try:
-        async for event in bedrock_client.invoke_stream(model, bedrock_request):
+        actual_model_emitted = False
+        async for event in bedrock_client.invoke_stream(
+            model, bedrock_request, fallback_models=fb_models
+        ):
+            # Emit x-actual-model SSE comment on Level 2 degradation
+            if event.actual_model and not actual_model_emitted:
+                yield f": x-actual-model {event.actual_model}\n\n"
+                actual_model_emitted = True
             # Check client disconnect
             current_time = time.time()
             if http_request and current_time - last_heartbeat > 1.0:

@@ -32,6 +32,12 @@ from app.schemas.bedrock import (
 logger = logging.getLogger(__name__)
 
 
+class FirstContentTimeoutError(Exception):
+    """Raised when no content chunk arrives within the configured timeout."""
+
+    pass
+
+
 class LocalTokenBucket:
     """Per-pod in-memory token bucket rate limiter.
 
@@ -221,6 +227,9 @@ class _ProfileCache:
     def __init__(self) -> None:
         self._local_profile_ids: set[str] = set()
         self._local_profiles: dict[str, str] = {}  # bare_model → best profile_id
+        self._all_profiles_by_bare: dict[
+            str, list[str]
+        ] = {}  # bare → [pids by priority]
         self._local_fm: set[str] = set()
         self._fallback_fm: set[str] = set()
         self._last_refresh: float = 0
@@ -233,6 +242,31 @@ class _ProfileCache:
     @property
     def is_empty(self) -> bool:
         return not self._local_profile_ids and not self._local_fm
+
+    @staticmethod
+    def _strip_geo_prefix(model_id: str) -> tuple[str, str]:
+        """Strip the geographic prefix from a profile ID.
+
+        Returns ``(bare_model, prefix_str)`` — e.g.
+        ``("anthropic.claude-…", "us.")`` or ``("anthropic.claude-…", "")``
+        if there is no prefix.
+        """
+        from app.services.bedrock import BedrockClient
+
+        for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
+            if model_id.startswith(pfx):
+                return model_id[len(pfx) :], pfx
+        return model_id, ""
+
+    def get_alternative_profiles(self, model_id: str) -> list[str]:
+        """Return other geo-variant profile IDs for the given model.
+
+        For example, if *model_id* is ``us.anthropic.claude-sonnet-4-20250514-v1:0``,
+        this returns ``["eu.anthropic.…", "apac.anthropic.…", …]`` (sorted by
+        geo priority) **excluding** *model_id* itself.
+        """
+        bare, _ = self._strip_geo_prefix(model_id)
+        return [p for p in self._all_profiles_by_bare.get(bare, []) if p != model_id]
 
     # ------------------------------------------------------------------
 
@@ -254,8 +288,6 @@ class _ProfileCache:
         fallback_region: str,
         config: "Config",
     ) -> None:
-        from app.services.bedrock import BedrockClient
-
         local_profile_ids: set[str] = set()
         local_profiles: dict[str, str] = {}
         local_fm: set[str] = set()
@@ -272,13 +304,7 @@ class _ProfileCache:
                     local_profile_ids.add(pid)
 
                     # Build bare_model → best profile mapping
-                    bare = pid
-                    prefix_str = ""
-                    for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
-                        if pid.startswith(pfx):
-                            bare = pid[len(pfx) :]
-                            prefix_str = pfx
-                            break
+                    bare, prefix_str = self._strip_geo_prefix(pid)
 
                     priority = self._GEO_PRIORITY.get(prefix_str, 5)
                     existing = local_profiles.get(bare)
@@ -286,11 +312,7 @@ class _ProfileCache:
                         local_profiles[bare] = pid
                     else:
                         # Replace only if new profile has higher priority (lower number)
-                        existing_pfx = ""
-                        for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
-                            if existing.startswith(pfx):
-                                existing_pfx = pfx
-                                break
+                        _, existing_pfx = self._strip_geo_prefix(existing)
                         existing_priority = self._GEO_PRIORITY.get(existing_pfx, 5)
                         if priority < existing_priority:
                             local_profiles[bare] = pid
@@ -316,8 +338,18 @@ class _ProfileCache:
                             if mid not in local_profiles:
                                 fallback_fm.add(mid)
 
+            # Build bare → all profiles mapping (sorted by geo priority)
+            all_by_bare: dict[str, list[tuple[int, str]]] = {}
+            for pid in local_profile_ids:
+                bare_key, pfx_str = self._strip_geo_prefix(pid)
+                prio = self._GEO_PRIORITY.get(pfx_str, 5)
+                all_by_bare.setdefault(bare_key, []).append((prio, pid))
+
             self._local_profile_ids = local_profile_ids
             self._local_profiles = local_profiles
+            self._all_profiles_by_bare = {
+                k: [pid for _, pid in sorted(v)] for k, v in all_by_bare.items()
+            }
             self._local_fm = local_fm
             self._fallback_fm = fallback_fm
             self._last_refresh = time.time()
@@ -579,6 +611,172 @@ class BedrockClient:
         # Step 5: unknown — best effort
         logger.warning(f"Model {bare} not found in cache, trying local region")
         return bare, self.region_name
+
+    # ------------------------------------------------------------------
+    # Stream failover helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_content_event(event: BedrockStreamEvent) -> bool:
+        """Return True if the event contains actual generated content.
+
+        Metadata events (``message_start``, ``content_block_start``) return
+        False; only ``content_block_delta`` with real text/json/thinking counts.
+        """
+        if event.type == "content_block_delta" and event.delta:
+            return bool(
+                event.delta.get("text")
+                or event.delta.get("partial_json")
+                or event.delta.get("thinking")
+            )
+        return False
+
+    def _get_failover_targets(
+        self,
+        primary_model_id: str,
+        primary_region: str,
+        fallback_models: list[str] | None = None,
+    ) -> list[tuple[str, str, str]]:
+        """Build an ordered list of ``(model_id, region, label)`` failover targets.
+
+        * **Level 1** — same model, different region (cross-region profiles).
+        * **Level 2** — different model from *fallback_models* list.
+
+        The *primary* target is **not** included.
+        """
+        targets: list[tuple[str, str, str]] = []
+
+        # Level 1: cross-region alternatives for the same model
+        for alt_pid in self._profile_cache.get_alternative_profiles(primary_model_id):
+            targets.append((alt_pid, self.region_name, f"L1-region:{alt_pid}"))
+
+        # Level 2: model degradation
+        if fallback_models:
+            for fb_name in fallback_models:
+                fb_id, fb_region = self.resolve_model(fb_name)
+                if fb_id != primary_model_id:
+                    targets.append((fb_id, fb_region, f"L2-model:{fb_name}"))
+
+        return targets
+
+    async def _try_stream_with_content_timeout(
+        self,
+        model_id: str,
+        target_region: str,
+        request: BedrockRequest,
+        content_timeout: float,
+    ) -> AsyncGenerator[BedrockStreamEvent, None]:
+        """Stream from a single model/region with a first-content deadline.
+
+        Events are **buffered** until the first real content chunk arrives.
+        Once content is confirmed the buffer is flushed and subsequent events
+        stream through immediately.  If the deadline fires before content,
+        :class:`FirstContentTimeoutError` is raised and **no events have been
+        yielded** — so the caller can safely move on to the next target
+        without the consumer seeing partial metadata from a failed attempt.
+        """
+        use_converse = not self.is_anthropic_model(model_id)
+
+        if use_converse:
+            converse_params = self._build_converse_params(request, model_id)
+        else:
+            body = self._build_anthropic_body(request)
+            invoke_kwargs = self._build_invoke_kwargs(request, model_id)
+
+        content_received = False
+        buffer: list[BedrockStreamEvent] = []  # hold events until content arrives
+
+        async with self.session.client(
+            "bedrock-runtime",
+            region_name=target_region,
+            config=self.config,
+        ) as client:
+            if use_converse:
+                response = await client.converse_stream(**converse_params)
+                event_source = response["stream"]
+            else:
+                response = await client.invoke_model_with_response_stream(
+                    body=json.dumps(body), **invoke_kwargs
+                )
+                event_source = response["body"]
+
+            api_label = "converse_stream" if use_converse else "invoke_model_stream"
+            logger.info(
+                "Bedrock streaming started (failover path)",
+                extra={
+                    "model_id": model_id,
+                    "region": target_region,
+                    "api": api_label,
+                    "content_timeout": content_timeout,
+                },
+            )
+
+            # Deadline starts NOW — covers the real-world case where the
+            # stream connection succeeds but zero events ever arrive.
+            deadline = time.monotonic() + content_timeout
+
+            aiter = event_source.__aiter__()
+            while True:
+                # Apply per-__anext__ timeout only until content arrives
+                try:
+                    if not content_received:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise FirstContentTimeoutError(
+                                f"No content within {content_timeout}s"
+                            )
+                        raw_event = await asyncio.wait_for(
+                            aiter.__anext__(), timeout=remaining
+                        )
+                    else:
+                        raw_event = await aiter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    raise FirstContentTimeoutError(
+                        f"No content within {content_timeout}s"
+                    )
+
+                # Parse event
+                if use_converse:
+                    bedrock_event = self._converse_stream_event_to_bedrock(raw_event)
+                else:
+                    chunk_bytes = raw_event.get("chunk", {}).get("bytes")
+                    if not chunk_bytes:
+                        continue
+                    anthropic_event = json.loads(chunk_bytes)
+                    bedrock_event = self._anthropic_event_to_bedrock(anthropic_event)
+
+                if not bedrock_event:
+                    continue
+
+                if not content_received:
+                    buffer.append(bedrock_event)
+                    if self._is_content_event(bedrock_event):
+                        content_received = True
+                        # Flush buffer
+                        for buffered in buffer:
+                            yield buffered
+                        buffer.clear()
+                else:
+                    yield bedrock_event
+
+            # Stream ended without error — flush any remaining buffered events
+            # (e.g. very short response that was all metadata)
+            for buffered in buffer:
+                yield buffered
+
+            elapsed = time.monotonic() - (deadline - content_timeout)
+            logger.info(
+                "Bedrock streaming completed (failover path)",
+                extra={
+                    "model_id": model_id,
+                    "region": target_region,
+                    "duration_seconds": round(elapsed, 3),
+                },
+            )
+
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _new_cache_marker(ttl: str | None = None) -> dict:
@@ -1338,29 +1536,102 @@ class BedrockClient:
                     raise
 
     async def invoke_stream(
-        self, model_name: str, request: BedrockRequest
+        self,
+        model_name: str,
+        request: BedrockRequest,
+        fallback_models: list[str] | None = None,
     ) -> AsyncGenerator[BedrockStreamEvent, None]:
-        """
-        Invoke Bedrock model with streaming via invoke_model_with_response_stream.
+        """Invoke Bedrock model with streaming and two-level failover.
 
-        Sends an Anthropic Messages API body directly, so native parameters
-        like thinking / effort are supported without extra mapping.
+        When ``STREAM_FIRST_CONTENT_TIMEOUT > 0``, the method implements:
 
-        Retry logic only applies to errors BEFORE streaming starts.
-        The token bucket controls request rate; the semaphore is held for
-        the entire duration of the stream.
+        * **Level 1** — same model in a different region (transparent).
+        * **Level 2** — degradation to a model from *fallback_models*
+          (the first yielded event carries ``actual_model``).
+
+        Falls back to the original (non-failover) path when the timeout is
+        disabled.
 
         Args:
-            model_name: Model name
-            request: Bedrock request
+            model_name: Primary model name.
+            request: Bedrock request (reusable across retries).
+            fallback_models: Optional ordered list of fallback model names
+                for Level 2 degradation.
 
         Yields:
-            BedrockStreamEvent instances
+            BedrockStreamEvent instances.
         """
-        await self._rate_limiter.acquire()
-        async with self._semaphore:
-            async for event in self._invoke_stream_inner(model_name, request):
-                yield event
+        settings = get_settings()
+        content_timeout = settings.STREAM_FIRST_CONTENT_TIMEOUT
+
+        if content_timeout <= 0:
+            # Failover disabled — original behaviour
+            await self._rate_limiter.acquire()
+            async with self._semaphore:
+                async for event in self._invoke_stream_inner(model_name, request):
+                    yield event
+            return
+
+        # --- Failover enabled ---------------------------------------------------
+        primary_model_id, primary_region = self.resolve_model(model_name)
+        targets: list[tuple[str, str, str]] = [
+            (primary_model_id, primary_region, "primary")
+        ]
+        targets.extend(
+            self._get_failover_targets(
+                primary_model_id, primary_region, fallback_models
+            )
+        )
+
+        last_error: BaseException | None = None
+        for idx, (model_id, region, label) in enumerate(targets):
+            is_last = idx == len(targets) - 1
+            await self._rate_limiter.acquire()
+            try:
+                async with self._semaphore:
+                    is_degraded = label.startswith("L2-")
+                    first_event = True
+
+                    async for event in self._try_stream_with_content_timeout(
+                        model_id, region, request, content_timeout
+                    ):
+                        if first_event and is_degraded:
+                            event.actual_model = model_id
+                        first_event = False
+                        yield event
+
+                    # Stream completed successfully
+                    return
+
+            except FirstContentTimeoutError as exc:
+                last_error = exc
+                logger.warning(
+                    "Stream failover: %s timed out (%s, region=%s, timeout=%ss).%s",
+                    label,
+                    model_id,
+                    region,
+                    content_timeout,
+                    " Trying next target…" if not is_last else " No more targets.",
+                )
+                continue
+
+            except ClientError as exc:
+                error_code = exc.response.get("Error", {}).get("Code", "Unknown")
+                if error_code in ("ValidationException", "AccessDeniedException"):
+                    raise
+                last_error = exc
+                logger.warning(
+                    "Stream failover: %s failed with %s (%s, region=%s).%s",
+                    label,
+                    error_code,
+                    model_id,
+                    region,
+                    " Trying next target…" if not is_last else " No more targets.",
+                )
+                continue
+
+        # All targets exhausted
+        raise last_error or RuntimeError("All failover targets exhausted")
 
     async def _invoke_stream_inner(
         self, model_name: str, request: BedrockRequest
@@ -1640,3 +1911,29 @@ class BedrockClient:
 
         # ping / unknown → skip
         return None
+
+
+# ======================================================================
+# Helpers for endpoint handlers
+# ======================================================================
+
+
+def get_fallback_models(
+    allowed_model_names: list[str],
+    primary_model: str,
+) -> list[str] | None:
+    """Compute the fallback model list for Level 2 stream failover.
+
+    Uses ``STREAM_MODEL_FALLBACK_CHAIN`` to determine order, filtered to
+    only include models the token is authorised to use.  Returns ``None``
+    when model degradation is disabled or no valid fallbacks remain.
+    """
+    settings = get_settings()
+    chain_str = settings.STREAM_MODEL_FALLBACK_CHAIN
+    if not chain_str:
+        return None
+
+    chain = [m.strip() for m in chain_str.split(",") if m.strip()]
+    allowed = set(allowed_model_names)
+    fallbacks = [m for m in chain if m in allowed and m != primary_model]
+    return fallbacks or None

@@ -108,3 +108,5 @@ class BedrockStreamEvent(BaseModel):
     content_block: Optional[BedrockContentBlock] = None
     message: Optional[Dict[str, Any]] = None
     usage: Optional[BedrockUsage] = None
+    # Set by failover logic when a different model served the request (Level 2)
+    actual_model: Optional[str] = None

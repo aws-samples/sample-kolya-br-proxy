@@ -170,6 +170,19 @@ class Settings(BaseSettings):
         default=15, description="Heartbeat interval for streaming responses (seconds)"
     )
 
+    # Stream failover settings
+    STREAM_FIRST_CONTENT_TIMEOUT: int = Field(
+        default=600,
+        description="Seconds to wait for first content chunk after stream starts. "
+        "If exceeded, failover to next region/model. 0 disables failover.",
+    )
+    STREAM_MODEL_FALLBACK_CHAIN: str = Field(
+        default="",
+        description="Comma-separated model fallback chain for Level 2 degradation. "
+        "Example: 'anthropic.claude-opus-4-0-20250514-v1:0,anthropic.claude-sonnet-4-20250514-v1:0'. "
+        "Empty string disables model degradation.",
+    )
+
     def get_allowed_origins(self) -> List[str]:
         """Get CORS allowed origins as a list."""
         if not self.ALLOWED_ORIGINS or self.ALLOWED_ORIGINS == "":
