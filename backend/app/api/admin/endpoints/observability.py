@@ -12,9 +12,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-import app.core.metrics as metrics_module
 from app.api.deps import get_current_user_from_jwt
 from app.core.config import get_settings
+from app.core.metrics import is_metrics_enabled, set_metrics_enabled
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ async def get_observability_config(
     return {
         "log_level": logging.getLevelName(root_logger.level),
         "log_format": settings.LOG_FORMAT,
-        "metrics_enabled": metrics_module._configured,
+        "metrics_enabled": is_metrics_enabled(),
         "tracing_exporter": settings.OTEL_EXPORTER or "disabled",
         "note": "log_format and tracing_exporter require restart to change",
     }
@@ -88,8 +88,8 @@ async def update_observability_config(
         logger.info("Log level changed: %s -> %s", old_level, level_upper)
 
     if update.enable_metrics is not None:
-        old_val = metrics_module._configured
-        metrics_module._configured = update.enable_metrics
+        old_val = is_metrics_enabled()
+        set_metrics_enabled(update.enable_metrics)
         changes["metrics_enabled"] = {"old": old_val, "new": update.enable_metrics}
         logger.info("Metrics toggled: %s -> %s", old_val, update.enable_metrics)
 

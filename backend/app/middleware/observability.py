@@ -7,8 +7,7 @@ Does NOT use ``BaseHTTPMiddleware`` which would buffer ``StreamingResponse``.
 
 import time
 
-from app.core.config import get_settings
-from app.core.metrics import emit_http_metrics
+from app.core.metrics import emit_http_metrics, is_metrics_enabled
 
 
 class ObservabilityMiddleware:
@@ -27,8 +26,7 @@ class ObservabilityMiddleware:
         if path.startswith("/health"):
             return await self.app(scope, receive, send)
 
-        settings = get_settings()
-        if not settings.ENABLE_METRICS:
+        if not is_metrics_enabled():
             return await self.app(scope, receive, send)
 
         method = scope.get("method", "UNKNOWN")

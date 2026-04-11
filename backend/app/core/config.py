@@ -225,6 +225,14 @@ class Settings(BaseSettings):
         uris = self.COGNITO_REDIRECT_URIS.strip('"').strip("'")
         return [uri.strip() for uri in uris.split(",") if uri.strip()]
 
+    @validator("LOG_LEVEL")
+    def validate_log_level(cls, v):
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR"}
+        upper = v.upper()
+        if upper not in valid:
+            raise ValueError(f"LOG_LEVEL must be one of {valid}")
+        return upper
+
     @validator("LOG_FORMAT")
     def validate_log_format(cls, v):
         if v not in ("text", "json"):

@@ -69,14 +69,9 @@ class StructuredJsonFormatter(logging.Formatter):
             "span_id": getattr(record, "span_id", "-"),
         }
 
-        # Collect extra={} fields passed by callers
         for key, value in record.__dict__.items():
             if key not in _BUILTIN_ATTRS and not key.startswith("_"):
-                try:
-                    json.dumps(value)  # ensure serialisable
-                    obj[key] = value
-                except (TypeError, ValueError):
-                    obj[key] = str(value)
+                obj[key] = value
 
         if record.exc_info and record.exc_info[0] is not None:
             obj["exception"] = "".join(traceback.format_exception(*record.exc_info))
@@ -119,8 +114,5 @@ def configure_logging() -> None:
 
     root.addHandler(handler)
 
-    # Inject token_name / token_id / trace_id into every record
     root.addFilter(RequestContextFilter())
-
-    # Suppress noisy health-check access logs
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())

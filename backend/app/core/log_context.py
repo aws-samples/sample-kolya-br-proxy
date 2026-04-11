@@ -9,6 +9,13 @@ X-Ray traces without changing individual logger calls.
 import contextvars
 import logging
 
+try:
+    from opentelemetry import trace as _otel_trace
+
+    _OTEL_AVAILABLE = True
+except ImportError:
+    _OTEL_AVAILABLE = False
+
 _token_name: contextvars.ContextVar[str] = contextvars.ContextVar(
     "token_name", default="-"
 )
@@ -36,11 +43,8 @@ class RequestContextFilter(logging.Filter):
         record.token_name = _token_name.get("-")
         record.token_id = _token_id.get("-")
 
-        # Inject trace context for log-trace correlation (zero-cost no-op when OTEL disabled)
-        try:
-            from opentelemetry import trace
-
-            span = trace.get_current_span()
+        if _OTEL_AVAILABLE:
+            span = _otel_trace.get_current_span()
             ctx = span.get_span_context()
             if ctx and ctx.is_valid:
                 record.trace_id = format(ctx.trace_id, "032x")
@@ -48,7 +52,7 @@ class RequestContextFilter(logging.Filter):
             else:
                 record.trace_id = "-"
                 record.span_id = "-"
-        except ImportError:
+        else:
             record.trace_id = "-"
             record.span_id = "-"
 

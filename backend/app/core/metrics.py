@@ -16,6 +16,17 @@ logger = logging.getLogger(__name__)
 _configured = False
 
 
+def is_metrics_enabled() -> bool:
+    """Return whether metrics emission is active."""
+    return _configured
+
+
+def set_metrics_enabled(enabled: bool) -> None:
+    """Toggle metrics emission at runtime."""
+    global _configured
+    _configured = enabled
+
+
 def configure_metrics() -> None:
     """One-time EMF SDK configuration.  Call from lifespan startup."""
     global _configured

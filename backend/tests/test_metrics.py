@@ -11,6 +11,8 @@ from app.core.metrics import (
     emit_bedrock_call_metrics,
     emit_failover_metrics,
     emit_http_metrics,
+    is_metrics_enabled,
+    set_metrics_enabled,
 )
 
 
@@ -18,16 +20,11 @@ class TestMetricsGuard:
     """All emit functions should be no-ops when metrics are disabled."""
 
     def setup_method(self):
-        # Ensure _configured is False
-        import app.core.metrics as m
-
-        self._orig = m._configured
-        m._configured = False
+        self._orig = is_metrics_enabled()
+        set_metrics_enabled(False)
 
     def teardown_method(self):
-        import app.core.metrics as m
-
-        m._configured = self._orig
+        set_metrics_enabled(self._orig)
 
     @pytest.mark.asyncio
     async def test_emit_request_metrics_noop_when_disabled(self):
@@ -73,18 +70,14 @@ class TestConfigureMetrics:
     """Test configure_metrics() initialization."""
 
     def teardown_method(self):
-        import app.core.metrics as m
-
-        m._configured = False
+        set_metrics_enabled(False)
 
     @patch("app.core.metrics.get_settings")
     def test_disabled_by_default(self, mock_settings):
         mock_settings.return_value = MagicMock(ENABLE_METRICS=False)
-        import app.core.metrics as m
-
-        m._configured = False
+        set_metrics_enabled(False)
         configure_metrics()
-        assert m._configured is False
+        assert is_metrics_enabled() is False
 
     @patch("app.core.metrics.get_settings")
     def test_enabled_sets_configured(self, mock_settings):
@@ -98,8 +91,6 @@ class TestConfigureMetrics:
         import sys
 
         with patch.dict(sys.modules, {"aws_embedded_metrics.config": mock_emf_module}):
-            import app.core.metrics as m
-
-            m._configured = False
+            set_metrics_enabled(False)
             configure_metrics()
-            assert m._configured is True
+            assert is_metrics_enabled() is True
