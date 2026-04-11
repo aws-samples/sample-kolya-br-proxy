@@ -27,14 +27,17 @@ from app.services.bedrock import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _msg_start_bytes() -> dict:
     """Simulate a message_start chunk from Bedrock InvokeModelWithResponseStream."""
     return {
         "chunk": {
-            "bytes": json.dumps({
-                "type": "message_start",
-                "message": {"id": "msg_1", "role": "assistant", "model": "test"},
-            }).encode()
+            "bytes": json.dumps(
+                {
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "role": "assistant", "model": "test"},
+                }
+            ).encode()
         }
     }
 
@@ -43,11 +46,13 @@ def _content_delta_bytes(text: str = "Hello") -> dict:
     """Simulate a content_block_delta chunk with text."""
     return {
         "chunk": {
-            "bytes": json.dumps({
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": text},
-            }).encode()
+            "bytes": json.dumps(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text},
+                }
+            ).encode()
         }
     }
 
@@ -56,11 +61,13 @@ def _content_block_start_bytes() -> dict:
     """Simulate a content_block_start chunk."""
     return {
         "chunk": {
-            "bytes": json.dumps({
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }).encode()
+            "bytes": json.dumps(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            ).encode()
         }
     }
 
@@ -104,6 +111,7 @@ def _make_bedrock_request() -> BedrockRequest:
 # ---------------------------------------------------------------------------
 # Mock factory for BedrockClient
 # ---------------------------------------------------------------------------
+
 
 def _build_mock_client(stream_factory):
     """Build a mock bedrock-runtime client that returns the given stream."""
@@ -172,7 +180,11 @@ def _patch_bedrock_client(
     # Mock build helpers to be pass-through
     bc._build_anthropic_body = lambda req: {"messages": [], "max_tokens": 100}
     bc._build_invoke_kwargs = staticmethod(
-        lambda req, mid: {"modelId": mid, "contentType": "application/json", "accept": "application/json"}
+        lambda req, mid: {
+            "modelId": mid,
+            "contentType": "application/json",
+            "accept": "application/json",
+        }
     )
 
 
@@ -183,9 +195,7 @@ def _patch_bedrock_client(
 
 class TestIsContentEvent:
     def test_text_delta(self):
-        event = BedrockStreamEvent(
-            type="content_block_delta", delta={"text": "hello"}
-        )
+        event = BedrockStreamEvent(type="content_block_delta", delta={"text": "hello"})
         assert BedrockClient._is_content_event(event) is True
 
     def test_partial_json_delta(self):
@@ -201,9 +211,7 @@ class TestIsContentEvent:
         assert BedrockClient._is_content_event(event) is True
 
     def test_message_start_not_content(self):
-        event = BedrockStreamEvent(
-            type="message_start", message={"role": "assistant"}
-        )
+        event = BedrockStreamEvent(type="message_start", message={"role": "assistant"})
         assert BedrockClient._is_content_event(event) is False
 
     def test_content_block_start_not_content(self):
@@ -239,7 +247,7 @@ class TestGetAlternativeProfiles:
             pfx_str = ""
             for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
                 if pid.startswith(pfx):
-                    bare = pid[len(pfx):]
+                    bare = pid[len(pfx) :]
                     pfx_str = pfx
                     break
             prio = cache._GEO_PRIORITY.get(pfx_str, 5)
@@ -256,7 +264,9 @@ class TestGetAlternativeProfiles:
             "apac.anthropic.claude-sonnet-4-20250514-v1:0",
         ]
         cache = self._make_cache(profiles)
-        alts = cache.get_alternative_profiles("us.anthropic.claude-sonnet-4-20250514-v1:0")
+        alts = cache.get_alternative_profiles(
+            "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        )
         assert "us.anthropic.claude-sonnet-4-20250514-v1:0" not in alts
         assert "eu.anthropic.claude-sonnet-4-20250514-v1:0" in alts
         assert "apac.anthropic.claude-sonnet-4-20250514-v1:0" in alts
@@ -268,7 +278,9 @@ class TestGetAlternativeProfiles:
             "us.anthropic.claude-sonnet-4-20250514-v1:0",
         ]
         cache = self._make_cache(profiles)
-        alts = cache.get_alternative_profiles("us.anthropic.claude-sonnet-4-20250514-v1:0")
+        alts = cache.get_alternative_profiles(
+            "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        )
         # eu (priority 1) before global (priority 10)
         assert alts == [
             "eu.anthropic.claude-sonnet-4-20250514-v1:0",
@@ -278,7 +290,9 @@ class TestGetAlternativeProfiles:
     def test_no_alternatives(self):
         profiles = ["us.anthropic.claude-sonnet-4-20250514-v1:0"]
         cache = self._make_cache(profiles)
-        alts = cache.get_alternative_profiles("us.anthropic.claude-sonnet-4-20250514-v1:0")
+        alts = cache.get_alternative_profiles(
+            "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        )
         assert alts == []
 
     def test_unknown_model(self):
@@ -324,6 +338,7 @@ class TestGetFallbackModels:
 # Integration tests: stream failover
 # ======================================================================
 
+
 def _mock_settings(**overrides):
     defaults = {
         "STREAM_FIRST_CONTENT_TIMEOUT": 1,  # 1 second for fast tests
@@ -334,7 +349,7 @@ def _mock_settings(**overrides):
         "BEDROCK_EXPECTED_PODS": 1,
         "BEDROCK_RATE_BURST": 10,
         "REDIS_URL": "",
-        "JWT_SECRET_KEY": "test-secret",
+        "JWT_SECRET_KEY": "test-secret",  # pragma: allowlist secret
         "PROMPT_CACHE_AUTO_INJECT": False,
         "PROMPT_CACHE_TTL": "5m",
     }
@@ -543,9 +558,7 @@ async def test_failover_disabled(bedrock_client):
     events = []
     settings = _mock_settings(STREAM_FIRST_CONTENT_TIMEOUT=0)
     with patch("app.services.bedrock.get_settings", return_value=settings):
-        async for event in bc.invoke_stream(
-            "test-model", _make_bedrock_request()
-        ):
+        async for event in bc.invoke_stream("test-model", _make_bedrock_request()):
             events.append(event)
 
     assert len(events) == 2

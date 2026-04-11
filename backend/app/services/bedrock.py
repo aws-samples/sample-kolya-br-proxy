@@ -243,6 +243,21 @@ class _ProfileCache:
     def is_empty(self) -> bool:
         return not self._local_profile_ids and not self._local_fm
 
+    @staticmethod
+    def _strip_geo_prefix(model_id: str) -> tuple[str, str]:
+        """Strip the geographic prefix from a profile ID.
+
+        Returns ``(bare_model, prefix_str)`` — e.g.
+        ``("anthropic.claude-…", "us.")`` or ``("anthropic.claude-…", "")``
+        if there is no prefix.
+        """
+        from app.services.bedrock import BedrockClient
+
+        for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
+            if model_id.startswith(pfx):
+                return model_id[len(pfx) :], pfx
+        return model_id, ""
+
     def get_alternative_profiles(self, model_id: str) -> list[str]:
         """Return other geo-variant profile IDs for the given model.
 
@@ -250,11 +265,7 @@ class _ProfileCache:
         this returns ``["eu.anthropic.…", "apac.anthropic.…", …]`` (sorted by
         geo priority) **excluding** *model_id* itself.
         """
-        bare = model_id
-        for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
-            if model_id.startswith(pfx):
-                bare = model_id[len(pfx) :]
-                break
+        bare, _ = self._strip_geo_prefix(model_id)
         return [p for p in self._all_profiles_by_bare.get(bare, []) if p != model_id]
 
     # ------------------------------------------------------------------
@@ -277,8 +288,6 @@ class _ProfileCache:
         fallback_region: str,
         config: "Config",
     ) -> None:
-        from app.services.bedrock import BedrockClient
-
         local_profile_ids: set[str] = set()
         local_profiles: dict[str, str] = {}
         local_fm: set[str] = set()
@@ -295,13 +304,7 @@ class _ProfileCache:
                     local_profile_ids.add(pid)
 
                     # Build bare_model → best profile mapping
-                    bare = pid
-                    prefix_str = ""
-                    for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
-                        if pid.startswith(pfx):
-                            bare = pid[len(pfx) :]
-                            prefix_str = pfx
-                            break
+                    bare, prefix_str = self._strip_geo_prefix(pid)
 
                     priority = self._GEO_PRIORITY.get(prefix_str, 5)
                     existing = local_profiles.get(bare)
@@ -309,11 +312,7 @@ class _ProfileCache:
                         local_profiles[bare] = pid
                     else:
                         # Replace only if new profile has higher priority (lower number)
-                        existing_pfx = ""
-                        for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
-                            if existing.startswith(pfx):
-                                existing_pfx = pfx
-                                break
+                        _, existing_pfx = self._strip_geo_prefix(existing)
                         existing_priority = self._GEO_PRIORITY.get(existing_pfx, 5)
                         if priority < existing_priority:
                             local_profiles[bare] = pid
@@ -342,13 +341,7 @@ class _ProfileCache:
             # Build bare → all profiles mapping (sorted by geo priority)
             all_by_bare: dict[str, list[tuple[int, str]]] = {}
             for pid in local_profile_ids:
-                bare_key = pid
-                pfx_str = ""
-                for pfx in BedrockClient.INFERENCE_PROFILE_PREFIXES:
-                    if pid.startswith(pfx):
-                        bare_key = pid[len(pfx) :]
-                        pfx_str = pfx
-                        break
+                bare_key, pfx_str = self._strip_geo_prefix(pid)
                 prio = self._GEO_PRIORITY.get(pfx_str, 5)
                 all_by_bare.setdefault(bare_key, []).append((prio, pid))
 
