@@ -9,14 +9,24 @@ export interface Model {
   is_active: boolean;
 }
 
+export interface AvailableModel {
+  model_id: string;
+  model_name: string;
+  friendly_name: string;
+  provider: string;
+  streaming_supported: boolean;
+}
+
 interface ModelsState {
   models: Model[];
+  availableModels: AvailableModel[];
   loading: boolean;
 }
 
 export const useModelsStore = defineStore('models', {
   state: (): ModelsState => ({
     models: [],
+    availableModels: [],
     loading: false,
   }),
 
@@ -49,6 +59,22 @@ export const useModelsStore = defineStore('models', {
         this.models = response.data.models;
       } catch (error) {
         console.error('Failed to fetch models:', error);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async fetchAvailableModels(force = false) {
+      if (this.availableModels.length > 0 && !force) {
+        return;
+      }
+
+      this.loading = true;
+      try {
+        const response = await api.get<{ models: AvailableModel[] }>('/admin/models/aws-available');
+        this.availableModels = response.data.models;
+      } catch (error) {
+        console.error('Failed to fetch available models:', error);
       } finally {
         this.loading = false;
       }

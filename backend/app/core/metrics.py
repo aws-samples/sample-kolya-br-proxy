@@ -41,6 +41,7 @@ def configure_metrics() -> None:
     config.service_type = "AWS::EKS::Pod"
     config.log_group = "/kbp/backend/metrics"
     config.namespace = "KolyaBRProxy"
+    config.environment = "local"  # stdout → Fluent Bit → CloudWatch (not TCP socket)
     _configured = True
     logger.info("CloudWatch EMF metrics enabled")
 
