@@ -13,6 +13,11 @@ metadata:
     app: backend
 spec:
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: backend
@@ -23,6 +28,7 @@ spec:
       annotations:
         instrumentation.opentelemetry.io/inject-python: "false"
     spec:
+      terminationGracePeriodSeconds: 65
       serviceAccountName: backend
       nodeSelector:
         karpenter.sh/nodepool: common-nodepool
@@ -111,6 +117,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sleep", "15"]
         resources:
           requests:
             cpu: ${BACKEND_CPU_REQUEST}
