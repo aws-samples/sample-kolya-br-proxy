@@ -69,11 +69,14 @@ export const useModelsStore = defineStore('models', {
         return;
       }
 
+      this.loading = true;
       try {
         const response = await api.get<{ models: AvailableModel[] }>('/admin/models/aws-available');
         this.availableModels = response.data.models;
       } catch (error) {
         console.error('Failed to fetch available models:', error);
+      } finally {
+        this.loading = false;
       }
     },
   },

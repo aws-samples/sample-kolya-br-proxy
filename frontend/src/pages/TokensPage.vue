@@ -543,7 +543,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useTokensStore } from 'src/stores/tokens';
 import { useModelsStore } from 'src/stores/models';
-import { Notify, Dialog } from 'quasar';
+import { Notify, Dialog, copyToClipboard } from 'quasar';
 import { getApiBaseUrl } from 'src/utils/api';
 import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, BatchCreateTokenRequest } from 'src/stores/tokens';
 
@@ -816,49 +816,11 @@ async function copyTokenKey(token: APIToken) {
 
 async function copyDisplayKey() {
   try {
-    // Try using modern Clipboard API
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(displayKey.value);
-      showKeyDialog.value = false;
-      Notify.create({
-        type: 'positive',
-        message: 'API Key copied to clipboard',
-        position: 'top',
-      });
-      return;
-    }
-
-    // Fallback to traditional method
-    const input = document.createElement('input');
-    input.value = displayKey.value;
-    input.style.position = 'absolute';
-    input.style.left = '-9999px';
-    input.setAttribute('readonly', '');
-    document.body.appendChild(input);
-
-    input.select();
-    input.setSelectionRange(0, 99999);
-
-    const successful = document.execCommand('copy');
-    document.body.removeChild(input);
-
-    if (successful) {
-      showKeyDialog.value = false;
-      Notify.create({
-        type: 'positive',
-        message: 'API Key copied to clipboard',
-        position: 'top',
-      });
-    } else {
-      throw new Error('Copy command failed');
-    }
-  } catch (err) {
-    console.error('Copy error:', err);
-    Notify.create({
-      type: 'negative',
-      message: 'Copy failed, please select and copy manually',
-      position: 'top',
-    });
+    await copyToClipboard(displayKey.value);
+    showKeyDialog.value = false;
+    Notify.create({ type: 'positive', message: 'API Key copied to clipboard', position: 'top' });
+  } catch {
+    Notify.create({ type: 'negative', message: 'Copy failed, please select and copy manually', position: 'top' });
   }
 }
 
@@ -982,29 +944,10 @@ async function copyAllBatchTokens() {
     .join('\n');
 
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const input = document.createElement('textarea');
-      input.value = text;
-      input.style.position = 'absolute';
-      input.style.left = '-9999px';
-      document.body.appendChild(input);
-      input.select();
-      document.execCommand('copy');
-      document.body.removeChild(input);
-    }
-    Notify.create({
-      type: 'positive',
-      message: 'All keys copied to clipboard',
-      position: 'top',
-    });
+    await copyToClipboard(text);
+    Notify.create({ type: 'positive', message: 'All keys copied to clipboard', position: 'top' });
   } catch {
-    Notify.create({
-      type: 'negative',
-      message: 'Copy failed, please select and copy manually',
-      position: 'top',
-    });
+    Notify.create({ type: 'negative', message: 'Copy failed, please select and copy manually', position: 'top' });
   }
 }
 

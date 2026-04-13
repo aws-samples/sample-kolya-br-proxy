@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,7 +60,7 @@ class CreateTokenRequest(BaseModel):
 class BatchCreateTokenRequest(BaseModel):
     """Batch create tokens request."""
 
-    count: int
+    count: int = Field(ge=1, le=100)
     name_prefix: str
     expires_at: datetime | None = None
     quota_usd: Decimal | None = None
@@ -221,12 +221,6 @@ async def batch_create_tokens(
     - **name_prefix**: Name prefix, tokens named {prefix}-001, {prefix}-002, ...
     - **model_names**: Optional list of model names to assign to all tokens
     """
-    if request.count < 1 or request.count > 100:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="count must be between 1 and 100",
-        )
-
     try:
         validated_meta = validate_token_metadata(request.token_metadata)
     except ValueError as e:
@@ -247,7 +241,12 @@ async def batch_create_tokens(
     created = []
     for token, plain_token in results:
         response = build_token_response(token, used_usd)
-        created.append(TokenWithKeyResponse(token=plain_token, **response.model_dump()))
+        resp_dict = response.model_dump()
+        # Override key_prefix from plain_token directly (avoid redundant Fernet decrypt)
+        resp_dict["key_prefix"] = (
+            plain_token.split("_", 1)[0] if "_" in plain_token else "sk-ant-api03"
+        )
+        created.append(TokenWithKeyResponse(token=plain_token, **resp_dict))
 
     return BatchCreateTokenResponse(created=created, total=len(created))
 

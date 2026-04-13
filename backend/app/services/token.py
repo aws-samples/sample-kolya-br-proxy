@@ -18,6 +18,7 @@ from app.core.security import (
     encrypt_token,
     decrypt_token,
 )
+from app.models.model import Model
 from app.models.token import APIToken
 
 logger = logging.getLogger(__name__)
@@ -102,8 +103,6 @@ class TokenService:
         Returns:
             List of (APIToken, plain_token) tuples
         """
-        from app.models.model import Model
-
         tokens_and_keys: List[tuple[APIToken, str]] = []
 
         for i in range(1, count + 1):
@@ -140,11 +139,13 @@ class TokenService:
 
         await self.db.commit()
 
-        # Refresh all tokens to get DB-generated fields
-        for token, _ in tokens_and_keys:
-            await self.db.refresh(token)
-
-        return tokens_and_keys
+        # Refresh all tokens in a single query instead of N round-trips
+        token_ids = [t.id for t, _ in tokens_and_keys]
+        result = await self.db.execute(
+            select(APIToken).where(APIToken.id.in_(token_ids))
+        )
+        refreshed = {t.id: t for t in result.scalars().all()}
+        return [(refreshed[t.id], pk) for t, pk in tokens_and_keys]
 
     async def get_token_by_id(self, token_id: UUID) -> Optional[APIToken]:
         """
