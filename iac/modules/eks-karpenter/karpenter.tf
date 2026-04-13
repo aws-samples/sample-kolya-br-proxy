@@ -11,7 +11,7 @@ module "karpenter" {
   create_node_iam_role = false
   node_iam_role_arn    = aws_iam_role.karpenter_node.arn
 
-  iam_role_name            = "karpenter-controller-${var.workspace}-${var.account}-${var.region}"
+  iam_role_name            = "karp-ctrl-${var.project_name_alias}-${var.workspace}-${var.account}-${var.region}"
   iam_role_use_name_prefix = false
 
   queue_name = "${var.project_name_alias}-${var.workspace}-karpenter"

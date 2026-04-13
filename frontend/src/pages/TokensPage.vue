@@ -2,7 +2,21 @@
   <q-page class="q-pa-md">
     <div class="row items-center justify-between q-mb-md">
       <div class="text-h4">API Keys</div>
-      <div class="q-gutter-sm">
+      <div class="row items-center q-gutter-sm">
+        <q-input
+          v-model="searchQuery"
+          placeholder="Search by name..."
+          outlined
+          rounded
+          dense
+          dark
+          clearable
+          style="width: 220px"
+        >
+          <template v-slot:prepend>
+            <q-icon name="search" />
+          </template>
+        </q-input>
         <q-btn
           color="grey-8"
           icon="add"
@@ -28,6 +42,8 @@
           :columns="columns"
           row-key="id"
           :loading="loading"
+          :filter="searchQuery"
+          :filter-method="filterTokens"
           flat
           bordered
         >
@@ -550,6 +566,8 @@ import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, Batc
 const tokensStore = useTokensStore();
 const modelsStore = useModelsStore();
 
+const searchQuery = ref('');
+
 const showCreateDialog = ref(false);
 const showEditDialog = ref(false);
 const showKeyDialog = ref(false);
@@ -657,6 +675,11 @@ const loading = computed(() => tokensStore.loading);
 const filteredTokens = computed(() => {
   return tokens.value.filter(token => token.is_active);
 });
+
+function filterTokens(rows: readonly APIToken[], terms: string) {
+  const q = terms.toLowerCase();
+  return rows.filter(row => row.name.toLowerCase().includes(q));
+}
 
 function getStatusColor(token: APIToken) {
   if (!token.is_active) return 'grey';
