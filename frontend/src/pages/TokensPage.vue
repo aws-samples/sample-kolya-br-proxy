@@ -938,7 +938,7 @@ function openBatchCreate() {
     cacheTtl: '1h',
   };
   showBatchCreateDialog.value = true;
-  modelsStore.fetchAvailableModels();
+  void modelsStore.fetchAvailableModels();
 }
 
 async function handleBatchCreate() {
