@@ -34,7 +34,7 @@ data:
   # Redis mode: global rate = account_rpm / 60 (shared across all pods)
   # Local mode: per-pod rate = account_rpm / 60 / expected_pods
   KBR_BEDROCK_MAX_CONCURRENT_REQUESTS: "50"
-  KBR_BEDROCK_ACCOUNT_RPM: "500"
+  KBR_BEDROCK_ACCOUNT_RPM: "10000"
   KBR_BEDROCK_EXPECTED_PODS: "3"
   KBR_BEDROCK_RATE_BURST: "10"
   # Auto-inject prompt cache breakpoints for Anthropic models
