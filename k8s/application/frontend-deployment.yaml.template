@@ -7,6 +7,11 @@ metadata:
     app: frontend
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: frontend
@@ -15,6 +20,7 @@ spec:
       labels:
         app: frontend
     spec:
+      terminationGracePeriodSeconds: 30
       nodeSelector:
         karpenter.sh/nodepool: common-nodepool
       containers:
@@ -27,6 +33,10 @@ spec:
         envFrom:
         - configMapRef:
             name: frontend-config
+        lifecycle:
+          preStop:
+            exec:
+              command: ["sleep", "10"]
         resources:
           requests:
             cpu: ${FRONTEND_CPU_REQUEST}
