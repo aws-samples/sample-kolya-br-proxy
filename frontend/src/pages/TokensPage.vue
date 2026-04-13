@@ -2,13 +2,22 @@
   <q-page class="q-pa-md">
     <div class="row items-center justify-between q-mb-md">
       <div class="text-h4">API Keys</div>
-      <q-btn
-        color="grey-8"
-        icon="add"
-        label="Create Key"
-        @click="showCreateDialog = true"
-        unelevated
-      />
+      <div class="q-gutter-sm">
+        <q-btn
+          color="grey-8"
+          icon="add"
+          label="Create Key"
+          @click="showCreateDialog = true"
+          unelevated
+        />
+        <q-btn
+          color="grey-8"
+          icon="playlist_add"
+          label="Batch Create"
+          @click="openBatchCreate"
+          unelevated
+        />
+      </div>
     </div>
 
     <!-- Keys List -->
@@ -364,17 +373,182 @@
       </q-card>
     </q-dialog>
 
+    <!-- Batch Create Dialog -->
+    <q-dialog v-model="showBatchCreateDialog">
+      <q-card dark style="min-width: 550px">
+        <q-card-section>
+          <div class="text-h6">Batch Create API Keys</div>
+        </q-card-section>
+
+        <q-card-section class="q-pt-none">
+          <q-form @submit="handleBatchCreate">
+            <q-input
+              v-model="batchForm.name_prefix"
+              label="Name Prefix"
+              outlined
+              rounded
+              dark
+              :rules="[(val) => !!val || 'Please enter name prefix']"
+              hint="Keys will be named {prefix}-001, {prefix}-002, ..."
+              class="q-mb-md"
+            />
+
+            <q-input
+              v-model.number="batchForm.count"
+              label="Count"
+              outlined
+              rounded
+              dark
+              type="number"
+              :rules="[
+                (val) => (val >= 1 && val <= 100) || 'Must be between 1 and 100',
+              ]"
+              class="q-mb-md"
+            />
+
+            <q-input
+              v-model.number="batchForm.quota_usd"
+              label="Quota per Key (USD)"
+              outlined
+              rounded
+              dark
+              type="text"
+              hint="Leave empty for unlimited"
+              class="q-mb-md"
+            />
+
+            <q-input
+              v-model="batchForm.expires_at"
+              label="Expiration Time"
+              outlined
+              rounded
+              dark
+              hint="Leave empty for never expires"
+              class="q-mb-md"
+            >
+              <template v-slot:append>
+                <q-icon name="event" class="cursor-pointer">
+                  <q-popup-proxy
+                    cover
+                    transition-show="scale"
+                    transition-hide="scale"
+                  >
+                    <q-date dark v-model="batchForm.expires_at" mask="YYYY-MM-DD">
+                      <div class="row items-center justify-end">
+                        <q-btn v-close-popup label="OK" color="grey-8" unelevated />
+                      </div>
+                    </q-date>
+                  </q-popup-proxy>
+                </q-icon>
+              </template>
+            </q-input>
+
+            <q-select
+              v-model="batchForm.model_names"
+              :options="availableModelOptions"
+              label="Models (optional)"
+              outlined
+              rounded
+              dark
+              multiple
+              use-chips
+              option-label="label"
+              option-value="value"
+              emit-value
+              map-options
+              :loading="modelsStore.loading"
+              hint="Select models to assign to all keys"
+              class="q-mb-md"
+            />
+
+            <q-list dark dense class="q-mb-md">
+              <q-item>
+                <q-item-section>
+                  <q-item-label>Prompt Cache</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle v-model="batchForm.cacheEnabled" dark dense />
+                </q-item-section>
+              </q-item>
+              <q-item v-if="batchForm.cacheEnabled">
+                <q-item-section>
+                  <q-item-label>Cache TTL</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-option-group
+                    v-model="batchForm.cacheTtl"
+                    :options="cacheTtlOptions"
+                    type="radio"
+                    inline
+                    dark
+                    dense
+                  />
+                </q-item-section>
+              </q-item>
+            </q-list>
+
+            <div class="row justify-end q-mt-md q-gutter-sm">
+              <q-btn label="Cancel" flat v-close-popup />
+              <q-btn
+                label="Create"
+                type="submit"
+                color="grey-8"
+                :loading="batchCreating"
+                unelevated
+              />
+            </div>
+          </q-form>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
+
+    <!-- Batch Result Dialog -->
+    <q-dialog v-model="showBatchResultDialog" persistent>
+      <q-card dark style="min-width: 600px; max-width: 800px">
+        <q-card-section>
+          <div class="text-h6">Created {{ batchResults.length }} API Keys</div>
+          <div class="text-caption text-warning q-mt-xs">
+            Save these keys now. They cannot be retrieved again.
+          </div>
+        </q-card-section>
+
+        <q-card-section class="q-pt-none" style="max-height: 400px; overflow-y: auto">
+          <q-list dark dense separator>
+            <q-item v-for="item in batchResults" :key="item.id">
+              <q-item-section>
+                <q-item-label class="text-weight-bold">{{ item.name }}</q-item-label>
+                <q-item-label class="text-mono text-caption">{{ item.token }}</q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn
+            label="Copy All"
+            icon="content_copy"
+            color="grey-8"
+            @click="copyAllBatchTokens"
+            unelevated
+          />
+          <q-btn label="Close" flat v-close-popup />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
   </q-page>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useTokensStore } from 'src/stores/tokens';
+import { useModelsStore } from 'src/stores/models';
 import { Notify, Dialog } from 'quasar';
 import { getApiBaseUrl } from 'src/utils/api';
-import type { APIToken, CreateTokenRequest, TokenMetadata } from 'src/stores/tokens';
+import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, BatchCreateTokenRequest } from 'src/stores/tokens';
 
 const tokensStore = useTokensStore();
+const modelsStore = useModelsStore();
 
 const showCreateDialog = ref(false);
 const showEditDialog = ref(false);
@@ -392,6 +566,27 @@ const settingsToken = ref<APIToken | null>(null);
 const settingsCacheEnabled = ref(false);
 const settingsCacheTtl = ref('1h');
 const savingSettings = ref(false);
+
+const showBatchCreateDialog = ref(false);
+const showBatchResultDialog = ref(false);
+const batchCreating = ref(false);
+const batchResults = ref<APITokenWithKey[]>([]);
+const batchForm = ref({
+  name_prefix: '',
+  count: 10,
+  quota_usd: undefined as number | undefined,
+  expires_at: '',
+  model_names: [] as string[],
+  cacheEnabled: false,
+  cacheTtl: '1h',
+});
+
+const availableModelOptions = computed(() =>
+  modelsStore.availableModels.map((m) => ({
+    label: `${m.friendly_name} (${m.model_id})`,
+    value: m.model_id,
+  }))
+);
 
 const cacheTtlOptions = [
   { label: '5m', value: '5m' },
@@ -730,6 +925,87 @@ function deleteToken(token: APIToken) {
       deletingTokenId.value = null;
     });
   });
+}
+
+function openBatchCreate() {
+  batchForm.value = {
+    name_prefix: '',
+    count: 10,
+    quota_usd: undefined,
+    expires_at: '',
+    model_names: [],
+    cacheEnabled: false,
+    cacheTtl: '1h',
+  };
+  showBatchCreateDialog.value = true;
+  modelsStore.fetchAvailableModels();
+}
+
+async function handleBatchCreate() {
+  batchCreating.value = true;
+  try {
+    const data: BatchCreateTokenRequest = {
+      count: batchForm.value.count,
+      name_prefix: batchForm.value.name_prefix,
+    };
+
+    if (batchForm.value.quota_usd !== undefined) {
+      data.quota_usd = batchForm.value.quota_usd;
+    }
+    if (batchForm.value.expires_at) {
+      data.expires_at = batchForm.value.expires_at;
+    }
+    if (batchForm.value.model_names.length > 0) {
+      data.model_names = batchForm.value.model_names;
+    }
+
+    data.token_metadata = {
+      prompt_cache_enabled: batchForm.value.cacheEnabled,
+      prompt_cache_ttl: batchForm.value.cacheTtl,
+    };
+
+    const result = await tokensStore.createTokensBatch(data);
+
+    if (result) {
+      showBatchCreateDialog.value = false;
+      batchResults.value = result.created;
+      showBatchResultDialog.value = true;
+    }
+  } finally {
+    batchCreating.value = false;
+  }
+}
+
+async function copyAllBatchTokens() {
+  const text = batchResults.value
+    .map((t) => `${t.name}: ${t.token}`)
+    .join('\n');
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.style.position = 'absolute';
+      input.style.left = '-9999px';
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      document.body.removeChild(input);
+    }
+    Notify.create({
+      type: 'positive',
+      message: 'All keys copied to clipboard',
+      position: 'top',
+    });
+  } catch {
+    Notify.create({
+      type: 'negative',
+      message: 'Copy failed, please select and copy manually',
+      position: 'top',
+    });
+  }
 }
 
 onMounted(async () => {

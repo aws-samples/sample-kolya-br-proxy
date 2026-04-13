@@ -83,6 +83,69 @@ class TokenService:
 
         return token, plain_token
 
+    async def create_tokens_batch(
+        self,
+        user_id: UUID,
+        count: int,
+        name_prefix: str,
+        expires_at: Optional[datetime] = None,
+        quota_usd: Optional[Decimal] = None,
+        allowed_ips: Optional[List[str]] = None,
+        token_metadata: Optional[dict] = None,
+        model_names: Optional[List[str]] = None,
+    ) -> List[tuple[APIToken, str]]:
+        """
+        Batch create API tokens with optional shared model list.
+
+        All tokens are inserted in a single transaction (atomic).
+
+        Returns:
+            List of (APIToken, plain_token) tuples
+        """
+        from app.models.model import Model
+
+        tokens_and_keys: List[tuple[APIToken, str]] = []
+
+        for i in range(1, count + 1):
+            plain_token = generate_api_token()
+            token_hash = hash_token(plain_token)
+            encrypted = encrypt_token(plain_token)
+
+            token = APIToken(
+                user_id=user_id,
+                name=f"{name_prefix}-{i:03d}",
+                token_hash=token_hash,
+                encrypted_token=encrypted,
+                expires_at=expires_at,
+                quota_usd=quota_usd,
+                allowed_ips=allowed_ips or [],
+                token_metadata=token_metadata,
+                is_active=True,
+            )
+            self.db.add(token)
+            tokens_and_keys.append((token, plain_token))
+
+        # Flush to get token IDs before creating model associations
+        await self.db.flush()
+
+        if model_names:
+            for token, _ in tokens_and_keys:
+                for model_name in model_names:
+                    model = Model(
+                        token_id=token.id,
+                        model_name=model_name,
+                        is_active=True,
+                    )
+                    self.db.add(model)
+
+        await self.db.commit()
+
+        # Refresh all tokens to get DB-generated fields
+        for token, _ in tokens_and_keys:
+            await self.db.refresh(token)
+
+        return tokens_and_keys
+
     async def get_token_by_id(self, token_id: UUID) -> Optional[APIToken]:
         """
         Get token by ID.

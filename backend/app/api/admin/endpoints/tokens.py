@@ -57,6 +57,18 @@ class CreateTokenRequest(BaseModel):
     token_metadata: dict | None = None
 
 
+class BatchCreateTokenRequest(BaseModel):
+    """Batch create tokens request."""
+
+    count: int
+    name_prefix: str
+    expires_at: datetime | None = None
+    quota_usd: Decimal | None = None
+    allowed_ips: List[str] | None = None
+    token_metadata: dict | None = None
+    model_names: List[str] | None = None
+
+
 class UpdateTokenRequest(BaseModel):
     """Update token request."""
 
@@ -94,6 +106,13 @@ class TokenWithKeyResponse(TokenResponse):
     """Token response with plain token key (only returned on creation)."""
 
     token: str
+
+
+class BatchCreateTokenResponse(BaseModel):
+    """Batch create tokens response."""
+
+    created: List[TokenWithKeyResponse]
+    total: int
 
 
 # Helper functions
@@ -182,6 +201,55 @@ async def create_token(
     response = build_token_response(token, used_usd)
 
     return TokenWithKeyResponse(token=plain_token, **response.model_dump())
+
+
+@router.post(
+    "/batch",
+    response_model=BatchCreateTokenResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def batch_create_tokens(
+    request: BatchCreateTokenRequest,
+    current_user: User = Depends(get_current_user_from_jwt),
+    token_service: TokenService = Depends(get_token_service),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Batch create API tokens with optional shared model list.
+
+    - **count**: Number of tokens to create (1-100)
+    - **name_prefix**: Name prefix, tokens named {prefix}-001, {prefix}-002, ...
+    - **model_names**: Optional list of model names to assign to all tokens
+    """
+    if request.count < 1 or request.count > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="count must be between 1 and 100",
+        )
+
+    try:
+        validated_meta = validate_token_metadata(request.token_metadata)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    results = await token_service.create_tokens_batch(
+        user_id=current_user.id,
+        count=request.count,
+        name_prefix=request.name_prefix,
+        expires_at=request.expires_at,
+        quota_usd=request.quota_usd,
+        allowed_ips=request.allowed_ips,
+        token_metadata=validated_meta,
+        model_names=request.model_names,
+    )
+
+    used_usd = Decimal("0.00")
+    created = []
+    for token, plain_token in results:
+        response = build_token_response(token, used_usd)
+        created.append(TokenWithKeyResponse(token=plain_token, **response.model_dump()))
+
+    return BatchCreateTokenResponse(created=created, total=len(created))
 
 
 @router.get("", response_model=List[TokenResponse])

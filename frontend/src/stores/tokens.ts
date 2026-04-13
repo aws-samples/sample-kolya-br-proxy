@@ -38,6 +38,21 @@ export interface CreateTokenRequest {
   token_metadata?: TokenMetadata | null;
 }
 
+export interface BatchCreateTokenRequest {
+  count: number;
+  name_prefix: string;
+  expires_at?: string;
+  quota_usd?: number;
+  allowed_ips?: string[];
+  token_metadata?: TokenMetadata | null;
+  model_names?: string[];
+}
+
+export interface BatchCreateTokenResponse {
+  created: APITokenWithKey[];
+  total: number;
+}
+
 export const useTokensStore = defineStore('tokens', {
   state: () => ({
     tokens: [] as APIToken[],
@@ -157,6 +172,31 @@ export const useTokensStore = defineStore('tokens', {
           position: 'top',
         });
         return false;
+      }
+    },
+
+    async createTokensBatch(data: BatchCreateTokenRequest): Promise<BatchCreateTokenResponse | null> {
+      try {
+        const response = await api.post<BatchCreateTokenResponse>('/admin/tokens/batch', data);
+
+        Notify.create({
+          type: 'positive',
+          message: `Successfully created ${response.data.total} tokens`,
+          position: 'top',
+        });
+
+        await this.fetchTokens(false, true);
+        return response.data;
+      } catch (error: unknown) {
+        const message = error && typeof error === 'object' && 'response' in error
+          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to batch create tokens'
+          : 'Failed to batch create tokens';
+        Notify.create({
+          type: 'negative',
+          message,
+          position: 'top',
+        });
+        return null;
       }
     },
 
