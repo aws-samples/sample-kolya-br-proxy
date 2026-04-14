@@ -407,7 +407,7 @@
               type="textarea"
               autogrow
               :rules="[(val) => !!val?.trim() || 'Please enter at least one name']"
-              hint="Comma-separated, e.g. alice, bob, charlie"
+              hint="Separate with comma or newline, e.g. alice, bob, charlie"
               class="q-mb-md"
             />
 

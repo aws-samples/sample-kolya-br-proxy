@@ -72,8 +72,10 @@ class BatchCreateTokenRequest(BaseModel):
     model_names: List[str] | None = None
 
     def parsed_names(self) -> List[str]:
-        """Parse and deduplicate comma-separated names."""
-        return [n for n in (s.strip() for s in self.names.split(",")) if n]
+        """Parse comma-separated names. Supports ASCII comma, Chinese comma, semicolons, and newlines."""
+        import re
+
+        return [n for n in (s.strip() for s in re.split(r"[,，;；\n]+", self.names)) if n]
 
 
 class UpdateTokenRequest(BaseModel):
