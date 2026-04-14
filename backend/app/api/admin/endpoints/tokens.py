@@ -75,7 +75,9 @@ class BatchCreateTokenRequest(BaseModel):
         """Parse comma-separated names. Supports ASCII comma, Chinese comma, semicolons, and newlines."""
         import re
 
-        return [n for n in (s.strip() for s in re.split(r"[,，;；\n]+", self.names)) if n]
+        return [
+            n for n in (s.strip() for s in re.split(r"[,，;；\n]+", self.names)) if n
+        ]
 
 
 class UpdateTokenRequest(BaseModel):
