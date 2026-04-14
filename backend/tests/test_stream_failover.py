@@ -178,7 +178,10 @@ def _patch_bedrock_client(
     bc.session.client = mock_client_cm
 
     # Mock build helpers to be pass-through
-    bc._build_anthropic_body = lambda req: {"messages": [], "max_tokens": 100}
+    bc._build_anthropic_body = lambda req, model_id=None: {
+        "messages": [],
+        "max_tokens": 100,
+    }
     bc._build_invoke_kwargs = staticmethod(
         lambda req, mid: {
             "modelId": mid,

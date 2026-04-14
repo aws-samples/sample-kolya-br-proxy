@@ -399,26 +399,15 @@
         <q-card-section class="q-pt-none">
           <q-form @submit="handleBatchCreate">
             <q-input
-              v-model="batchForm.name_prefix"
-              label="Name Prefix"
+              v-model="batchForm.names"
+              label="Names"
               outlined
               rounded
               dark
-              :rules="[(val) => !!val || 'Please enter name prefix']"
-              hint="Keys will be named {prefix}-001, {prefix}-002, ..."
-              class="q-mb-md"
-            />
-
-            <q-input
-              v-model.number="batchForm.count"
-              label="Count"
-              outlined
-              rounded
-              dark
-              type="number"
-              :rules="[
-                (val) => (val >= 1 && val <= 100) || 'Must be between 1 and 100',
-              ]"
+              type="textarea"
+              autogrow
+              :rules="[(val) => !!val?.trim() || 'Please enter at least one name']"
+              hint="Comma-separated, e.g. alice, bob, charlie"
               class="q-mb-md"
             />
 
@@ -590,8 +579,7 @@ const showBatchResultDialog = ref(false);
 const batchCreating = ref(false);
 const batchResults = ref<APITokenWithKey[]>([]);
 const batchForm = ref({
-  name_prefix: '',
-  count: 10,
+  names: '',
   quota_usd: undefined as number | undefined,
   expires_at: '',
   model_names: [] as string[],
@@ -914,8 +902,7 @@ function deleteToken(token: APIToken) {
 
 function openBatchCreate() {
   batchForm.value = {
-    name_prefix: '',
-    count: 10,
+    names: '',
     quota_usd: undefined,
     expires_at: '',
     model_names: [],
@@ -930,8 +917,7 @@ async function handleBatchCreate() {
   batchCreating.value = true;
   try {
     const data: BatchCreateTokenRequest = {
-      count: batchForm.value.count,
-      name_prefix: batchForm.value.name_prefix,
+      names: batchForm.value.names,
     };
 
     if (batchForm.value.quota_usd !== undefined) {

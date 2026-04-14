@@ -16,8 +16,14 @@ from unittest.mock import patch
 
 from app.services.bedrock import BedrockClient
 
-# Default marker with 1h TTL (matching default config)
-MARKER = {"type": "ephemeral", "ttl": "1h"}
+# Default marker with 1h TTL (matching default config) — global model only
+MARKER_TTL = {"type": "ephemeral", "ttl": "1h"}
+# Marker without TTL — for non-global models or 5m default
+MARKER = {"type": "ephemeral"}
+
+TTL_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # Claude 4.5 supports ttl
+NO_TTL_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # Claude 4 does not
+
 LONG_TEXT = "x" * 5000
 
 
@@ -38,13 +44,13 @@ def _mock_settings(**overrides):
     return s
 
 
-def _inject(body, ttl="1h"):
+def _inject(body, ttl="1h", model_id=TTL_MODEL):
     """Helper: inject breakpoints with mocked settings."""
     with patch(
         "app.services.bedrock.get_settings",
         return_value=_mock_settings(PROMPT_CACHE_TTL=ttl),
     ):
-        BedrockClient._inject_prompt_cache_breakpoints(body)
+        BedrockClient._inject_prompt_cache_breakpoints(body, model_id=model_id)
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +67,7 @@ def test_inject_last_tool():
     body = {"tools": tools, "messages": []}
     _inject(body)
     assert "cache_control" not in tools[0]
-    assert tools[1]["cache_control"] == MARKER
+    assert tools[1]["cache_control"] == MARKER_TTL
 
 
 def test_inject_single_tool():
@@ -69,7 +75,7 @@ def test_inject_single_tool():
     tools = [{"name": "a", "description": "b", "input_schema": {}}]
     body = {"tools": tools, "messages": []}
     _inject(body)
-    assert tools[0]["cache_control"] == MARKER
+    assert tools[0]["cache_control"] == MARKER_TTL
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +89,7 @@ def test_inject_system_string():
     _inject(body)
     assert isinstance(body["system"], list)
     assert len(body["system"]) == 1
-    assert body["system"][0]["cache_control"] == MARKER
+    assert body["system"][0]["cache_control"] == MARKER_TTL
     assert body["system"][0]["text"] == LONG_TEXT
 
 
@@ -92,7 +98,7 @@ def test_inject_system_short_string():
     body = {"system": "hi", "messages": []}
     _inject(body)
     assert isinstance(body["system"], list)
-    assert body["system"][0]["cache_control"] == MARKER
+    assert body["system"][0]["cache_control"] == MARKER_TTL
 
 
 def test_inject_system_array():
@@ -106,7 +112,7 @@ def test_inject_system_array():
     }
     _inject(body)
     assert "cache_control" not in body["system"][0]
-    assert body["system"][1]["cache_control"] == MARKER
+    assert body["system"][1]["cache_control"] == MARKER_TTL
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +132,7 @@ def test_inject_last_assistant_msg():
     _inject(body)
     assistant = body["messages"][1]
     assert isinstance(assistant["content"], list)
-    assert assistant["content"][0]["cache_control"] == MARKER
+    assert assistant["content"][0]["cache_control"] == MARKER_TTL
 
 
 def test_inject_assistant_skips_thinking():
@@ -149,7 +155,7 @@ def test_inject_assistant_skips_thinking():
     # Thinking block should NOT get cache_control
     assert "cache_control" not in content[1]
     # Text block should get it
-    assert content[0]["cache_control"] == MARKER
+    assert content[0]["cache_control"] == MARKER_TTL
 
 
 def test_inject_assistant_skips_redacted_thinking():
@@ -170,7 +176,7 @@ def test_inject_assistant_skips_redacted_thinking():
     _inject(body)
     content = body["messages"][1]["content"]
     assert "cache_control" not in content[1]
-    assert content[0]["cache_control"] == MARKER
+    assert content[0]["cache_control"] == MARKER_TTL
 
 
 def test_no_assistant_message():
@@ -182,7 +188,7 @@ def test_no_assistant_message():
     _inject(body)
     # System should be injected
     assert isinstance(body["system"], list)
-    assert body["system"][0]["cache_control"] == MARKER
+    assert body["system"][0]["cache_control"] == MARKER_TTL
     # User message should NOT be touched
     assert body["messages"][0]["content"] == "hello"
 
@@ -196,28 +202,53 @@ def test_ttl_5m_no_ttl_field():
     """With TTL=5m, marker should be just {"type": "ephemeral"} (no ttl field)."""
     body = {"system": "prompt", "messages": []}
     _inject(body, ttl="5m")
-    assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert body["system"][0]["cache_control"] == MARKER
     assert "ttl" not in body["system"][0]["cache_control"]
 
 
-def test_ttl_1h_has_ttl_field():
-    """With TTL=1h, marker should include ttl field."""
+def test_ttl_1h_has_ttl_field_supported_model():
+    """With TTL=1h on Claude 4.5 model, marker should include ttl field."""
     body = {"system": "prompt", "messages": []}
-    _inject(body, ttl="1h")
+    _inject(body, ttl="1h", model_id=TTL_MODEL)
     assert body["system"][0]["cache_control"]["ttl"] == "1h"
 
 
-def test_upgrade_existing_ttl():
-    """Pre-existing breakpoints get their TTL upgraded to configured value."""
+def test_ttl_1h_no_ttl_field_unsupported_model():
+    """With TTL=1h on Claude 4 model, marker should NOT include ttl field."""
+    body = {"system": "prompt", "messages": []}
+    _inject(body, ttl="1h", model_id=NO_TTL_MODEL)
+    assert "ttl" not in body["system"][0]["cache_control"]
+    assert body["system"][0]["cache_control"] == MARKER
+
+
+def test_upgrade_existing_ttl_supported_model():
+    """Pre-existing breakpoints get their TTL upgraded on supported models."""
     body = {
         "system": [
             {"type": "text", "text": "prompt", "cache_control": {"type": "ephemeral"}}
         ],
         "messages": [],
     }
-    _inject(body, ttl="1h")
+    _inject(body, ttl="1h", model_id=TTL_MODEL)
     # TTL should be upgraded on existing marker
     assert body["system"][0]["cache_control"]["ttl"] == "1h"
+
+
+def test_strip_existing_ttl_unsupported_model():
+    """Pre-existing breakpoints get ttl stripped on unsupported models."""
+    body = {
+        "system": [
+            {
+                "type": "text",
+                "text": "prompt",
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            }
+        ],
+        "messages": [],
+    }
+    _inject(body, ttl="1h", model_id=NO_TTL_MODEL)
+    # TTL should be stripped for unsupported model
+    assert "ttl" not in body["system"][0]["cache_control"]
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +281,7 @@ def test_budget_limit():
     }
     _inject(body, ttl="1h")
     # No new breakpoints should be added (budget exhausted)
-    # But TTL should be upgraded
+    # But TTL should be upgraded (global model)
     assert body["system"][0]["cache_control"]["ttl"] == "1h"
     assert body["tools"][0]["cache_control"]["ttl"] == "1h"
 
@@ -273,10 +304,10 @@ def test_partial_budget():
     }
     _inject(body)
     # t2 should get cache_control (tools priority)
-    assert body["tools"][1]["cache_control"] == MARKER
+    assert body["tools"][1]["cache_control"] == MARKER_TTL
     # Assistant message should also get it (budget allows 2 more)
     assert isinstance(body["messages"][1]["content"], list)
-    assert body["messages"][1]["content"][0]["cache_control"] == MARKER
+    assert body["messages"][1]["content"][0]["cache_control"] == MARKER_TTL
 
 
 # ---------------------------------------------------------------------------
@@ -352,16 +383,16 @@ def test_combined_all_breakpoints():
     _inject(body)
 
     # Last tool → cache_control
-    assert body["tools"][0]["cache_control"] == MARKER
+    assert body["tools"][0]["cache_control"] == MARKER_TTL
 
     # System → array with cache_control
     assert isinstance(body["system"], list)
-    assert body["system"][0]["cache_control"] == MARKER
+    assert body["system"][0]["cache_control"] == MARKER_TTL
 
     # Last assistant message → array with cache_control
     assistant = body["messages"][1]
     assert isinstance(assistant["content"], list)
-    assert assistant["content"][0]["cache_control"] == MARKER
+    assert assistant["content"][0]["cache_control"] == MARKER_TTL
 
 
 def test_empty_system_not_injected():
@@ -383,28 +414,48 @@ def test_inject_with_explicit_ttl_5m():
         "app.services.bedrock.get_settings",
         return_value=_mock_settings(PROMPT_CACHE_TTL="1h"),
     ):
-        BedrockClient._inject_prompt_cache_breakpoints(body, ttl="5m")
-    assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
+        BedrockClient._inject_prompt_cache_breakpoints(
+            body, ttl="5m", model_id=TTL_MODEL
+        )
+    assert body["system"][0]["cache_control"] == MARKER
     assert "ttl" not in body["system"][0]["cache_control"]
 
 
 def test_inject_with_explicit_ttl_1h():
-    """Passing ttl='1h' directly overrides server default of 5m."""
+    """Passing ttl='1h' directly overrides server default of 5m (supported model)."""
     body = {"system": "prompt", "messages": []}
     with patch(
         "app.services.bedrock.get_settings",
         return_value=_mock_settings(PROMPT_CACHE_TTL="5m"),
     ):
-        BedrockClient._inject_prompt_cache_breakpoints(body, ttl="1h")
-    assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        BedrockClient._inject_prompt_cache_breakpoints(
+            body, ttl="1h", model_id=TTL_MODEL
+        )
+    assert body["system"][0]["cache_control"] == MARKER_TTL
+
+
+def test_inject_with_explicit_ttl_1h_unsupported():
+    """Passing ttl='1h' on unsupported model produces marker without ttl."""
+    body = {"system": "prompt", "messages": []}
+    with patch(
+        "app.services.bedrock.get_settings",
+        return_value=_mock_settings(PROMPT_CACHE_TTL="5m"),
+    ):
+        BedrockClient._inject_prompt_cache_breakpoints(
+            body, ttl="1h", model_id=NO_TTL_MODEL
+        )
+    assert body["system"][0]["cache_control"] == MARKER
+    assert "ttl" not in body["system"][0]["cache_control"]
 
 
 def test_inject_ttl_none_uses_server_default():
-    """Passing ttl=None falls back to server setting."""
+    """Passing ttl=None falls back to server setting (supported model)."""
     body = {"system": "prompt", "messages": []}
     with patch(
         "app.services.bedrock.get_settings",
         return_value=_mock_settings(PROMPT_CACHE_TTL="1h"),
     ):
-        BedrockClient._inject_prompt_cache_breakpoints(body, ttl=None)
-    assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        BedrockClient._inject_prompt_cache_breakpoints(
+            body, ttl=None, model_id=TTL_MODEL
+        )
+    assert body["system"][0]["cache_control"] == MARKER_TTL

@@ -683,7 +683,7 @@ class BedrockClient:
         if use_converse:
             converse_params = self._build_converse_params(request, model_id)
         else:
-            body = self._build_anthropic_body(request)
+            body = self._build_anthropic_body(request, model_id=model_id)
             invoke_kwargs = self._build_invoke_kwargs(request, model_id)
 
         content_received = False
@@ -806,12 +806,34 @@ class BedrockClient:
 
     # ------------------------------------------------------------------
 
+    # Models that support the extended 1-hour cache TTL.
+    # Only Claude 4.5 family models support ``ttl`` in ``cache_control``;
+    # older/newer families (Claude 4, etc.) reject it with
+    # ``Extra inputs are not permitted``.
+    _EXTENDED_TTL_MODEL_PATTERNS = (
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+    )
+
+    @classmethod
+    def _model_supports_cache_ttl(cls, model_id: str | None) -> bool:
+        """Check if a model supports the extended ``ttl`` field in cache_control."""
+        if not model_id:
+            return False
+        return any(pat in model_id for pat in cls._EXTENDED_TTL_MODEL_PATTERNS)
+
     @staticmethod
-    def _new_cache_marker(ttl: str | None = None) -> dict:
-        """Create a cache_control marker with configured TTL."""
+    def _new_cache_marker(ttl: str | None = None, model_id: str | None = None) -> dict:
+        """Create a cache_control marker with configured TTL.
+
+        The ``ttl`` field is only supported by Claude 4.5 family models.
+        For unsupported models the field must be omitted, otherwise Bedrock
+        returns ``Extra inputs are not permitted``.
+        """
         cache_ttl = ttl or get_settings().PROMPT_CACHE_TTL
         marker: dict = {"type": "ephemeral"}
-        if cache_ttl != "5m":
+        if cache_ttl != "5m" and BedrockClient._model_supports_cache_ttl(model_id):
             marker["ttl"] = cache_ttl
         return marker
 
@@ -846,7 +868,9 @@ class BedrockClient:
         return len(BedrockClient._collect_cache_blocks(body)) > 0
 
     @staticmethod
-    def _inject_prompt_cache_breakpoints(body: dict, ttl: str | None = None) -> None:
+    def _inject_prompt_cache_breakpoints(
+        body: dict, ttl: str | None = None, model_id: str | None = None
+    ) -> None:
         """Inject up to 4 cache_control breakpoints into the request body.
 
         Strategy aligned with claudecode-bedrock-proxy:
@@ -860,17 +884,24 @@ class BedrockClient:
         count against this budget.
         """
         cache_ttl = ttl or get_settings().PROMPT_CACHE_TTL
-        marker = BedrockClient._new_cache_marker(ttl=cache_ttl)
+        supports_ttl = BedrockClient._model_supports_cache_ttl(model_id)
+        marker = BedrockClient._new_cache_marker(ttl=cache_ttl, model_id=model_id)
 
         # --- Step 1: Upgrade TTL on pre-existing breakpoints ---
         existing_blocks = BedrockClient._collect_cache_blocks(body)
         upgraded = 0
-        if cache_ttl != "5m":
+        if cache_ttl != "5m" and supports_ttl:
             for block in existing_blocks:
                 cc = block.get("cache_control")
                 if isinstance(cc, dict):
                     cc["ttl"] = cache_ttl
                     upgraded += 1
+        elif not supports_ttl:
+            # Strip ttl from pre-existing breakpoints for unsupported models
+            for block in existing_blocks:
+                cc = block.get("cache_control")
+                if isinstance(cc, dict) and "ttl" in cc:
+                    del cc["ttl"]
 
         existing = len(existing_blocks)
         budget = BedrockClient.MAX_CACHE_BREAKPOINTS - existing
@@ -951,7 +982,9 @@ class BedrockClient:
             )
 
     @staticmethod
-    def _build_anthropic_body(request: BedrockRequest) -> dict:
+    def _build_anthropic_body(
+        request: BedrockRequest, model_id: str | None = None
+    ) -> dict:
         """
         Build an Anthropic Messages API request body from a BedrockRequest.
 
@@ -1019,7 +1052,9 @@ class BedrockClient:
             BedrockClient._body_has_cache_control(body) if should_inject else False
         )
         if should_inject and not has_cache:
-            BedrockClient._inject_prompt_cache_breakpoints(body, ttl=request.cache_ttl)
+            BedrockClient._inject_prompt_cache_breakpoints(
+                body, ttl=request.cache_ttl, model_id=model_id
+            )
 
         # --- effort parameter: requires beta flag + output_config wrapper ---
         # Users may pass "effort" as a top-level field (via additional_model_request_fields).
@@ -1425,7 +1460,7 @@ class BedrockClient:
                 },
             )
         else:
-            body = self._build_anthropic_body(request)
+            body = self._build_anthropic_body(request, model_id=model_id)
             invoke_kwargs = self._build_invoke_kwargs(request, model_id)
 
         max_retries = 3
@@ -1745,7 +1780,7 @@ class BedrockClient:
                 },
             )
         else:
-            body = self._build_anthropic_body(request)
+            body = self._build_anthropic_body(request, model_id=model_id)
             invoke_kwargs = self._build_invoke_kwargs(request, model_id)
 
         max_retries = 4
