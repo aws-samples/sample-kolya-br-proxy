@@ -163,6 +163,7 @@ class AnthropicResponseThinkingContent(BaseModel):
 
     type: Literal["thinking"] = "thinking"
     thinking: str
+    signature: Optional[str] = None
 
 
 class AnthropicResponseRedactedThinkingContent(BaseModel):

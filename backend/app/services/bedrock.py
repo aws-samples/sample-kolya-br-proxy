@@ -971,13 +971,6 @@ class BedrockClient:
                         p = part.model_dump(exclude_none=True)
                     else:
                         p = dict(part) if isinstance(part, dict) else part
-                    # Strip thinking/redacted_thinking blocks from history —
-                    # Bedrock doesn't support adaptive signature-only thinking blocks
-                    if isinstance(p, dict) and p.get("type") in (
-                        "thinking",
-                        "redacted_thinking",
-                    ):
-                        continue
                     parts.append(p)
                 messages.append({"role": msg.role, "content": parts})
 
@@ -1047,11 +1040,18 @@ class BedrockClient:
                 f"Effort parameter '{effort_value}' wrapped in output_config with beta flag"
             )
 
-        # --- auto-fix max_tokens vs thinking.budget_tokens constraint ---
-        # Anthropic requires max_tokens > thinking.budget_tokens.
+        # --- auto-fix thinking.budget_tokens constraints ---
+        # Bedrock requires budget_tokens >= 1024 and max_tokens > budget_tokens.
         thinking_cfg = body.get("thinking")
         if isinstance(thinking_cfg, dict) and "budget_tokens" in thinking_cfg:
             budget = thinking_cfg["budget_tokens"]
+            if budget < 1024:
+                logger.info(
+                    f"Adjusting thinking.budget_tokens from {budget} to 1024 "
+                    f"(Bedrock minimum)"
+                )
+                thinking_cfg["budget_tokens"] = 1024
+                budget = 1024
             if body["max_tokens"] <= budget:
                 new_max = budget + body["max_tokens"]
                 logger.info(
@@ -1485,11 +1485,19 @@ class BedrockClient:
                                         )
                                     )
                                 elif block_type == "thinking":
-                                    logger.debug(
-                                        "Skipping thinking content block in non-streaming response"
-                                    )
                                     content_blocks.append(
-                                        BedrockContentBlock(type="thinking")
+                                        BedrockContentBlock(
+                                            type="thinking",
+                                            thinking=item.get("thinking", ""),
+                                            signature=item.get("signature"),
+                                        )
+                                    )
+                                elif block_type == "redacted_thinking":
+                                    content_blocks.append(
+                                        BedrockContentBlock(
+                                            type="redacted_thinking",
+                                            data=item.get("data", ""),
+                                        )
                                     )
 
                             # Usage — Anthropic format uses snake_case
@@ -1989,6 +1997,12 @@ class BedrockClient:
                     type="content_block_delta",
                     index=index,
                     delta={"thinking": delta.get("thinking", "")},
+                )
+            elif delta_type == "signature_delta":
+                return BedrockStreamEvent(
+                    type="content_block_delta",
+                    index=index,
+                    delta={"signature": delta.get("signature", "")},
                 )
 
         elif event_type == "content_block_stop":
