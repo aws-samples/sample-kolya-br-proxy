@@ -87,8 +87,7 @@ class TokenService:
     async def create_tokens_batch(
         self,
         user_id: UUID,
-        count: int,
-        name_prefix: str,
+        names: List[str],
         expires_at: Optional[datetime] = None,
         quota_usd: Optional[Decimal] = None,
         allowed_ips: Optional[List[str]] = None,
@@ -96,7 +95,7 @@ class TokenService:
         model_names: Optional[List[str]] = None,
     ) -> List[tuple[APIToken, str]]:
         """
-        Batch create API tokens with optional shared model list.
+        Batch create API tokens with explicit names and optional shared model list.
 
         All tokens are inserted in a single transaction (atomic).
 
@@ -105,14 +104,14 @@ class TokenService:
         """
         tokens_and_keys: List[tuple[APIToken, str]] = []
 
-        for i in range(1, count + 1):
+        for name in names:
             plain_token = generate_api_token()
             token_hash = hash_token(plain_token)
             encrypted = encrypt_token(plain_token)
 
             token = APIToken(
                 user_id=user_id,
-                name=f"{name_prefix}-{i:03d}",
+                name=name,
                 token_hash=token_hash,
                 encrypted_token=encrypted,
                 expires_at=expires_at,

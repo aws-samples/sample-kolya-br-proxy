@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,15 +58,26 @@ class CreateTokenRequest(BaseModel):
 
 
 class BatchCreateTokenRequest(BaseModel):
-    """Batch create tokens request."""
+    """Batch create tokens request.
 
-    count: int = Field(ge=1, le=100)
-    name_prefix: str
+    ``names`` is a comma-separated string of token names (e.g. "alice, bob, charlie").
+    Whitespace around each name is automatically trimmed and empty entries are ignored.
+    """
+
+    names: str
     expires_at: datetime | None = None
     quota_usd: Decimal | None = None
     allowed_ips: List[str] | None = None
     token_metadata: dict | None = None
     model_names: List[str] | None = None
+
+    def parsed_names(self) -> List[str]:
+        """Parse comma-separated names. Supports ASCII comma, Chinese comma, semicolons, and newlines."""
+        import re
+
+        return [
+            n for n in (s.strip() for s in re.split(r"[,，;；\n]+", self.names)) if n
+        ]
 
 
 class UpdateTokenRequest(BaseModel):
@@ -217,10 +228,21 @@ async def batch_create_tokens(
     """
     Batch create API tokens with optional shared model list.
 
-    - **count**: Number of tokens to create (1-100)
-    - **name_prefix**: Name prefix, tokens named {prefix}-001, {prefix}-002, ...
+    - **names**: Comma-separated token names (e.g. "alice, bob, charlie")
     - **model_names**: Optional list of model names to assign to all tokens
     """
+    names = request.parsed_names()
+    if not names:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid names provided",
+        )
+    if len(names) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many names ({len(names)}), maximum is 100",
+        )
+
     try:
         validated_meta = validate_token_metadata(request.token_metadata)
     except ValueError as e:
@@ -228,8 +250,7 @@ async def batch_create_tokens(
 
     results = await token_service.create_tokens_batch(
         user_id=current_user.id,
-        count=request.count,
-        name_prefix=request.name_prefix,
+        names=names,
         expires_at=request.expires_at,
         quota_usd=request.quota_usd,
         allowed_ips=request.allowed_ips,

@@ -39,8 +39,7 @@ export interface CreateTokenRequest {
 }
 
 export interface BatchCreateTokenRequest {
-  count: number;
-  name_prefix: string;
+  names: string;
   expires_at?: string;
   quota_usd?: number;
   allowed_ips?: string[];
