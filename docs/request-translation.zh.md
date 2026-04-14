@@ -334,10 +334,12 @@ Anthropic JSON 响应                       BedrockResponse
 {                                         BedrockResponse(
   "id": "msg_...",                          id="msg_...",
   "content": [                              content=[
-    {"type": "text", "text": "你好"}          BedrockContentBlock(type="text", text="你好"),
-    {"type": "tool_use", "id": "...",         BedrockContentBlock(type="tool_use", ...),
-     "name": "...", "input": {...}}           BedrockContentBlock(type="thinking"),
-    {"type": "thinking", "thinking": "..."}
+    {"type": "thinking",                      BedrockContentBlock(type="thinking",
+     "thinking": "...",                         thinking="...", signature="Eqs..."),
+     "signature": "Eqs..."}                   BedrockContentBlock(type="text", text="你好"),
+    {"type": "text", "text": "你好"}          BedrockContentBlock(type="tool_use", ...),
+    {"type": "tool_use", "id": "...",
+     "name": "...", "input": {...}}
   ],                                        ],
   "stop_reason": "end_turn",                stop_reason="end_turn",
   "usage": {                                usage=BedrockUsage(
@@ -379,6 +381,7 @@ Anthropic JSON 响应                       BedrockResponse
 | `content_block_delta`（delta.type=`text_delta`） | `content_block_delta` | `delta.text` |
 | `content_block_delta`（delta.type=`input_json_delta`） | `content_block_delta` | `delta.partial_json` |
 | `content_block_delta`（delta.type=`thinking_delta`） | `content_block_delta` | `delta.thinking` |
+| `content_block_delta`（delta.type=`signature_delta`） | `content_block_delta` | `delta.signature` |
 | `content_block_stop` | `content_block_stop` | `index` |
 | `message_delta` | `message_delta` | `usage.output_tokens`、`delta.stop_reason` |
 | `message_stop` | `message_stop` | — |
@@ -473,36 +476,27 @@ sequenceDiagram
 | 错误格式 | `{"error": {"message": "...", "type": "..."}}` | `{"type": "error", "error": {"type": "...", "message": "..."}}` |
 | `cache_control` | 通过 `bedrock_auto_cache` 或 `X-Bedrock-Auto-Cache` | 原生支持（直接传递） |
 
-### 8.3 会话历史中的 Thinking 块剥离
+### 8.3 Thinking 块透传
 
-当使用 Anthropic Messages API 路径并启用扩展思考时，代理会在发送到 Bedrock 之前自动从会话历史消息中剥离 `thinking` 和 `redacted_thinking` 内容块。
+当使用 Anthropic Messages API 路径并启用扩展思考时，代理会将 `thinking` 和 `redacted_thinking` 内容块**原样透传**给 Bedrock。这是必需的，因为 Bedrock 在 `thinking` 启用时会校验 assistant 消息必须包含 thinking 块。
 
-**为何需要这样做：**
-- Bedrock 的 InvokeModel API 不支持自适应思考模式的仅签名 thinking 块（仅包含 `type: "thinking"` 但无内容的块）
-- 模型在每一轮基于当前上下文生成新的思考
-- 不需要之前轮次的历史 thinking 块，保留它们会导致验证错误
-
-**剥离的内容：**
+**透传内容：**
 ```json
-// 会话历史中的原始消息
+// 会话历史中的 assistant 消息 — 原样传递
 {
   "role": "assistant",
   "content": [
-    {"type": "thinking", "thinking": "之前的推理..."},
-    {"type": "text", "text": "这是我的回答"}
-  ]
-}
-
-// 剥离后（发送到 Bedrock）
-{
-  "role": "assistant",
-  "content": [
+    {"type": "thinking", "thinking": "之前的推理...", "signature": "Eqs..."},
     {"type": "text", "text": "这是我的回答"}
   ]
 }
 ```
 
-此剥离仅适用于 `messages` 数组中的历史消息。当前轮次的 thinking（由 Bedrock 生成）会在响应中保留。
+**重要细节：**
+- thinking 块上的 `signature` 字段会被保留 — Bedrock 需要它进行验证
+- `redacted_thinking` 块（包含加密的 `data` 字段）也会被透传
+- 代理确保流式响应中的 `signature_delta` 事件被转发，使客户端在后续轮次中获得有效的签名
+- 如果客户端发送的 thinking 块包含无效签名（例如来自其他提供商），Bedrock 会返回 `ValidationException`
 
 ### 8.4 自适应思考模式
 
@@ -541,6 +535,7 @@ Anthropic 路径将 `BedrockStreamEvent` 转回 Anthropic SSE 格式，本质上
 | `content_block_delta`（text） | `event: content_block_delta`（text_delta） | 原生 delta 格式 |
 | `content_block_delta`（partial_json） | `event: content_block_delta`（input_json_delta） | 原生格式 |
 | `content_block_delta`（thinking） | `event: content_block_delta`（thinking_delta） | **保留**（OpenAI 跳过） |
+| `content_block_delta`（signature） | `event: content_block_delta`（signature_delta） | **保留** — 多轮 thinking 必需 |
 | `content_block_stop` | `event: content_block_stop` | 直接映射 |
 | `message_delta` | `event: message_delta` | `stop_reason` 保留（无映射） |
 | `message_stop` | `event: message_stop` | 无 `[DONE]` 标记 |
@@ -632,7 +627,16 @@ Anthropic 的 `effort` 参数在 Bedrock 上需要特殊处理：
 
 ## 11. 自动修正
 
-### 10.1 max_tokens 与 budget_tokens
+### 11.1 budget_tokens 最小值
+
+Bedrock 要求 `thinking.budget_tokens >= 1024`。如果客户端发送了较小的值，代理会自动调整：
+
+```
+修正前：budget_tokens=500    （无效：Bedrock 最小值为 1024）
+修正后：budget_tokens=1024   （自动修正为最小值）
+```
+
+### 11.2 max_tokens 与 budget_tokens
 
 Anthropic 要求 `max_tokens > thinking.budget_tokens`。如果请求中 `max_tokens=2000` 且 `budget_tokens=2000`，代理会自动调整：
 
@@ -641,7 +645,9 @@ Anthropic 要求 `max_tokens > thinking.budget_tokens`。如果请求中 `max_to
 修正后：max_tokens=4000, budget_tokens=2000  （自动修正：max_tokens = budget + 原始 max）
 ```
 
-### 10.2 temperature / top_p 互斥
+注意：budget_tokens 最小值检查先于此检查执行，因此如果客户端发送 `budget_tokens=500, max_tokens=800`，最终会变为 `budget_tokens=1024, max_tokens=1824`。
+
+### 11.3 temperature / top_p 互斥
 
 Anthropic 不允许在同一请求中同时设置 `temperature` 和 `top_p`。转换器强制执行：
 
