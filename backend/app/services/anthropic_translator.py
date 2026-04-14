@@ -11,6 +11,7 @@ import logging
 from app.schemas.anthropic import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
+    AnthropicResponseRedactedThinkingContent,
     AnthropicResponseTextContent,
     AnthropicResponseThinkingContent,
     AnthropicResponseToolUseContent,
@@ -103,10 +104,21 @@ class AnthropicRequestTranslator:
                                 else str(content_val),
                             )
                         )
-                    elif block_type in ("thinking", "redacted_thinking"):
-                        # Strip thinking blocks — Bedrock doesn't support
-                        # adaptive signature-only thinking blocks
-                        continue
+                    elif block_type == "thinking":
+                        parts.append(
+                            BedrockContentPart(
+                                type="thinking",
+                                thinking=part_dict.get("thinking", ""),
+                                signature=part_dict.get("signature"),
+                            )
+                        )
+                    elif block_type == "redacted_thinking":
+                        parts.append(
+                            BedrockContentPart(
+                                type="redacted_thinking",
+                                data=part_dict.get("data", ""),
+                            )
+                        )
                     else:
                         # Unknown type - pass through as dict
                         parts.append(part_dict)
@@ -190,10 +202,6 @@ class AnthropicRequestTranslator:
                         part = dict(block)
                     else:
                         part = block.model_dump(exclude_none=True)
-                    # Strip thinking/redacted_thinking blocks from history —
-                    # Bedrock doesn't support adaptive signature-only thinking blocks
-                    if part.get("type") in ("thinking", "redacted_thinking"):
-                        continue
                     parts.append(part)
                 messages.append({"role": msg.role, "content": parts})
         body["messages"] = messages
@@ -268,10 +276,17 @@ class AnthropicResponseTranslator:
                     )
                 )
             elif block.type == "thinking":
-                # Include thinking blocks in Anthropic format (unlike OpenAI which skips them)
-                if block.text:
+                if block.thinking is not None:
                     content.append(
-                        AnthropicResponseThinkingContent(thinking=block.text)
+                        AnthropicResponseThinkingContent(
+                            thinking=block.thinking,
+                            signature=block.signature,
+                        )
+                    )
+            elif block.type == "redacted_thinking":
+                if block.data is not None:
+                    content.append(
+                        AnthropicResponseRedactedThinkingContent(data=block.data)
                     )
 
         usage = AnthropicUsage(
@@ -412,6 +427,11 @@ class AnthropicResponseTranslator:
                     delta = {
                         "type": "thinking_delta",
                         "thinking": event.delta["thinking"],
+                    }
+                elif "signature" in event.delta:
+                    delta = {
+                        "type": "signature_delta",
+                        "signature": event.delta["signature"],
                     }
 
             data = {

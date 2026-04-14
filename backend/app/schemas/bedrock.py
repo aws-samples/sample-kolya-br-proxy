@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field
 
 
 class BedrockContentPart(BaseModel):
-    """Content part in Bedrock format (text, image, tool_use, or tool_result)."""
+    """Content part in Bedrock format (text, image, tool_use, tool_result, thinking, or redacted_thinking)."""
 
-    type: str  # "text", "image", "tool_use", "tool_result"
+    type: str  # "text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"
     text: Optional[str] = None
     source: Optional[Dict[str, Any]] = (
         None  # For images: {"type": "base64", "media_type": "...", "data": "..."}
@@ -22,6 +22,11 @@ class BedrockContentPart(BaseModel):
     # For tool_result type
     tool_use_id: Optional[str] = None
     content: Optional[str] = None  # Tool result content as string
+    # For thinking type
+    thinking: Optional[str] = None
+    signature: Optional[str] = None
+    # For redacted_thinking type
+    data: Optional[str] = None
 
 
 class BedrockMessage(BaseModel):
@@ -69,12 +74,17 @@ class BedrockRequest(BaseModel):
 class BedrockContentBlock(BaseModel):
     """Content block in Bedrock response."""
 
-    type: str  # "text", "tool_use", "image"
+    type: str  # "text", "tool_use", "image", "thinking", "redacted_thinking"
     text: Optional[str] = None
     # For tool_use type
     id: Optional[str] = None
     name: Optional[str] = None
     input: Optional[Dict[str, Any]] = None
+    # For thinking type
+    thinking: Optional[str] = None
+    signature: Optional[str] = None
+    # For redacted_thinking type
+    data: Optional[str] = None
 
 
 class BedrockUsage(BaseModel):
