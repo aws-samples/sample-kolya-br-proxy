@@ -24,7 +24,7 @@ dependencies = [
     "PyJWT>=2.8.0",
     "passlib[bcrypt]>=1.7.4",
     "bcrypt>=3.2.0,<4.0.0",
-    "python-multipart>=0.0.22",
+    "python-multipart>=0.0.26",
     # HTTP client
     "httpx>=0.25.0",
     # Background tasks
