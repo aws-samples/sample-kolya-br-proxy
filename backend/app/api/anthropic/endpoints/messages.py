@@ -7,6 +7,7 @@ import time
 import uuid
 from typing import AsyncGenerator
 
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -246,6 +247,25 @@ async def create_message(
             exc_info=True,
         )
         raise HTTPException(status_code=400, detail="Invalid request")
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        logger.error(
+            f"Bedrock error: model={request_data.model}, request_id={request_id}, "
+            f"code={error_code}, message={error_message}",
+        )
+        status_map = {
+            "ValidationException": 400,
+            "AccessDeniedException": 403,
+            "ThrottlingException": 429,
+            "ModelNotReadyException": 529,
+            "ServiceUnavailableException": 529,
+        }
+        status_code = status_map.get(error_code, 502)
+        raise HTTPException(
+            status_code=status_code,
+            detail=error_message,
+        )
     except Exception as e:
         logger.error(
             f"Anthropic messages failed: model={request_data.model}, request_id={request_id}, error={e}",
@@ -385,19 +405,40 @@ async def stream_anthropic_messages(
             cache_read_tokens=total_cache_read,
         )
 
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        logger.error(
+            f"Bedrock streaming error: model={model}, request_id={request_id}, "
+            f"code={error_code}, message={error_message}",
+        )
+        import json as _json
+
+        error_type_map = {
+            "ValidationException": "invalid_request_error",
+            "AccessDeniedException": "permission_error",
+            "ThrottlingException": "rate_limit_error",
+            "ModelNotReadyException": "overloaded_error",
+            "ServiceUnavailableException": "overloaded_error",
+        }
+        error_type = error_type_map.get(error_code, "api_error")
+        error_data = {
+            "type": "error",
+            "error": {"type": error_type, "message": error_message},
+        }
+        yield f"event: error\ndata: {_json.dumps(error_data)}\n\n"
     except Exception as e:
         logger.error(
             f"Anthropic streaming failed: model={model}, request_id={request_id}, error={e}",
             exc_info=True,
         )
-        # Send error in Anthropic SSE format
-        import json
+        import json as _json
 
         error_data = {
             "type": "error",
             "error": {"type": "server_error", "message": "Internal server error"},
         }
-        yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+        yield f"event: error\ndata: {_json.dumps(error_data)}\n\n"
 
 
 async def record_usage(

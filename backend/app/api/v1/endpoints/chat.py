@@ -7,6 +7,7 @@ import time
 import uuid
 from typing import AsyncGenerator
 
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -336,6 +337,25 @@ async def create_chat_completion(
             exc_info=True,
         )
         raise HTTPException(status_code=400, detail=str(e))
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        logger.error(
+            f"Bedrock error: model={request_data.model}, request_id={request_id}, "
+            f"code={error_code}, message={error_message}",
+        )
+        status_map = {
+            "ValidationException": 400,
+            "AccessDeniedException": 403,
+            "ThrottlingException": 429,
+            "ModelNotReadyException": 503,
+            "ServiceUnavailableException": 503,
+        }
+        status_code = status_map.get(error_code, 502)
+        raise HTTPException(
+            status_code=status_code,
+            detail=error_message,
+        )
     except Exception as e:
         logger.error(
             f"Chat completion failed: model={request_data.model}, request_id={request_id}, error={e}",
@@ -777,6 +797,21 @@ async def stream_chat_completion(
             cache_read_tokens=total_cache_read_tokens,
         )
 
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        logger.error(
+            f"Bedrock streaming error: model={model}, request_id={request_id}, "
+            f"code={error_code}, message={error_message}",
+        )
+        error_response = ErrorResponse(
+            error=ErrorDetail(
+                message=error_message,
+                type=error_code,
+                code=error_code,
+            )
+        )
+        yield f"data: {error_response.model_dump_json()}\n\n"
     except Exception as e:
         logger.error(
             f"Streaming failed: model={model}, request_id={request_id}, error={e}",
