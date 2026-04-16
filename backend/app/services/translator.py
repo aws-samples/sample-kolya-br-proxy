@@ -325,6 +325,7 @@ class RequestTranslator:
                             name=func.get("name", ""),
                             description=func.get("description", ""),
                             input_schema=func.get("parameters", {}),
+                            strict=func.get("strict"),
                         )
                     )
             if bedrock_tools:

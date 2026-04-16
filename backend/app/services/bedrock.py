@@ -1025,14 +1025,16 @@ class BedrockClient:
 
         # --- tools / tool_choice ---
         if request.tools:
-            body["tools"] = [
-                {
+            body["tools"] = []
+            for t in request.tools:
+                tool_dict = {
                     "name": t.name,
                     "description": t.description,
                     "input_schema": t.input_schema,
                 }
-                for t in request.tools
-            ]
+                if t.strict is not None:
+                    tool_dict["strict"] = t.strict
+                body["tools"].append(tool_dict)
         if request.tool_choice:
             body["tool_choice"] = request.tool_choice
 
