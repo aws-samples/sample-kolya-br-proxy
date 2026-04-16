@@ -530,13 +530,13 @@ async def _handle_gemini_via_anthropic(
     from app.services.gemini_client import (
         GeminiClient,
         extract_cached_tokens,
+        is_gemini_configured,
     )
 
-    settings = get_settings()
-    if not settings.GEMINI_API_KEY:
+    if not is_gemini_configured():
         raise HTTPException(
             status_code=503,
-            detail="Gemini API key is not configured on this server",
+            detail="Gemini API is not configured on this server",
         )
 
     # Convert Anthropic messages to OpenAI-style messages for the Gemini
@@ -577,7 +577,6 @@ async def _handle_gemini_via_anthropic(
         return StreamingResponse(
             _stream_gemini_as_anthropic(
                 payload=payload,
-                api_key=settings.GEMINI_API_KEY,
                 request_id=request_id,
                 model=request_data.model,
                 token=token,
@@ -592,7 +591,7 @@ async def _handle_gemini_via_anthropic(
 
     # Non-streaming
     try:
-        response_data = await GeminiClient.invoke(payload, settings.GEMINI_API_KEY)
+        response_data = await GeminiClient.invoke(payload)
     except httpx.HTTPStatusError as e:
         raise HTTPException(
             status_code=e.response.status_code,
@@ -649,7 +648,6 @@ async def _handle_gemini_via_anthropic(
 
 async def _stream_gemini_as_anthropic(
     payload: dict,
-    api_key: str,
     request_id: str,
     model: str,
     token: APIToken,
@@ -679,7 +677,7 @@ async def _stream_gemini_as_anthropic(
             f"data: {_json.dumps({'type': 'message_start', 'message': {'id': request_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
         )
 
-        async for chunk in GeminiClient.invoke_stream(payload, api_key):
+        async for chunk in GeminiClient.invoke_stream(payload):
             for line in chunk.splitlines():
                 if not line.startswith("data: ") or line.strip() == "data: [DONE]":
                     continue

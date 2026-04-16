@@ -27,6 +27,8 @@ dependencies = [
     "python-multipart>=0.0.26",
     # HTTP client
     "httpx>=0.25.0",
+    # Google Cloud (Vertex AI Gemini)
+    "google-auth>=2.25.0",
     # Background tasks
     "apscheduler>=3.10.0",
     # Email

@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from decimal import Decimal
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Dict
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,19 +20,17 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_token_from_gemini_key
-from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model import Model
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.services.background_tasks import BackgroundTaskManager
+from app.services.gemini_client import build_gemini_url_and_headers, is_gemini_configured
 from app.services.pricing import ModelPricing
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 background_tasks = BackgroundTaskManager()
-
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +173,8 @@ async def generate_content(
     Authenticates using the proxy token, then forwards the raw request body
     to the real Google Gemini API and returns the response as-is.
     """
-    settings = get_settings()
-    if not settings.GEMINI_API_KEY:
-        raise HTTPException(status_code=503, detail="Gemini API key is not configured")
+    if not is_gemini_configured():
+        raise HTTPException(status_code=503, detail="Gemini API is not configured")
 
     model_name = _normalize_model(model_path)
     request_id = f"gemini-{uuid.uuid4().hex[:16]}"
@@ -192,15 +189,16 @@ async def generate_content(
 
     # Read raw body and forward
     raw_body = await request.body()
-    url = (
-        f"{GEMINI_BASE_URL}/{model_name}:generateContent?key={settings.GEMINI_API_KEY}"
+    url, extra_headers = await build_gemini_url_and_headers(
+        model_name, "generateContent"
     )
 
     try:
+        headers = {"Content-Type": "application/json", **extra_headers}
         async with httpx.AsyncClient(timeout=3600) as client:
             resp = await client.post(
                 url,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 content=raw_body,
             )
     except httpx.TimeoutException:
@@ -266,9 +264,8 @@ async def stream_generate_content(
     Authenticates, then streams the upstream SSE response through to the
     client.  Usage is extracted from the final chunk for billing.
     """
-    settings = get_settings()
-    if not settings.GEMINI_API_KEY:
-        raise HTTPException(status_code=503, detail="Gemini API key is not configured")
+    if not is_gemini_configured():
+        raise HTTPException(status_code=503, detail="Gemini API is not configured")
 
     model_name = _normalize_model(model_path)
     request_id = f"gemini-{uuid.uuid4().hex[:16]}"
@@ -282,15 +279,16 @@ async def stream_generate_content(
     await _validate_access(token, model_name, db)
 
     raw_body = await request.body()
-    url = (
-        f"{GEMINI_BASE_URL}/{model_name}:streamGenerateContent"
-        f"?alt=sse&key={settings.GEMINI_API_KEY}"
+    url, extra_headers = await build_gemini_url_and_headers(
+        model_name, "streamGenerateContent",
     )
+    url += "&alt=sse" if "?" in url else "?alt=sse"
 
     return StreamingResponse(
         _stream_proxy(
             url=url,
             raw_body=raw_body,
+            extra_headers=extra_headers,
             model_name=model_name,
             request_id=request_id,
             token=token,
@@ -307,6 +305,7 @@ async def stream_generate_content(
 async def _stream_proxy(
     url: str,
     raw_body: bytes,
+    extra_headers: Dict[str, str],
     model_name: str,
     request_id: str,
     token: APIToken,
@@ -322,7 +321,7 @@ async def _stream_proxy(
             async with client.stream(
                 "POST",
                 url,
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", **extra_headers},
                 content=raw_body,
             ) as resp:
                 if resp.status_code != 200:

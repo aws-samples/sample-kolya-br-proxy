@@ -28,6 +28,7 @@ from app.services.background_tasks import BackgroundTaskManager
 from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import (
     GeminiClient,
+    is_gemini_configured,
     is_gemini_model as _is_gemini_model,
     extract_cached_tokens,
     extract_cached_tokens_from_chunk,
@@ -379,22 +380,18 @@ async def _handle_gemini_request(
     Converts OpenAI-format payload to Gemini GenerateContentRequest internally;
     all bedrock_* and OpenAI-only fields are ignored by the converter.
     """
-    settings = get_settings()
-    if not settings.GEMINI_API_KEY:
+    if not is_gemini_configured():
         raise HTTPException(
             status_code=503,
-            detail="Gemini API key is not configured on this server",
+            detail="Gemini API is not configured on this server",
         )
 
-    # Pass the full payload — GeminiClient.invoke / invoke_stream only reads
-    # the fields it understands (model, messages, temperature, etc.).
     payload = request_data.model_dump(exclude_none=True)
 
     if request_data.stream:
         return StreamingResponse(
             stream_gemini_completion(
                 payload=payload,
-                api_key=settings.GEMINI_API_KEY,
                 request_id=request_id,
                 model=request_data.model,
                 token=token,
@@ -405,7 +402,7 @@ async def _handle_gemini_request(
 
     # Non-streaming
     try:
-        response_data = await GeminiClient.invoke(payload, settings.GEMINI_API_KEY)
+        response_data = await GeminiClient.invoke(payload)
     except httpx.HTTPStatusError as e:
         logger.error(f"Gemini API error: {e}")
         raise HTTPException(
@@ -447,7 +444,6 @@ async def _handle_gemini_request(
 
 async def stream_gemini_completion(
     payload: dict,
-    api_key: str,
     request_id: str,
     model: str,
     token: APIToken,
@@ -468,7 +464,7 @@ async def stream_gemini_completion(
     last_heartbeat = time.time()
 
     try:
-        async for chunk in GeminiClient.invoke_stream(payload, api_key):
+        async for chunk in GeminiClient.invoke_stream(payload):
             current_time = time.time()
 
             # Send heartbeat if idle too long
