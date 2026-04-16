@@ -2,10 +2,15 @@
 Google Gemini API client service.
 
 Uses the native Gemini generateContent / streamGenerateContent API.
+Supports two backends:
+  1. AI Studio (personal API key) — generativelanguage.googleapis.com
+  2. Vertex AI (GCP service account) — {region}-aiplatform.googleapis.com
+
 Converts OpenAI-format requests to Gemini native format and responses back,
 so the rest of the pipeline (chat.py, usage recording) remains unchanged.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -15,10 +20,91 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
 
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
 
-# Google Gemini API base URL (v1beta)
+# Google Gemini API base URL (v1beta) — AI Studio
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# --- Vertex AI token cache ---
+
+_vertex_cache: Dict[str, Any] = {
+    "credentials": None,
+    "token": None,
+    "expires_at": 0,
+}
+_vertex_lock = asyncio.Lock()
+
+
+async def _get_vertex_access_token() -> str:
+    """Get an OAuth2 access token via Application Default Credentials (ADC).
+
+    Credentials object is cached and reused; only .refresh() is called on
+    expiry.  The refresh is run in a thread to avoid blocking the event loop.
+    An asyncio.Lock prevents thundering-herd duplicate refreshes.
+    """
+    now = time.time()
+    if _vertex_cache["token"] and now < _vertex_cache["expires_at"] - 60:
+        return _vertex_cache["token"]
+
+    async with _vertex_lock:
+        now = time.time()
+        if _vertex_cache["token"] and now < _vertex_cache["expires_at"] - 60:
+            return _vertex_cache["token"]
+
+        import google.auth
+        import google.auth.transport.requests
+
+        creds = _vertex_cache["credentials"]
+        if creds is None:
+            creds, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            _vertex_cache["credentials"] = creds
+
+        request_obj = google.auth.transport.requests.Request()
+        await asyncio.to_thread(creds.refresh, request_obj)
+
+        _vertex_cache["token"] = creds.token
+        _vertex_cache["expires_at"] = (
+            creds.expiry.timestamp() if creds.expiry else now + 3600
+        )
+        return _vertex_cache["token"]
+
+
+def _vertex_url(project: str, region: str, model_id: str, method: str) -> str:
+    """Build Vertex AI Gemini endpoint URL."""
+    return (
+        f"https://{region}-aiplatform.googleapis.com/v1/"
+        f"projects/{project}/locations/{region}/"
+        f"publishers/google/models/{model_id}:{method}"
+    )
+
+
+# --- Shared helpers ---
+
+
+def is_gemini_configured() -> bool:
+    """Return True if either AI Studio or Vertex AI is configured."""
+    settings = get_settings()
+    return bool(settings.GEMINI_API_KEY or settings.GCP_PROJECT_ID)
+
+
+async def build_gemini_url_and_headers(
+    model_id: str, method: str
+) -> Tuple[str, Dict[str, str]]:
+    """Return (url, extra_headers) for AI Studio or Vertex AI."""
+    settings = get_settings()
+    if settings.GCP_PROJECT_ID:
+        url = _vertex_url(
+            settings.GCP_PROJECT_ID, settings.GCP_REGION, model_id, method
+        )
+        token = await _get_vertex_access_token()
+        return url, {"Authorization": f"Bearer {token}"}
+    url = f"{GEMINI_BASE_URL}/{model_id}:{method}?key={settings.GEMINI_API_KEY}"
+    return url, {}
+
 
 # Gemini finishReason → OpenAI finish_reason
 _FINISH_REASON_MAP: Dict[str, str] = {
@@ -45,6 +131,31 @@ def _make_friendly_name(model_id: str, display_name: str) -> str:
         return display_name
     parts = model_id.replace("gemini-", "").split("-")
     return "Gemini " + " ".join(p.capitalize() for p in parts)
+
+
+_EXCLUDED_KEYWORDS = ("embed", "aqa", "retrieval")
+
+
+def _format_model_entry(model_id: str, display_name: str) -> Optional[Dict]:
+    """Validate and format a Gemini model ID into a UI-compatible dict.
+
+    Returns None if the model should be filtered out (non-Gemini-2+, embedding, etc).
+    """
+    m = re.match(r"gemini-([0-9]+)", model_id)
+    if not m or int(m.group(1)) < 2:
+        return None
+    if any(kw in model_id for kw in _EXCLUDED_KEYWORDS):
+        return None
+    friendly_name = _make_friendly_name(model_id, display_name)
+    return {
+        "model_id": model_id,
+        "model_name": friendly_name,
+        "friendly_name": friendly_name,
+        "provider": "google",
+        "is_cross_region": False,
+        "cross_region_type": None,
+        "streaming_supported": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -503,17 +614,23 @@ class GeminiClient:
     """Client for Google Gemini native generateContent API."""
 
     @classmethod
-    async def list_models(cls, api_key: str) -> List[Dict]:
-        """
-        Fetch available Gemini models from Google API.
+    async def list_models(cls) -> List[Dict]:
+        """Fetch available Gemini models.
 
+        Uses Vertex AI if GCP_PROJECT_ID is configured, otherwise AI Studio.
         Filters to Gemini 2+ models that support generateContent.
-        Returns list in same format as Bedrock models for UI compatibility.
         """
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models"
-            f"?key={api_key}&pageSize=100"
-        )
+        settings = get_settings()
+        if settings.GCP_PROJECT_ID:
+            return await cls._list_models_vertex(
+                settings.GCP_PROJECT_ID, settings.GCP_REGION
+            )
+        return await cls._list_models_aistudio(settings.GEMINI_API_KEY or "")
+
+    @classmethod
+    async def _list_models_aistudio(cls, api_key: str) -> List[Dict]:
+        """Fetch models from AI Studio (personal API key)."""
+        url = f"{GEMINI_BASE_URL}?key={api_key}&pageSize=100"
         models = []
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -522,73 +639,72 @@ class GeminiClient:
                 resp.raise_for_status()
                 data = resp.json()
 
-                for model in data.get("models", []):
-                    name = model.get("name", "")  # e.g. "models/gemini-2.5-pro"
-
-                    m = re.match(r"models/gemini-([0-9]+)", name)
-                    if not m or int(m.group(1)) < 2:
+                for raw in data.get("models", []):
+                    name = raw.get("name", "")
+                    supported = raw.get("supportedGenerationMethods", [])
+                    if "generateContent" not in supported:
                         continue
-
-                    supported_methods = model.get("supportedGenerationMethods", [])
-                    if "generateContent" not in supported_methods:
-                        continue
-
-                    model_id = name[len("models/") :]
-                    if any(kw in model_id for kw in ("embed", "aqa", "retrieval")):
-                        continue
-
-                    display_name = model.get("displayName", "")
-                    friendly_name = _make_friendly_name(model_id, display_name)
-                    models.append(
-                        {
-                            "model_id": model_id,
-                            "model_name": friendly_name,
-                            "friendly_name": friendly_name,
-                            "provider": "google",
-                            "is_cross_region": False,
-                            "cross_region_type": None,
-                            "streaming_supported": True,
-                        }
-                    )
+                    model_id = name.removeprefix("models/")
+                    entry = _format_model_entry(model_id, raw.get("displayName", ""))
+                    if entry:
+                        models.append(entry)
 
                 next_token = data.get("nextPageToken")
                 url = (
-                    f"https://generativelanguage.googleapis.com/v1beta/models"
-                    f"?key={api_key}&pageSize=100&pageToken={next_token}"
+                    f"{GEMINI_BASE_URL}?key={api_key}&pageSize=100"
+                    f"&pageToken={next_token}"
                     if next_token
                     else None
                 )
 
         models.sort(key=lambda m: m["model_id"])
-        logger.info(f"Fetched {len(models)} Gemini models from Google API")
+        logger.info(f"Fetched {len(models)} Gemini models from AI Studio")
         return models
 
     @classmethod
-    async def invoke(
-        cls,
-        payload: dict,
-        api_key: str,
-    ) -> dict:
-        """
-        Non-streaming request to Gemini native :generateContent endpoint.
+    async def _list_models_vertex(cls, project: str, region: str) -> List[Dict]:
+        """Fetch models from Vertex AI."""
+        token = await _get_vertex_access_token()
+        url = (
+            f"https://{region}-aiplatform.googleapis.com/v1/"
+            f"projects/{project}/locations/{region}/publishers/google/models"
+        )
+        models = []
 
-        Converts OpenAI-format payload → Gemini GenerateContentRequest,
-        calls the API, converts the response back to OpenAI format,
-        and returns it as a plain dict.
-        """
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            for raw in data.get("models", data.get("publisherModels", [])):
+                name = raw.get("name", "")
+                model_id = name.split("/")[-1] if "/" in name else name
+                entry = _format_model_entry(model_id, raw.get("displayName", ""))
+                if entry:
+                    models.append(entry)
+
+        models.sort(key=lambda m: m["model_id"])
+        logger.info(f"Fetched {len(models)} Gemini models from Vertex AI ({region})")
+        return models
+
+    @classmethod
+    async def invoke(cls, payload: dict) -> dict:
+        """Non-streaming request to Gemini :generateContent endpoint."""
         model = payload.get("model", "")
         model_id = model.removeprefix("models/")
-        url = f"{GEMINI_BASE_URL}/{model_id}:generateContent?key={api_key}"
-
         gemini_body = _openai_to_gemini_payload(payload)
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
 
+        url, extra_headers = await build_gemini_url_and_headers(
+            model_id, "generateContent"
+        )
+        headers = {"Content-Type": "application/json", **extra_headers}
+
         async with httpx.AsyncClient(timeout=3600) as client:
-            resp = await client.post(
-                url,
-                headers={"Content-Type": "application/json"},
-                json=gemini_body,
-            )
+            resp = await client.post(url, headers=headers, json=gemini_body)
 
         if resp.status_code != 200:
             logger.error(
@@ -603,23 +719,16 @@ class GeminiClient:
         return _gemini_response_to_openai(resp.json(), model, request_id)
 
     @classmethod
-    async def invoke_stream(
-        cls,
-        payload: dict,
-        api_key: str,
-    ) -> AsyncGenerator[str, None]:
-        """
-        Streaming request to Gemini native :streamGenerateContent endpoint.
-
-        Converts OpenAI-format payload → Gemini GenerateContentRequest,
-        streams via :streamGenerateContent?alt=sse, converts each chunk to
-        OpenAI SSE format, and yields raw SSE text (including final [DONE]).
-        """
+    async def invoke_stream(cls, payload: dict) -> AsyncGenerator[str, None]:
+        """Streaming request to Gemini :streamGenerateContent endpoint."""
         model = payload.get("model", "")
         model_id = model.removeprefix("models/")
-        url = (
-            f"{GEMINI_BASE_URL}/{model_id}:streamGenerateContent?alt=sse&key={api_key}"
+
+        url, extra_headers = await build_gemini_url_and_headers(
+            model_id, "streamGenerateContent"
         )
+        url += "&alt=sse" if "?" in url else "?alt=sse"
+        headers = {"Content-Type": "application/json", **extra_headers}
 
         gemini_body = _openai_to_gemini_payload(payload)
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -629,7 +738,7 @@ class GeminiClient:
             async with client.stream(
                 "POST",
                 url,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 json=gemini_body,
             ) as resp:
                 if resp.status_code != 200:

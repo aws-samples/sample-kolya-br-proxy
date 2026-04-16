@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model import Model
 from app.services.bedrock import BedrockClient
-from app.services.gemini_client import GeminiClient
+from app.services.gemini_client import GeminiClient, is_gemini_configured
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -154,10 +154,9 @@ async def list_aws_available_models(
 
         logger.info(f"Built model list from profile cache: {len(models)} models")
 
-        # Append Gemini models dynamically (only if API key is configured)
-        if settings.GEMINI_API_KEY:
+        if is_gemini_configured():
             try:
-                gemini_models = await GeminiClient.list_models(settings.GEMINI_API_KEY)
+                gemini_models = await GeminiClient.list_models()
                 models.extend(gemini_models)
                 logger.info(
                     f"Added {len(gemini_models)} Gemini models to available list"

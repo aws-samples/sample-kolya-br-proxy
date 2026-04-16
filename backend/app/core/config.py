@@ -59,7 +59,15 @@ class Settings(BaseSettings):
     # Google Gemini settings
     GEMINI_API_KEY: Optional[str] = Field(
         default=None,
-        description="Google Gemini API key for direct Gemini model access",
+        description="Google Gemini API key for direct Gemini model access (AI Studio)",
+    )
+    GCP_PROJECT_ID: Optional[str] = Field(
+        default=None,
+        description="Google Cloud project ID for Vertex AI Gemini access",
+    )
+    GCP_REGION: str = Field(
+        default="us-central1",
+        description="Google Cloud region for Vertex AI",
     )
 
     # AWS Bedrock settings
