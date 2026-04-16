@@ -105,6 +105,7 @@ async def build_gemini_url_and_headers(
     url = f"{GEMINI_BASE_URL}/{model_id}:{method}?key={settings.GEMINI_API_KEY}"
     return url, {}
 
+
 # Gemini finishReason → OpenAI finish_reason
 _FINISH_REASON_MAP: Dict[str, str] = {
     "STOP": "stop",
@@ -629,9 +630,7 @@ class GeminiClient:
     @classmethod
     async def _list_models_aistudio(cls, api_key: str) -> List[Dict]:
         """Fetch models from AI Studio (personal API key)."""
-        url = (
-            f"{GEMINI_BASE_URL}?key={api_key}&pageSize=100"
-        )
+        url = f"{GEMINI_BASE_URL}?key={api_key}&pageSize=100"
         models = []
 
         async with httpx.AsyncClient(timeout=30) as client:

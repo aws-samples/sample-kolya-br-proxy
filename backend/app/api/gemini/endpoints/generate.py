@@ -25,7 +25,10 @@ from app.models.model import Model
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.services.background_tasks import BackgroundTaskManager
-from app.services.gemini_client import build_gemini_url_and_headers, is_gemini_configured
+from app.services.gemini_client import (
+    build_gemini_url_and_headers,
+    is_gemini_configured,
+)
 from app.services.pricing import ModelPricing
 
 router = APIRouter()
@@ -280,7 +283,8 @@ async def stream_generate_content(
 
     raw_body = await request.body()
     url, extra_headers = await build_gemini_url_and_headers(
-        model_name, "streamGenerateContent",
+        model_name,
+        "streamGenerateContent",
     )
     url += "&alt=sse" if "?" in url else "?alt=sse"
 
