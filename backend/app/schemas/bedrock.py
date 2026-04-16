@@ -44,6 +44,7 @@ class BedrockTool(BaseModel):
     name: str
     description: str
     input_schema: Dict[str, Any]
+    strict: Optional[bool] = None
 
 
 class BedrockRequest(BaseModel):

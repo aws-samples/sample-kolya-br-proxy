@@ -144,6 +144,11 @@ class AnthropicRequestTranslator:
         if request.top_k is not None:
             additional_fields["top_k"] = request.top_k
 
+        if request.disable_parallel_tool_use is not None:
+            additional_fields["disable_parallel_tool_use"] = (
+                request.disable_parallel_tool_use
+            )
+
         # Convert tools
         bedrock_tools = None
         if request.tools:
@@ -152,6 +157,7 @@ class AnthropicRequestTranslator:
                     name=tool.name,
                     description=tool.description or "",
                     input_schema=tool.input_schema,
+                    strict=tool.strict,
                 )
                 for tool in request.tools
             ]

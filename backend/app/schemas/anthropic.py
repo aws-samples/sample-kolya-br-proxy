@@ -95,6 +95,7 @@ class AnthropicToolDefinition(BaseModel):
     description: Optional[str] = None
     input_schema: Dict[str, Any]
     cache_control: Optional[Dict[str, str]] = None
+    strict: Optional[bool] = None
 
 
 class AnthropicSystemBlock(BaseModel):
@@ -126,6 +127,7 @@ class AnthropicMessagesRequest(BaseModel):
     stream: Optional[bool] = False
     tools: Optional[List[AnthropicToolDefinition]] = None
     tool_choice: Optional[Dict[str, Any]] = None
+    disable_parallel_tool_use: Optional[bool] = None
     metadata: Optional[Dict[str, Any]] = None
     thinking: Optional[AnthropicThinkingConfig] = None
 
