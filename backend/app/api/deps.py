@@ -3,6 +3,7 @@ API dependencies for authentication and authorization.
 Provides dependency injection for database sessions, current user, and token validation.
 """
 
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -21,6 +22,8 @@ from app.services.auth import AuthService
 from app.services.refresh_token import RefreshTokenService
 from app.services.token import TokenService
 
+logger = logging.getLogger(__name__)
+
 
 async def _validate_token_with_cache(
     token_service: TokenService, plain_token: str
@@ -34,6 +37,7 @@ async def _validate_token_with_cache(
         cached_service = CachedTokenService(token_service, cache)
         return await cached_service.validate_token_cached(plain_token=plain_token)
     except Exception:
+        logger.warning("Redis token cache failed, falling back to DB")
         return await token_service.validate_token(plain_token=plain_token)
 
 
@@ -354,31 +358,3 @@ async def get_current_user(
         )
 
     return user
-
-
-async def validate_token_for_model(
-    model: str,
-    token: APIToken = Depends(get_current_token),
-    token_service: TokenService = Depends(get_token_service),
-) -> APIToken:
-    """
-    Validate that token has access to specified model.
-
-    Args:
-        model: Model name to check
-        token: Current API token
-        token_service: Token service instance
-
-    Returns:
-        Validated token
-
-    Raises:
-        HTTPException: If token doesn't have access to model
-    """
-    if token.allowed_models and model not in token.allowed_models:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Token does not have access to model: {model}",
-        )
-
-    return token

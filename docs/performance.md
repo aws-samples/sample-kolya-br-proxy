@@ -365,7 +365,9 @@ async with async_session_maker() as session:
 
 #### Configuration Location
 - `backend/app/core/security.py`
+- `backend/app/core/redis.py` — `RedisCache` (JSON-serialized get/set/delete)
 - `backend/app/services/token.py`
+- `backend/app/services/token_cache.py` — `CachedTokenService` (Redis cache layer)
 - `backend/app/models/token.py`
 
 #### Implementation Principle
@@ -417,12 +419,30 @@ result = await db.execute(
 )
 ```
 
+#### Redis Token Cache
+
+On top of the hash-based DB lookup, a Redis cache layer (`CachedTokenService`) avoids the DB round-trip entirely for repeat requests:
+
+```
+Request → PBKDF2 hash → Redis GET token:{hash}
+                           ├─ Cache hit  → return cached APIToken  (~1ms)
+                           └─ Cache miss → DB SELECT → Redis SET (TTL 300s) → return
+```
+
+- **TTL**: 5 minutes — balances freshness with DB connection savings
+- **Graceful degradation**: if Redis is unavailable, falls back to direct DB query transparently
+- **Cache invalidation**: token revoke/delete clears the cache key immediately via `_invalidate_token_cache(token.token_hash)`
+- **Key format**: `token:{sha256_hash}`, JSON-serialized token fields (id, user_id, name, expires_at, quota_usd, allowed_ips, is_active)
+
+Under high concurrency, this prevents token validation from competing with long-running Bedrock streaming for DB connection pool slots.
+
 #### Performance Comparison
 
 | Method | Query Type | Time Complexity | Actual Time | Notes |
 |--------|-----------|----------------|-------------|-------|
 | **Before** | Iterate all tokens, decrypt and compare | O(n) | ~10 seconds | 20,000 tokens |
-| **After** | PBKDF2 hash + index query | O(1) | ~300 milliseconds | PBKDF2 ~300ms + DB index ~0.5ms |
+| **After (DB)** | PBKDF2 hash + index query | O(1) | ~300 milliseconds | PBKDF2 ~300ms + DB index ~0.5ms |
+| **After (Redis hit)** | PBKDF2 hash + Redis GET | O(1) | ~301 milliseconds | PBKDF2 ~300ms + Redis ~1ms, no DB connection used |
 | **Improvement** | - | - | **~33x faster** | Security-performance tradeoff |
 
 #### Performance Test Results
