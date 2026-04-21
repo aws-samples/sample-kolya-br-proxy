@@ -616,8 +616,9 @@ Plain SHA256 is fast — an attacker with a leaked database can brute-force toke
 ### Key Files
 
 - `backend/app/core/security.py` — `hash_token()`, `verify_token()`, `encrypt_token()`, `decrypt_token()`
+- `backend/app/core/redis.py` — `RedisCache` wrapper with JSON serialization and graceful degradation
 - `backend/app/services/token.py` — Token creation and validation service
-- `backend/app/services/token_cache.py` — Cached token lookup by hash
+- `backend/app/services/token_cache.py` — `CachedTokenService` with Redis cache (TTL 300s) and DB fallback
 
 ---
 
