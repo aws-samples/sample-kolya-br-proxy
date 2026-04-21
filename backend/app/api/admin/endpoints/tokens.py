@@ -26,6 +26,17 @@ ALLOWED_METADATA_KEYS = {"prompt_cache_enabled", "prompt_cache_ttl"}
 ALLOWED_CACHE_TTL_VALUES = {"5m", "1h"}
 
 
+async def _invalidate_token_cache(token_hash: str) -> None:
+    try:
+        from app.core.redis import get_redis, RedisCache
+
+        redis_client = await get_redis()
+        cache = RedisCache(redis_client)
+        await cache.delete(f"token:{token_hash}")
+    except Exception:
+        pass
+
+
 def validate_token_metadata(meta: dict | None) -> dict | None:
     """Validate token_metadata keys and values."""
     if meta is None:
@@ -488,23 +499,7 @@ async def delete_token(
             detail="Access denied",
         )
 
-    # Invalidate cache before deleting
-    try:
-        from app.core.redis import get_redis, RedisCache
-        from app.core.security import hash_token
-        from app.services.token_cache import CachedTokenService
-
-        # Get plain token to calculate hash
-        plain_token = await token_service.get_plain_token(token_uuid)
-        if plain_token:
-            token_hash = hash_token(plain_token)
-            redis_client = await get_redis()
-            cache = RedisCache(redis_client)
-            cached_service = CachedTokenService(token_service.db, cache)
-            await cached_service.invalidate_token_cache(token_hash)
-    except Exception:
-        # Continue even if cache invalidation fails
-        pass
+    await _invalidate_token_cache(token.token_hash)
 
     # Delete token
     await token_service.delete_token(token_uuid)
@@ -549,6 +544,8 @@ async def revoke_token(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
         )
+
+    await _invalidate_token_cache(token.token_hash)
 
     # Revoke token
     await token_service.revoke_token(token_uuid)

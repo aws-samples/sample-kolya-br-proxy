@@ -5,8 +5,9 @@ Provides async Redis connection management with graceful degradation
 when Redis is unavailable.
 """
 
+import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import redis.asyncio as aioredis
 
@@ -25,12 +26,7 @@ async def get_redis() -> Optional[aioredis.Redis]:
     global _redis_client
 
     if _redis_client is not None:
-        try:
-            await _redis_client.ping()
-            return _redis_client
-        except Exception:
-            logger.warning("Redis connection lost, attempting reconnect")
-            _redis_client = None
+        return _redis_client
 
     settings = get_settings()
     if not settings.REDIS_URL:
@@ -60,3 +56,28 @@ async def close_redis() -> None:
         await _redis_client.close()
         _redis_client = None
         logger.info("Redis connection closed")
+
+
+class RedisCache:
+    """Thin wrapper over an async Redis client with JSON serialization."""
+
+    def __init__(self, client: Optional[aioredis.Redis]):
+        self._client = client
+
+    async def get(self, key: str) -> Optional[Any]:
+        if self._client is None:
+            return None
+        raw = await self._client.get(key)
+        if raw is None:
+            return None
+        return json.loads(raw)
+
+    async def set(self, key: str, value: Any, expire: int = 300) -> None:
+        if self._client is None:
+            return
+        await self._client.set(key, json.dumps(value), ex=expire)
+
+    async def delete(self, key: str) -> None:
+        if self._client is None:
+            return
+        await self._client.delete(key)

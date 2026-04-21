@@ -4,8 +4,6 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core.redis import RedisCache
 from app.models.token import APIToken
 from app.services.token import TokenService
@@ -19,10 +17,9 @@ class CachedTokenService:
     CACHE_TTL = 300  # 5 minutes
     CACHE_KEY_PREFIX = "token:"
 
-    def __init__(self, db: AsyncSession, cache: RedisCache):
-        self.db = db
+    def __init__(self, token_service: TokenService, cache: RedisCache):
         self.cache = cache
-        self.token_service = TokenService(db)
+        self.token_service = token_service
 
     def _get_cache_key(self, token_hash: str) -> str:
         """Generate cache key for token."""

@@ -3,6 +3,7 @@ API dependencies for authentication and authorization.
 Provides dependency injection for database sessions, current user, and token validation.
 """
 
+from typing import Optional
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -19,6 +20,22 @@ from app.services.audit_log import AuditLogService
 from app.services.auth import AuthService
 from app.services.refresh_token import RefreshTokenService
 from app.services.token import TokenService
+
+
+async def _validate_token_with_cache(
+    token_service: TokenService, plain_token: str
+) -> Optional[APIToken]:
+    try:
+        from app.core.redis import get_redis, RedisCache
+        from app.services.token_cache import CachedTokenService
+
+        redis_client = await get_redis()
+        cache = RedisCache(redis_client)
+        cached_service = CachedTokenService(token_service, cache)
+        return await cached_service.validate_token_cached(plain_token=plain_token)
+    except Exception:
+        return await token_service.validate_token(plain_token=plain_token)
+
 
 # HTTP Bearer token scheme
 security = HTTPBearer()
@@ -120,24 +137,7 @@ async def get_current_token(
         HTTPException: If token is invalid or access is denied
     """
     plain_token = credentials.credentials
-
-    # Try to use cached validation if Redis is available
-    try:
-        from app.core.redis import get_redis, RedisCache
-        from app.services.token_cache import CachedTokenService
-
-        redis_client = await get_redis()
-        cache = RedisCache(redis_client)
-        cached_service = CachedTokenService(token_service.db, cache)
-
-        token = await cached_service.validate_token_cached(
-            plain_token=plain_token,
-        )
-    except Exception:
-        # Fallback to non-cached validation if Redis unavailable
-        token = await token_service.validate_token(
-            plain_token=plain_token,
-        )
+    token = await _validate_token_with_cache(token_service, plain_token)
 
     if not token:
         raise HTTPException(
@@ -174,17 +174,7 @@ async def get_current_token_flexible(
             detail="Missing API key. Provide via Authorization: Bearer or x-api-key header.",
         )
 
-    # Validate token (same logic as other auth deps)
-    try:
-        from app.core.redis import get_redis, RedisCache
-        from app.services.token_cache import CachedTokenService
-
-        redis_client = await get_redis()
-        cache = RedisCache(redis_client)
-        cached_service = CachedTokenService(token_service.db, cache)
-        token = await cached_service.validate_token_cached(plain_token=api_key)
-    except Exception:
-        token = await token_service.validate_token(plain_token=api_key)
+    token = await _validate_token_with_cache(token_service, api_key)
 
     if not token:
         raise HTTPException(
@@ -216,25 +206,7 @@ async def get_current_token_from_api_key(
     Raises:
         HTTPException: If token is invalid or access is denied
     """
-    plain_token = x_api_key
-
-    # Try to use cached validation if Redis is available
-    try:
-        from app.core.redis import get_redis, RedisCache
-        from app.services.token_cache import CachedTokenService
-
-        redis_client = await get_redis()
-        cache = RedisCache(redis_client)
-        cached_service = CachedTokenService(token_service.db, cache)
-
-        token = await cached_service.validate_token_cached(
-            plain_token=plain_token,
-        )
-    except Exception:
-        # Fallback to non-cached validation if Redis unavailable
-        token = await token_service.validate_token(
-            plain_token=plain_token,
-        )
+    token = await _validate_token_with_cache(token_service, x_api_key)
 
     if not token:
         raise HTTPException(
@@ -280,17 +252,7 @@ async def get_current_token_from_gemini_key(
             detail="Missing API key. Provide via ?key= query parameter or x-goog-api-key header.",
         )
 
-    # Validate (same logic as other auth deps)
-    try:
-        from app.core.redis import get_redis, RedisCache
-        from app.services.token_cache import CachedTokenService
-
-        redis_client = await get_redis()
-        cache = RedisCache(redis_client)
-        cached_service = CachedTokenService(token_service.db, cache)
-        token = await cached_service.validate_token_cached(plain_token=plain_token)
-    except Exception:
-        token = await token_service.validate_token(plain_token=plain_token)
+    token = await _validate_token_with_cache(token_service, plain_token)
 
     if not token:
         raise HTTPException(
