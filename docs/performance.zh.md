@@ -365,7 +365,9 @@ async with async_session_maker() as session:
 
 #### 配置位置
 - `backend/app/core/security.py`
+- `backend/app/core/redis.py` — `RedisCache`（JSON 序列化的 get/set/delete）
 - `backend/app/services/token.py`
+- `backend/app/services/token_cache.py` — `CachedTokenService`（Redis 缓存层）
 - `backend/app/models/token.py`
 
 #### 实现原理
@@ -417,12 +419,30 @@ result = await db.execute(
 )
 ```
 
+#### Redis Token 缓存
+
+在哈希查表之上，Redis 缓存层（`CachedTokenService`）可以完全跳过 DB 查询：
+
+```
+请求 → PBKDF2 哈希 → Redis GET token:{hash}
+                        ├─ 缓存命中 → 返回缓存的 APIToken（~1ms）
+                        └─ 缓存未命中 → DB SELECT → Redis SET（TTL 300s）→ 返回
+```
+
+- **TTL**：5 分钟 — 在数据新鲜度和节省 DB 连接之间取得平衡
+- **优雅降级**：Redis 不可用时自动回退到直接查 DB，对调用方透明
+- **缓存失效**：token 撤销/删除时通过 `_invalidate_token_cache(token.token_hash)` 立即清除缓存
+- **Key 格式**：`token:{sha256_hash}`，JSON 序列化的 token 字段（id, user_id, name, expires_at, quota_usd, allowed_ips, is_active）
+
+在高并发场景下，这可以避免 token 验证与 Bedrock 长连接 streaming 竞争 DB 连接池。
+
 #### 性能对比
 
 | 方法 | 查询方式 | 时间复杂度 | 实际耗时 | 说明 |
 |------|---------|-----------|---------|------|
 | **优化前** | 遍历所有 token 逐个解密比对 | O(n) | ~10 秒 | 20,000 个 token |
-| **优化后** | PBKDF2 哈希 + 索引查询 | O(1) | ~300 毫秒 | PBKDF2 ~300ms + DB 索引 ~0.5ms |
+| **优化后（DB）** | PBKDF2 哈希 + 索引查询 | O(1) | ~300 毫秒 | PBKDF2 ~300ms + DB 索引 ~0.5ms |
+| **优化后（Redis 命中）** | PBKDF2 哈希 + Redis GET | O(1) | ~301 毫秒 | PBKDF2 ~300ms + Redis ~1ms，不占用 DB 连接 |
 | **性能提升** | - | - | **约 33 倍** | 安全性与性能的权衡 |
 
 #### 性能测试结果
