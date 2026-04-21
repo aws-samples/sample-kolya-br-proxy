@@ -179,30 +179,14 @@ async def create_chat_completion(
     logger.debug(f"Full request data: {request_data.model_dump()}")
 
     try:
-        # Check token quota before processing request
-        from sqlalchemy import select, func
+        from sqlalchemy import select
         from app.models.model import Model
-        from decimal import Decimal
 
-        # Calculate total usage for this token
-        result = await db.execute(
-            select(func.sum(UsageRecord.cost_usd)).where(
-                UsageRecord.token_id == token.id
-            )
-        )
-        total_used = result.scalar() or Decimal("0.00")
+        from app.services.quota import validate_quota_and_limits
 
-        # Set cached used amount for quota check
-        token.calculate_used_usd(total_used)
+        await validate_quota_and_limits(token, db)
 
-        # Check if quota is exceeded
-        if token.is_quota_exceeded:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Token quota exceeded. Used: ${total_used:.2f}, Quota: ${token.quota_usd:.2f}",
-            )
-
-        # Validate model access by querying the models table
+        # Validate model access
         result = await db.execute(
             select(Model).where(
                 Model.token_id == token.id,
@@ -211,17 +195,14 @@ async def create_chat_completion(
             )
         )
         token_models = result.scalars().all()
-
         allowed_model_names = [model.model_name for model in token_models]
 
-        # If no models are associated with this token, deny all access
         if not allowed_model_names:
             raise HTTPException(
                 status_code=403,
                 detail="Token does not have access to any models",
             )
 
-        # Check if requested model matches any allowed model (exact match)
         if request_data.model not in allowed_model_names:
             raise HTTPException(
                 status_code=403,

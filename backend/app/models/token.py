@@ -31,6 +31,16 @@ class APIToken(Base):
     expires_at = Column(DateTime, nullable=True)
     quota_usd = Column(Numeric(10, 2), nullable=True)
 
+    # Monthly auto-recharge
+    monthly_quota_usd = Column(Numeric(10, 2), nullable=True)
+    monthly_quota_enabled = Column(Boolean, default=False, nullable=False)
+    last_quota_reset_at = Column(DateTime, nullable=True)
+
+    # Spend rate limits
+    daily_spend_limit_usd = Column(Numeric(10, 2), nullable=True)
+    hourly_spend_limit_usd = Column(Numeric(10, 2), nullable=True)
+    rate_limit_enabled = Column(Boolean, default=False, nullable=False)
+
     # Access control
     allowed_ips = Column(ARRAY(String), nullable=True)
 
@@ -58,6 +68,20 @@ class APIToken(Base):
 
     def __repr__(self) -> str:
         return f"<APIToken(id={self.id}, name={self.name}, user_id={self.user_id})>"
+
+    def check_monthly_reset(self) -> bool:
+        """Lazy monthly quota reset. Returns True if reset happened."""
+        if not self.monthly_quota_enabled or not self.monthly_quota_usd:
+            return False
+        now = datetime.utcnow()
+        if self.last_quota_reset_at is None or (
+            now.year != self.last_quota_reset_at.year
+            or now.month != self.last_quota_reset_at.month
+        ):
+            self.quota_usd = self.monthly_quota_usd
+            self.last_quota_reset_at = now
+            return True
+        return False
 
     @property
     def is_expired(self) -> bool:

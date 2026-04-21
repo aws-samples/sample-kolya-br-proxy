@@ -10,13 +10,12 @@ import json
 import logging
 import time
 import uuid
-from decimal import Decimal
 from typing import AsyncGenerator, Dict
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_token_from_gemini_key
@@ -61,19 +60,10 @@ async def _validate_access(
     model_name: str,
     db: AsyncSession,
 ) -> None:
-    """Check quota and model permission.  Raises HTTPException on failure."""
-    # Quota check
-    result = await db.execute(
-        select(func.sum(UsageRecord.cost_usd)).where(UsageRecord.token_id == token.id)
-    )
-    total_used = result.scalar() or Decimal("0.00")
-    token.calculate_used_usd(total_used)
+    """Check quota, spend limits, and model permission."""
+    from app.services.quota import validate_quota_and_limits
 
-    if token.is_quota_exceeded:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Token quota exceeded. Used: ${total_used:.2f}, Quota: ${token.quota_usd:.2f}",
-        )
+    await validate_quota_and_limits(token, db)
 
     # Model permission check
     result = await db.execute(

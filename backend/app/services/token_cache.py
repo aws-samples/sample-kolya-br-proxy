@@ -88,6 +88,20 @@ class CachedTokenService:
             "quota_usd": str(token.quota_usd) if token.quota_usd else None,
             "allowed_ips": token.allowed_ips,
             "is_active": token.is_active,
+            "monthly_quota_usd": str(token.monthly_quota_usd)
+            if token.monthly_quota_usd
+            else None,
+            "monthly_quota_enabled": token.monthly_quota_enabled,
+            "last_quota_reset_at": token.last_quota_reset_at.isoformat()
+            if token.last_quota_reset_at
+            else None,
+            "daily_spend_limit_usd": str(token.daily_spend_limit_usd)
+            if token.daily_spend_limit_usd
+            else None,
+            "hourly_spend_limit_usd": str(token.hourly_spend_limit_usd)
+            if token.hourly_spend_limit_usd
+            else None,
+            "rate_limit_enabled": token.rate_limit_enabled,
         }
         await self.cache.set(cache_key, token_data, expire=self.CACHE_TTL)
 
@@ -113,6 +127,30 @@ class CachedTokenService:
             )
             token.allowed_ips = cached_data["allowed_ips"]
             token.is_active = cached_data["is_active"]
+            token.monthly_quota_usd = (
+                Decimal(cached_data["monthly_quota_usd"])
+                if cached_data.get("monthly_quota_usd")
+                else None
+            )
+            token.monthly_quota_enabled = cached_data.get(
+                "monthly_quota_enabled", False
+            )
+            token.last_quota_reset_at = (
+                datetime.fromisoformat(cached_data["last_quota_reset_at"])
+                if cached_data.get("last_quota_reset_at")
+                else None
+            )
+            token.daily_spend_limit_usd = (
+                Decimal(cached_data["daily_spend_limit_usd"])
+                if cached_data.get("daily_spend_limit_usd")
+                else None
+            )
+            token.hourly_spend_limit_usd = (
+                Decimal(cached_data["hourly_spend_limit_usd"])
+                if cached_data.get("hourly_spend_limit_usd")
+                else None
+            )
+            token.rate_limit_enabled = cached_data.get("rate_limit_enabled", False)
 
             return token
         except Exception as e:

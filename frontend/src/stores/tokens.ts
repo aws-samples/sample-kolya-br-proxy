@@ -23,6 +23,11 @@ export interface APIToken {
   created_at: string;
   last_used_at: string | null;
   token_metadata?: TokenMetadata | null;
+  monthly_quota_usd: string | null;
+  monthly_quota_enabled: boolean;
+  daily_spend_limit_usd: string | null;
+  hourly_spend_limit_usd: string | null;
+  rate_limit_enabled: boolean;
 }
 
 export interface APITokenWithKey extends APIToken {
@@ -36,6 +41,11 @@ export interface CreateTokenRequest {
   allowed_ips?: string[];
   allowed_models?: string[];
   token_metadata?: TokenMetadata | null;
+  monthly_quota_usd?: number | undefined;
+  monthly_quota_enabled?: boolean | undefined;
+  daily_spend_limit_usd?: number | undefined;
+  hourly_spend_limit_usd?: number | undefined;
+  rate_limit_enabled?: boolean | undefined;
 }
 
 export interface BatchCreateTokenRequest {
@@ -45,6 +55,11 @@ export interface BatchCreateTokenRequest {
   allowed_ips?: string[];
   token_metadata?: TokenMetadata | null;
   model_names?: string[];
+  monthly_quota_usd?: number | undefined;
+  monthly_quota_enabled?: boolean | undefined;
+  daily_spend_limit_usd?: number | undefined;
+  hourly_spend_limit_usd?: number | undefined;
+  rate_limit_enabled?: boolean | undefined;
 }
 
 export interface BatchCreateTokenResponse {

@@ -44,28 +44,23 @@ class TokenService:
         quota_usd: Optional[Decimal] = None,
         allowed_ips: Optional[List[str]] = None,
         token_metadata: Optional[dict] = None,
+        monthly_quota_usd: Optional[Decimal] = None,
+        monthly_quota_enabled: bool = False,
+        daily_spend_limit_usd: Optional[Decimal] = None,
+        hourly_spend_limit_usd: Optional[Decimal] = None,
+        rate_limit_enabled: bool = False,
     ) -> tuple[APIToken, str]:
         """
         Create a new API token for a user.
-
-        Args:
-            user_id: User UUID
-            name: Token name/description
-            expires_at: Optional expiration datetime
-            quota_usd: Optional usage quota in USD
-            allowed_ips: Optional list of allowed IP addresses/ranges
-            token_metadata: Optional metadata dict for per-key configuration
 
         Returns:
             Tuple of (APIToken object, plain token string)
             Note: Plain token is only returned once at creation
         """
-        # Generate unique token
         plain_token = generate_api_token()
         token_hash = hash_token(plain_token)
         encrypted = encrypt_token(plain_token)
 
-        # Create token record
         token = APIToken(
             user_id=user_id,
             name=name,
@@ -76,6 +71,11 @@ class TokenService:
             allowed_ips=allowed_ips or [],
             token_metadata=token_metadata,
             is_active=True,
+            monthly_quota_usd=monthly_quota_usd,
+            monthly_quota_enabled=monthly_quota_enabled,
+            daily_spend_limit_usd=daily_spend_limit_usd,
+            hourly_spend_limit_usd=hourly_spend_limit_usd,
+            rate_limit_enabled=rate_limit_enabled,
         )
 
         self.db.add(token)
@@ -93,6 +93,11 @@ class TokenService:
         allowed_ips: Optional[List[str]] = None,
         token_metadata: Optional[dict] = None,
         model_names: Optional[List[str]] = None,
+        monthly_quota_usd: Optional[Decimal] = None,
+        monthly_quota_enabled: bool = False,
+        daily_spend_limit_usd: Optional[Decimal] = None,
+        hourly_spend_limit_usd: Optional[Decimal] = None,
+        rate_limit_enabled: bool = False,
     ) -> List[tuple[APIToken, str]]:
         """
         Batch create API tokens with explicit names and optional shared model list.
@@ -119,6 +124,11 @@ class TokenService:
                 allowed_ips=allowed_ips or [],
                 token_metadata=token_metadata,
                 is_active=True,
+                monthly_quota_usd=monthly_quota_usd,
+                monthly_quota_enabled=monthly_quota_enabled,
+                daily_spend_limit_usd=daily_spend_limit_usd,
+                hourly_spend_limit_usd=hourly_spend_limit_usd,
+                rate_limit_enabled=rate_limit_enabled,
             )
             self.db.add(token)
             tokens_and_keys.append((token, plain_token))

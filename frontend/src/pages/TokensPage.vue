@@ -112,6 +112,20 @@
             </q-td>
           </template>
 
+          <template v-slot:body-cell-limits="props">
+            <q-td :props="props">
+              <q-badge
+                :color="getLimitsBadge(props.row).color"
+                :label="getLimitsBadge(props.row).label"
+              />
+              <q-tooltip v-if="props.row.rate_limit_enabled">
+                <div v-if="props.row.daily_spend_limit_usd">Daily: ${{ props.row.daily_spend_limit_usd }}</div>
+                <div v-if="props.row.hourly_spend_limit_usd">Hourly: ${{ props.row.hourly_spend_limit_usd }}</div>
+                <div v-if="props.row.monthly_quota_enabled">Monthly recharge: ${{ props.row.monthly_quota_usd }}</div>
+              </q-tooltip>
+            </q-td>
+          </template>
+
           <template v-slot:body-cell-cache="props">
             <q-td :props="props">
               <q-badge
@@ -133,6 +147,17 @@
                 class="q-mr-xs"
               >
                 <q-tooltip>Cache Settings</q-tooltip>
+              </q-btn>
+              <q-btn
+                flat
+                dense
+                round
+                icon="speed"
+                color="grey-7"
+                @click="openLimits(props.row)"
+                class="q-mr-xs"
+              >
+                <q-tooltip>Spend Limits</q-tooltip>
               </q-btn>
               <q-btn
                 flat
@@ -292,6 +317,67 @@
               </q-item>
             </q-list>
 
+            <q-separator dark class="q-my-md" />
+
+            <q-list dark dense class="q-mb-md">
+              <q-item>
+                <q-item-section>
+                  <q-item-label>Monthly Auto-Recharge</q-item-label>
+                  <q-item-label caption>Reset quota to a fixed amount each month</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle v-model="newToken.monthlyQuotaEnabled" dark dense />
+                </q-item-section>
+              </q-item>
+            </q-list>
+            <q-input
+              v-if="newToken.monthlyQuotaEnabled"
+              v-model.number="newToken.monthlyQuotaUsd"
+              label="Monthly Quota (USD)"
+              outlined
+              rounded
+              dark
+              type="text"
+              hint="Quota resets to this amount each month"
+              class="q-mb-md"
+            />
+
+            <q-list dark dense class="q-mb-md">
+              <q-item>
+                <q-item-section>
+                  <q-item-label>Spend Rate Limit</q-item-label>
+                  <q-item-label caption>Limit daily/hourly spending</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle v-model="newToken.rateLimitEnabled" dark dense />
+                </q-item-section>
+              </q-item>
+            </q-list>
+            <div v-if="newToken.rateLimitEnabled" class="row q-col-gutter-md q-mb-md">
+              <div class="col-6">
+                <q-input
+                  v-model.number="newToken.dailySpendLimitUsd"
+                  label="Daily Limit (USD)"
+                  outlined
+                  rounded
+                  dark
+                  type="text"
+                  hint="Max spend per day"
+                />
+              </div>
+              <div class="col-6">
+                <q-input
+                  v-model.number="newToken.hourlySpendLimitUsd"
+                  label="Hourly Limit (USD)"
+                  outlined
+                  rounded
+                  dark
+                  type="text"
+                  hint="Max spend per hour"
+                />
+              </div>
+            </div>
+
             <div class="row justify-end q-mt-md q-gutter-sm">
               <q-btn label="Cancel" flat v-close-popup />
               <q-btn
@@ -383,6 +469,87 @@
             color="grey-8"
             @click="saveSettings"
             :loading="savingSettings"
+            unelevated
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Spend Limits Dialog -->
+    <q-dialog v-model="showLimitsDialog">
+      <q-card dark style="min-width: 450px">
+        <q-card-section>
+          <div class="text-h6">Spend Limits</div>
+        </q-card-section>
+
+        <q-card-section class="q-pt-none">
+          <div class="text-caption text-grey-7 q-mb-md">
+            Token: {{ limitsToken?.name }}
+          </div>
+
+          <q-list dark dense class="q-mb-md">
+            <q-item>
+              <q-item-section>
+                <q-item-label>Monthly Auto-Recharge</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-toggle v-model="limitsMonthlyEnabled" dark dense />
+              </q-item-section>
+            </q-item>
+          </q-list>
+          <q-input
+            v-if="limitsMonthlyEnabled"
+            v-model.number="limitsMonthlyQuotaUsd"
+            label="Monthly Quota (USD)"
+            outlined
+            rounded
+            dark
+            type="text"
+            hint="Quota resets to this amount each month"
+            class="q-mb-md"
+          />
+
+          <q-list dark dense class="q-mb-md">
+            <q-item>
+              <q-item-section>
+                <q-item-label>Spend Rate Limit</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-toggle v-model="limitsRateEnabled" dark dense />
+              </q-item-section>
+            </q-item>
+          </q-list>
+          <div v-if="limitsRateEnabled" class="row q-col-gutter-md q-mb-md">
+            <div class="col-6">
+              <q-input
+                v-model.number="limitsDailyUsd"
+                label="Daily Limit (USD)"
+                outlined
+                rounded
+                dark
+                type="text"
+              />
+            </div>
+            <div class="col-6">
+              <q-input
+                v-model.number="limitsHourlyUsd"
+                label="Hourly Limit (USD)"
+                outlined
+                rounded
+                dark
+                type="text"
+              />
+            </div>
+          </div>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn label="Cancel" flat v-close-popup />
+          <q-btn
+            label="Save"
+            color="grey-8"
+            @click="saveLimits"
+            :loading="savingLimits"
             unelevated
           />
         </q-card-actions>
@@ -492,6 +659,63 @@
               </q-item>
             </q-list>
 
+            <q-separator dark class="q-my-md" />
+
+            <q-list dark dense class="q-mb-md">
+              <q-item>
+                <q-item-section>
+                  <q-item-label>Monthly Auto-Recharge</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle v-model="batchForm.monthlyQuotaEnabled" dark dense />
+                </q-item-section>
+              </q-item>
+            </q-list>
+            <q-input
+              v-if="batchForm.monthlyQuotaEnabled"
+              v-model.number="batchForm.monthlyQuotaUsd"
+              label="Monthly Quota (USD)"
+              outlined
+              rounded
+              dark
+              type="text"
+              hint="Quota resets to this amount each month"
+              class="q-mb-md"
+            />
+
+            <q-list dark dense class="q-mb-md">
+              <q-item>
+                <q-item-section>
+                  <q-item-label>Spend Rate Limit</q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-toggle v-model="batchForm.rateLimitEnabled" dark dense />
+                </q-item-section>
+              </q-item>
+            </q-list>
+            <div v-if="batchForm.rateLimitEnabled" class="row q-col-gutter-md q-mb-md">
+              <div class="col-6">
+                <q-input
+                  v-model.number="batchForm.dailySpendLimitUsd"
+                  label="Daily Limit (USD)"
+                  outlined
+                  rounded
+                  dark
+                  type="text"
+                />
+              </div>
+              <div class="col-6">
+                <q-input
+                  v-model.number="batchForm.hourlySpendLimitUsd"
+                  label="Hourly Limit (USD)"
+                  outlined
+                  rounded
+                  dark
+                  type="text"
+                />
+              </div>
+            </div>
+
             <div class="row justify-end q-mt-md q-gutter-sm">
               <q-btn label="Cancel" flat v-close-popup />
               <q-btn
@@ -585,6 +809,11 @@ const batchForm = ref({
   model_names: [] as string[],
   cacheEnabled: false,
   cacheTtl: '1h',
+  monthlyQuotaEnabled: false,
+  monthlyQuotaUsd: undefined as number | undefined,
+  rateLimitEnabled: false,
+  dailySpendLimitUsd: undefined as number | undefined,
+  hourlySpendLimitUsd: undefined as number | undefined,
 });
 
 const availableModelOptions = computed(() =>
@@ -599,12 +828,26 @@ const cacheTtlOptions = [
   { label: '1h', value: '1h' },
 ];
 
+const showLimitsDialog = ref(false);
+const limitsToken = ref<APIToken | null>(null);
+const limitsMonthlyEnabled = ref(false);
+const limitsMonthlyQuotaUsd = ref<number | undefined>(undefined);
+const limitsRateEnabled = ref(false);
+const limitsDailyUsd = ref<number | undefined>(undefined);
+const limitsHourlyUsd = ref<number | undefined>(undefined);
+const savingLimits = ref(false);
+
 const newToken = ref({
   name: '',
   quota_usd: undefined as number | undefined,
   expires_at: '',
   cacheEnabled: false,
   cacheTtl: '1h',
+  monthlyQuotaEnabled: false,
+  monthlyQuotaUsd: undefined as number | undefined,
+  rateLimitEnabled: false,
+  dailySpendLimitUsd: undefined as number | undefined,
+  hourlySpendLimitUsd: undefined as number | undefined,
 });
 
 const columns = [
@@ -643,6 +886,12 @@ const columns = [
     label: 'Expiration',
     field: 'expires_at',
     align: 'left' as const,
+  },
+  {
+    name: 'limits',
+    label: 'Limits',
+    field: 'rate_limit_enabled',
+    align: 'center' as const,
   },
   {
     name: 'cache',
@@ -702,6 +951,48 @@ function getCacheBadge(token: APIToken): { label: string; color: string } {
   return { label: ttl, color: 'positive' };
 }
 
+function getLimitsBadge(token: APIToken): { label: string; color: string } {
+  if (!token.rate_limit_enabled && !token.monthly_quota_enabled) return { label: 'Off', color: 'grey-7' };
+  const parts: string[] = [];
+  if (token.daily_spend_limit_usd) parts.push(`$${token.daily_spend_limit_usd}/d`);
+  if (token.hourly_spend_limit_usd) parts.push(`$${token.hourly_spend_limit_usd}/h`);
+  if (token.monthly_quota_enabled) parts.push('monthly');
+  return { label: parts.join(' ') || 'On', color: 'info' };
+}
+
+function openLimits(token: APIToken) {
+  limitsToken.value = token;
+  limitsMonthlyEnabled.value = token.monthly_quota_enabled ?? false;
+  limitsMonthlyQuotaUsd.value = token.monthly_quota_usd ? parseFloat(token.monthly_quota_usd) : undefined;
+  limitsRateEnabled.value = token.rate_limit_enabled ?? false;
+  limitsDailyUsd.value = token.daily_spend_limit_usd ? parseFloat(token.daily_spend_limit_usd) : undefined;
+  limitsHourlyUsd.value = token.hourly_spend_limit_usd ? parseFloat(token.hourly_spend_limit_usd) : undefined;
+  showLimitsDialog.value = true;
+}
+
+async function saveLimits() {
+  if (!limitsToken.value) return;
+  savingLimits.value = true;
+  try {
+    const success = await tokensStore.updateToken(
+      limitsToken.value.id,
+      {
+        monthly_quota_enabled: limitsMonthlyEnabled.value,
+        monthly_quota_usd: limitsMonthlyEnabled.value ? limitsMonthlyQuotaUsd.value : undefined,
+        rate_limit_enabled: limitsRateEnabled.value,
+        daily_spend_limit_usd: limitsRateEnabled.value ? limitsDailyUsd.value : undefined,
+        hourly_spend_limit_usd: limitsRateEnabled.value ? limitsHourlyUsd.value : undefined,
+      } as Partial<CreateTokenRequest>,
+      true,
+    );
+    if (success) {
+      showLimitsDialog.value = false;
+    }
+  } finally {
+    savingLimits.value = false;
+  }
+}
+
 function openSettings(token: APIToken) {
   settingsToken.value = token;
   settingsCacheEnabled.value = token.token_metadata?.prompt_cache_enabled ?? false;
@@ -748,26 +1039,37 @@ async function handleCreateToken() {
       tokenData.expires_at = newToken.value.expires_at;
     }
 
-    // Build token_metadata from advanced settings
     tokenData.token_metadata = {
       prompt_cache_enabled: newToken.value.cacheEnabled,
       prompt_cache_ttl: newToken.value.cacheTtl,
     };
 
-    // createToken will automatically refresh the list
+    if (newToken.value.monthlyQuotaEnabled) {
+      tokenData.monthly_quota_enabled = true;
+      tokenData.monthly_quota_usd = newToken.value.monthlyQuotaUsd;
+    }
+    if (newToken.value.rateLimitEnabled) {
+      tokenData.rate_limit_enabled = true;
+      tokenData.daily_spend_limit_usd = newToken.value.dailySpendLimitUsd;
+      tokenData.hourly_spend_limit_usd = newToken.value.hourlySpendLimitUsd;
+    }
+
     const result = await tokensStore.createToken(tokenData);
 
     if (result) {
-      // Close dialog
       showCreateDialog.value = false;
 
-      // Reset form
       newToken.value = {
         name: '',
         quota_usd: undefined,
         expires_at: '',
         cacheEnabled: false,
         cacheTtl: '1h',
+        monthlyQuotaEnabled: false,
+        monthlyQuotaUsd: undefined,
+        rateLimitEnabled: false,
+        dailySpendLimitUsd: undefined,
+        hourlySpendLimitUsd: undefined,
       };
     }
   } finally {
@@ -908,6 +1210,11 @@ function openBatchCreate() {
     model_names: [],
     cacheEnabled: false,
     cacheTtl: '1h',
+    monthlyQuotaEnabled: false,
+    monthlyQuotaUsd: undefined,
+    rateLimitEnabled: false,
+    dailySpendLimitUsd: undefined,
+    hourlySpendLimitUsd: undefined,
   };
   showBatchCreateDialog.value = true;
   void modelsStore.fetchAvailableModels();
@@ -934,6 +1241,16 @@ async function handleBatchCreate() {
       prompt_cache_enabled: batchForm.value.cacheEnabled,
       prompt_cache_ttl: batchForm.value.cacheTtl,
     };
+
+    if (batchForm.value.monthlyQuotaEnabled) {
+      data.monthly_quota_enabled = true;
+      data.monthly_quota_usd = batchForm.value.monthlyQuotaUsd;
+    }
+    if (batchForm.value.rateLimitEnabled) {
+      data.rate_limit_enabled = true;
+      data.daily_spend_limit_usd = batchForm.value.dailySpendLimitUsd;
+      data.hourly_spend_limit_usd = batchForm.value.hourlySpendLimitUsd;
+    }
 
     const result = await tokensStore.createTokensBatch(data);
 

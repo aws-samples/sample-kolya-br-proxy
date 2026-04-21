@@ -66,6 +66,11 @@ class CreateTokenRequest(BaseModel):
     quota_usd: Decimal | None = None
     allowed_ips: List[str] | None = None
     token_metadata: dict | None = None
+    monthly_quota_usd: Decimal | None = None
+    monthly_quota_enabled: bool = False
+    daily_spend_limit_usd: Decimal | None = None
+    hourly_spend_limit_usd: Decimal | None = None
+    rate_limit_enabled: bool = False
 
 
 class BatchCreateTokenRequest(BaseModel):
@@ -81,6 +86,11 @@ class BatchCreateTokenRequest(BaseModel):
     allowed_ips: List[str] | None = None
     token_metadata: dict | None = None
     model_names: List[str] | None = None
+    monthly_quota_usd: Decimal | None = None
+    monthly_quota_enabled: bool = False
+    daily_spend_limit_usd: Decimal | None = None
+    hourly_spend_limit_usd: Decimal | None = None
+    rate_limit_enabled: bool = False
 
     def parsed_names(self) -> List[str]:
         """Parse comma-separated names. Supports ASCII comma, Chinese comma, semicolons, and newlines."""
@@ -100,6 +110,11 @@ class UpdateTokenRequest(BaseModel):
     allowed_ips: List[str] | None = None
     is_active: bool | None = None
     token_metadata: dict | None = None
+    monthly_quota_usd: Decimal | None = None
+    monthly_quota_enabled: bool | None = None
+    daily_spend_limit_usd: Decimal | None = None
+    hourly_spend_limit_usd: Decimal | None = None
+    rate_limit_enabled: bool | None = None
 
 
 class TokenResponse(BaseModel):
@@ -119,6 +134,11 @@ class TokenResponse(BaseModel):
     created_at: datetime
     last_used_at: datetime | None
     token_metadata: dict | None = None
+    monthly_quota_usd: str | None = None
+    monthly_quota_enabled: bool = False
+    daily_spend_limit_usd: str | None = None
+    hourly_spend_limit_usd: str | None = None
+    rate_limit_enabled: bool = False
 
     class Config:
         from_attributes = True
@@ -179,6 +199,17 @@ def build_token_response(token: APIToken, used_usd: Decimal) -> TokenResponse:
         created_at=token.created_at,
         last_used_at=token.last_used_at,
         token_metadata=token.token_metadata,
+        monthly_quota_usd=str(token.monthly_quota_usd)
+        if token.monthly_quota_usd
+        else None,
+        monthly_quota_enabled=token.monthly_quota_enabled or False,
+        daily_spend_limit_usd=str(token.daily_spend_limit_usd)
+        if token.daily_spend_limit_usd
+        else None,
+        hourly_spend_limit_usd=str(token.hourly_spend_limit_usd)
+        if token.hourly_spend_limit_usd
+        else None,
+        rate_limit_enabled=token.rate_limit_enabled or False,
     )
 
 
@@ -216,6 +247,11 @@ async def create_token(
         quota_usd=request.quota_usd,
         allowed_ips=request.allowed_ips,
         token_metadata=validated_meta,
+        monthly_quota_usd=request.monthly_quota_usd,
+        monthly_quota_enabled=request.monthly_quota_enabled,
+        daily_spend_limit_usd=request.daily_spend_limit_usd,
+        hourly_spend_limit_usd=request.hourly_spend_limit_usd,
+        rate_limit_enabled=request.rate_limit_enabled,
     )
 
     # New tokens have no usage records yet, skip the query
@@ -267,6 +303,11 @@ async def batch_create_tokens(
         allowed_ips=request.allowed_ips,
         token_metadata=validated_meta,
         model_names=request.model_names,
+        monthly_quota_usd=request.monthly_quota_usd,
+        monthly_quota_enabled=request.monthly_quota_enabled,
+        daily_spend_limit_usd=request.daily_spend_limit_usd,
+        hourly_spend_limit_usd=request.hourly_spend_limit_usd,
+        rate_limit_enabled=request.rate_limit_enabled,
     )
 
     used_usd = Decimal("0.00")
@@ -438,6 +479,16 @@ async def update_token(
         token.is_active = request.is_active
     if request.token_metadata is not None:
         token.token_metadata = request.token_metadata
+    if request.monthly_quota_usd is not None:
+        token.monthly_quota_usd = request.monthly_quota_usd
+    if request.monthly_quota_enabled is not None:
+        token.monthly_quota_enabled = request.monthly_quota_enabled
+    if request.daily_spend_limit_usd is not None:
+        token.daily_spend_limit_usd = request.daily_spend_limit_usd
+    if request.hourly_spend_limit_usd is not None:
+        token.hourly_spend_limit_usd = request.hourly_spend_limit_usd
+    if request.rate_limit_enabled is not None:
+        token.rate_limit_enabled = request.rate_limit_enabled
 
     await db.commit()
     await db.refresh(token)

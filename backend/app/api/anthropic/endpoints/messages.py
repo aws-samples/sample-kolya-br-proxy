@@ -57,24 +57,12 @@ async def create_message(
     )
 
     try:
-        # Check token quota
-        from sqlalchemy import select, func
+        from sqlalchemy import select
         from app.models.model import Model
-        from decimal import Decimal
 
-        result = await db.execute(
-            select(func.sum(UsageRecord.cost_usd)).where(
-                UsageRecord.token_id == token.id
-            )
-        )
-        total_used = result.scalar() or Decimal("0.00")
-        token.calculate_used_usd(total_used)
+        from app.services.quota import validate_quota_and_limits
 
-        if token.is_quota_exceeded:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Token quota exceeded. Used: ${total_used:.2f}, Quota: ${token.quota_usd:.2f}",
-            )
+        await validate_quota_and_limits(token, db)
 
         # Validate model access
         result = await db.execute(
