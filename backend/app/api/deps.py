@@ -34,6 +34,8 @@ async def _validate_token_with_cache(
         cached_service = CachedTokenService(token_service, cache)
         return await cached_service.validate_token_cached(plain_token=plain_token)
     except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Redis token cache failed, falling back to DB", exc_info=True)
         return await token_service.validate_token(plain_token=plain_token)
 
 

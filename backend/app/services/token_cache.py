@@ -59,15 +59,10 @@ class CachedTokenService:
                     await self.cache.delete(cache_key)
                     return None
 
-                # Check IP and model restrictions
                 if client_ip and token.allowed_ips:
                     if not self.token_service._is_ip_allowed(
                         client_ip, token.allowed_ips
                     ):
-                        return None
-
-                if model and token.allowed_models:
-                    if model not in token.allowed_models:
                         return None
 
                 logger.debug(f"Token cache hit: {token.id}")
@@ -92,7 +87,6 @@ class CachedTokenService:
             "expires_at": token.expires_at.isoformat() if token.expires_at else None,
             "quota_usd": str(token.quota_usd) if token.quota_usd else None,
             "allowed_ips": token.allowed_ips,
-            "allowed_models": token.allowed_models,
             "is_active": token.is_active,
         }
         await self.cache.set(cache_key, token_data, expire=self.CACHE_TTL)
@@ -118,7 +112,6 @@ class CachedTokenService:
                 Decimal(cached_data["quota_usd"]) if cached_data["quota_usd"] else None
             )
             token.allowed_ips = cached_data["allowed_ips"]
-            token.allowed_models = cached_data["allowed_models"]
             token.is_active = cached_data["is_active"]
 
             return token
