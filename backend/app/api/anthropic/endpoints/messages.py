@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_token_from_api_key
+from app.api.deps import get_current_token_flexible
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.token import APIToken
@@ -38,7 +38,7 @@ background_tasks = BackgroundTaskManager()
 async def create_message(
     request_data: AnthropicMessagesRequest,
     http_request: Request,
-    token: APIToken = Depends(get_current_token_from_api_key),
+    token: APIToken = Depends(get_current_token_flexible),
     db: AsyncSession = Depends(get_db),
 ):
     """
