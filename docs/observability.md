@@ -11,6 +11,7 @@ This document covers the structured logging, CloudWatch EMF metrics, and AWS X-R
 - [AWS X-Ray Tracing](#aws-x-ray-tracing)
 - [Log-Trace Correlation](#log-trace-correlation)
 - [Deployment Configuration](#deployment-configuration)
+- [Practical Example: Combining All Three](#practical-example-combining-all-three)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -59,7 +60,7 @@ All settings use the `KBR_` prefix and are defined in `backend/app/core/config.p
 | `KBR_OTEL_EXPORTER` | `""` (empty) | OpenTelemetry exporter: `""` (disabled), `xray`, `otlp` |
 | `KBR_OTEL_ENDPOINT` | `""` (empty) | OTLP HTTP endpoint override (xray mode). Empty = auto-detect `http://$NODE_IP:4316/v1/traces` |
 
-**Changing any setting requires a service restart** (pod rolling update in Kubernetes).
+**`log_level` and `metrics_enabled` can be changed at runtime** via the admin API (`PUT /admin/observability`) — changes are broadcast to all pods via Redis Pub/Sub. **`log_format` and `tracing_exporter` require a service restart** (pod rolling update in Kubernetes).
 
 ### Configuration Files
 
@@ -70,6 +71,7 @@ All settings use the `KBR_` prefix and are defined in `backend/app/core/config.p
 | `backend/app/core/metrics.py` | EMF metric emission functions |
 | `backend/app/core/tracing.py` | OpenTelemetry initialization |
 | `backend/app/core/log_context.py` | Per-request context injection (token_name, trace_id) |
+| `backend/app/core/config_sync.py` | Cross-pod config sync via Redis Pub/Sub |
 | `backend/app/middleware/observability.py` | ASGI middleware for HTTP-level metrics |
 
 ---
@@ -499,6 +501,72 @@ The backend pod itself does **not** need additional X-Ray permissions since trac
 
 ---
 
+## Practical Example: Combining All Three
+
+Scenario: **A user reports "requests are very slow"**.
+
+### Step 1: Metrics — Identify the time window and model
+
+In the CloudWatch Metrics Dashboard, `RequestDuration` P99 spikes to 15s between 14:00–14:30 (normal is ~2s), concentrated on the `claude-opus-4-6` model.
+
+```
+Metric: RequestDuration
+Dimension: Model = global.anthropic.claude-opus-4-6-v1
+P99 = 15.2s (14:00 – 14:30)
+```
+
+### Step 2: Logs — Find the specific slow requests
+
+Use CloudWatch Logs Insights to query this time window:
+
+```sql
+fields @timestamp, message, token_name, trace_id, request_id
+| filter logger = "app.api.anthropic.endpoints.messages"
+| filter message like /duration/
+| parse message "duration=*s, input=*, output=*" as duration, input_tok, output_tok
+| filter duration > 10
+| sort duration desc
+| limit 20
+```
+
+Results show that `token_name=lucky` had several requests with `duration=15s`, `trace_id=abc123...`, `input=85000` tokens — an unusually long input.
+
+### Step 3: Traces — Analyze the full request chain
+
+Search for `trace_id=abc123...` in the X-Ray Console to see the complete waterfall:
+
+```
+[POST /v1/messages]  ─────────────────────────────── 15.2s
+  ├─ http receive                                      0ms
+  ├─ http send                                         0ms  (200 + SSE headers)
+  ├─ bedrock.invoke_stream (FAILED)     ──── 5.0s     ⚠️
+  │    bedrock.region: us-west-1
+  │    bedrock.api: invoke_model_stream
+  │    exception: ThrottlingException (429)
+  │
+  ├─ bedrock.invoke_stream              ──── 10.1s    ✅
+  │    bedrock.region: us-east-1
+  │    bedrock.api: invoke_model_stream
+  │    bedrock.failover: true
+  │
+  ├─ http send × N                                     0ms
+  └─ http receive                        ──── 15.1s   (disconnect wait)
+```
+
+### Conclusion
+
+- **Metrics** revealed the anomaly: P99 latency spike on a specific model
+- **Logs** identified the culprit: token `lucky` sending 85K-token requests
+- **Traces** pinpointed the bottleneck: us-west-1 was throttled (429), failover to us-east-1 succeeded but added 5s of wasted time plus higher cross-region latency
+
+**Action items**:
+1. Set a daily spend limit on the `lucky` token to prevent bulk long requests from exhausting regional quotas
+2. Consider enabling inference profiles in us-east-1 to reduce failover latency
+
+The key field linking all three is `trace_id` — present in structured logs and X-Ray traces.
+
+---
+
 ## Troubleshooting
 
 ### Metrics not appearing in CloudWatch
@@ -526,6 +594,7 @@ The backend pod itself does **not** need additional X-Ray permissions since trac
 
 ### Log level not taking effect
 
-- `KBR_LOG_LEVEL` requires a restart — it's read once at startup by `configure_logging()`
+- **Runtime change** (via admin UI or `PUT /admin/observability`): applies immediately to all pods via Redis Pub/Sub. Also syncs uvicorn's access/error loggers.
+- **Startup config** (`KBR_LOG_LEVEL`): read once at startup by `configure_logging()`, requires restart to change.
 - Valid values: `DEBUG`, `INFO`, `WARNING`, `ERROR` (case-insensitive)
-- Third-party libraries (uvicorn, sqlalchemy) respect the root logger level
+- If Redis is unavailable, runtime changes apply only to the pod that received the API request (graceful degradation).

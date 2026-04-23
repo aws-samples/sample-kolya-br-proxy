@@ -14,7 +14,10 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_user_from_jwt
 from app.core.config import get_settings
+from app.core.config_sync import publish_config_change
+from app.core.json_formatter import set_log_level
 from app.core.metrics import is_metrics_enabled, set_metrics_enabled
+from app.core.redis import get_redis
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -70,7 +73,6 @@ async def update_observability_config(
     - tracing exporter (xray/otlp)
     """
     changes = {}
-    root_logger = logging.getLogger()
 
     if update.log_level is not None:
         level_upper = update.log_level.upper()
@@ -79,11 +81,8 @@ async def update_observability_config(
                 "success": False,
                 "error": f"Invalid log_level: {update.log_level}. Must be one of {_VALID_LOG_LEVELS}",
             }
-        old_level = logging.getLevelName(root_logger.level)
-        numeric_level = getattr(logging, level_upper)
-        root_logger.setLevel(numeric_level)
-        for handler in root_logger.handlers:
-            handler.setLevel(numeric_level)
+        old_level = logging.getLevelName(logging.getLogger().level)
+        set_log_level(level_upper)
         changes["log_level"] = {"old": old_level, "new": level_upper}
         logger.info("Log level changed: %s -> %s", old_level, level_upper)
 
@@ -95,5 +94,14 @@ async def update_observability_config(
 
     if not changes:
         return {"success": True, "message": "No changes requested", "changes": {}}
+
+    redis_client = await get_redis()
+    if redis_client:
+        broadcast = {}
+        if "log_level" in changes:
+            broadcast["log_level"] = changes["log_level"]["new"]
+        if "metrics_enabled" in changes:
+            broadcast["metrics_enabled"] = changes["metrics_enabled"]["new"]
+        await publish_config_change(redis_client, broadcast)
 
     return {"success": True, "changes": changes}

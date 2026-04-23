@@ -119,12 +119,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     start_scheduler()
     logger.info("Pricing update scheduler started")
 
+    from app.core.redis import get_redis
+    from app.core.config_sync import start_subscriber, stop_subscriber
+
+    redis_client = await get_redis()
+    await start_subscriber(redis_client)
+
     logger.info("Kolya BR Proxy started successfully")
 
     yield
 
     # Shutdown
     logger.info("Shutting down Kolya BR Proxy...")
+
+    await stop_subscriber()
 
     # Stop pricing update scheduler
     from app.tasks.pricing_tasks import stop_scheduler
