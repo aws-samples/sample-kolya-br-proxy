@@ -86,6 +86,24 @@ class _HealthCheckFilter(logging.Filter):
         return '"GET /health/' not in record.getMessage()
 
 
+def set_log_level(level_name: str) -> bool:
+    """Set log level on root logger, all handlers, and uvicorn loggers.
+
+    Returns True if successful, False if the level name is invalid.
+    """
+    numeric = getattr(logging, level_name.upper(), None)
+    if numeric is None:
+        return False
+
+    root = logging.getLogger()
+    root.setLevel(numeric)
+    for handler in root.handlers:
+        handler.setLevel(numeric)
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        logging.getLogger(name).setLevel(numeric)
+    return True
+
+
 def configure_logging() -> None:
     """One-time logging setup — call from ``main.py`` before anything else.
 
