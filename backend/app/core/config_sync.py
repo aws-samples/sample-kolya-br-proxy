@@ -43,9 +43,7 @@ def _apply_config(payload: dict) -> None:
             logger.info("Metrics toggle synced from peer: %s", value)
 
 
-async def publish_config_change(
-    client: aioredis.Redis, changes: dict
-) -> None:
+async def publish_config_change(client: aioredis.Redis, changes: dict) -> None:
     """Publish a config change so all pods pick it up."""
     try:
         await client.publish(CHANNEL, json.dumps(changes))
@@ -72,7 +70,9 @@ async def _listen(client: aioredis.Redis) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.warning("Config sync listener lost connection: %s, reconnecting...", e)
+            logger.warning(
+                "Config sync listener lost connection: %s, reconnecting...", e
+            )
             await asyncio.sleep(2)
         finally:
             try:
