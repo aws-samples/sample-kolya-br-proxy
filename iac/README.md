@@ -92,7 +92,7 @@ No resources.
 | <a name="input_waf_api_alb_name"></a> [waf\_api\_alb\_name](#input\_waf\_api\_alb\_name) | Name of the API ALB for WAF association (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
 | <a name="input_waf_frontend_alb_name"></a> [waf\_frontend\_alb\_name](#input\_waf\_frontend\_alb\_name) | Name of the frontend ALB for WAF association (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
 | <a name="input_waf_rate_limit_auth"></a> [waf\_rate\_limit\_auth](#input\_waf\_rate\_limit\_auth) | WAF rate limit per IP for /admin/auth/* (requests per 5 minutes) | `number` | `20` | no |
-| <a name="input_waf_rate_limit_chat"></a> [waf\_rate\_limit\_chat](#input\_waf\_rate\_limit\_chat) | WAF rate limit per IP for /v1/chat/completions (requests per 5 minutes) | `number` | `300` | no |
+| <a name="input_waf_rate_limit_chat"></a> [waf\_rate\_limit\_chat](#input\_waf\_rate\_limit\_chat) | WAF rate limit per IP for inference endpoints: /v1/chat/completions, /v1/messages, /v1beta/models/ (requests per 5 minutes) | `number` | `300` | no |
 | <a name="input_waf_rate_limit_global"></a> [waf\_rate\_limit\_global](#input\_waf\_rate\_limit\_global) | WAF global rate limit per IP (requests per 5 minutes) | `number` | `2000` | no |
 
 ## Outputs

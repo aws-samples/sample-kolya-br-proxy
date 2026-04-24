@@ -39,7 +39,7 @@ No modules.
 | <a name="input_frontend_alb_name"></a> [frontend\_alb\_name](#input\_frontend\_alb\_name) | Name of the frontend ALB for auto-discovery | `string` | `"kolya-br-proxy-frontend-alb"` | no |
 | <a name="input_project_name_alias"></a> [project\_name\_alias](#input\_project\_name\_alias) | The short name of the project | `string` | n/a | yes |
 | <a name="input_rate_limit_auth"></a> [rate\_limit\_auth](#input\_rate\_limit\_auth) | Rate limit per IP for /admin/auth/* (requests per 5 minutes) | `number` | `20` | no |
-| <a name="input_rate_limit_chat"></a> [rate\_limit\_chat](#input\_rate\_limit\_chat) | Rate limit per IP for /v1/chat/completions (requests per 5 minutes) | `number` | `300` | no |
+| <a name="input_rate_limit_chat"></a> [rate\_limit\_chat](#input\_rate\_limit\_chat) | Rate limit per IP for inference endpoints: /v1/chat/completions, /v1/messages, /v1beta/models/ (requests per 5 minutes) | `number` | `300` | no |
 | <a name="input_rate_limit_global"></a> [rate\_limit\_global](#input\_rate\_limit\_global) | Global rate limit per IP (requests per 5 minutes) | `number` | `2000` | no |
 | <a name="input_workspace"></a> [workspace](#input\_workspace) | The workspace/environment name | `string` | n/a | yes |
 

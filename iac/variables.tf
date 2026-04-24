@@ -141,7 +141,7 @@ variable "waf_rate_limit_auth" {
 }
 
 variable "waf_rate_limit_chat" {
-  description = "WAF rate limit per IP for /v1/chat/completions (requests per 5 minutes)"
+  description = "WAF rate limit per IP for inference endpoints: /v1/chat/completions, /v1/messages, /v1beta/models/ (requests per 5 minutes)"
   type        = number
   default     = 300
 }
