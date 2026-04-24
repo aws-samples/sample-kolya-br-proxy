@@ -57,9 +57,10 @@ resource "aws_wafv2_web_acl" "main" {
     }
   }
 
-  # Rule 2: Rate limit on /v1/chat/completions
+  # Rule 2: Rate limit on all inference endpoints
+  # /v1/chat/completions (OpenAI), /v1/messages (Anthropic), /v1beta/models/ (Gemini)
   rule {
-    name     = "rate-limit-chat"
+    name     = "rate-limit-inference"
     priority = 2
 
     action {
@@ -72,17 +73,53 @@ resource "aws_wafv2_web_acl" "main" {
         aggregate_key_type = "IP"
 
         scope_down_statement {
-          byte_match_statement {
-            search_string         = "/v1/chat/completions"
-            positional_constraint = "STARTS_WITH"
+          or_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/v1/chat/completions"
+                positional_constraint = "STARTS_WITH"
 
-            field_to_match {
-              uri_path {}
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "LOWERCASE"
+                }
+              }
             }
 
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
+            statement {
+              byte_match_statement {
+                search_string         = "/v1/messages"
+                positional_constraint = "STARTS_WITH"
+
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "LOWERCASE"
+                }
+              }
+            }
+
+            statement {
+              byte_match_statement {
+                search_string         = "/v1beta/models/"
+                positional_constraint = "STARTS_WITH"
+
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "LOWERCASE"
+                }
+              }
             }
           }
         }
@@ -91,7 +128,7 @@ resource "aws_wafv2_web_acl" "main" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "${var.project_name_alias}-rate-limit-chat"
+      metric_name                = "${var.project_name_alias}-rate-limit-inference"
       sampled_requests_enabled   = true
     }
   }
@@ -146,6 +183,8 @@ resource "aws_wafv2_web_acl" "main" {
   }
 
   # Rule 4: AWS Managed - Known Bad Inputs
+  # LLM request bodies contain code snippets and security-related keywords
+  # (e.g. "${jndi:", "FORBIDDEN", "BLOCKED") that trigger false positives.
   rule {
     name     = "aws-managed-known-bad-inputs"
     priority = 4
@@ -158,6 +197,20 @@ resource "aws_wafv2_web_acl" "main" {
       managed_rule_group_statement {
         name        = "AWSManagedRulesKnownBadInputsRuleSet"
         vendor_name = "AWS"
+
+        rule_action_override {
+          name = "Log4JRCE_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "JavaDeserializationRCE_BODY"
+          action_to_use {
+            count {}
+          }
+        }
       }
     }
 

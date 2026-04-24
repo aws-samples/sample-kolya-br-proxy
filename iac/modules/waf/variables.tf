@@ -47,7 +47,7 @@ variable "rate_limit_auth" {
 }
 
 variable "rate_limit_chat" {
-  description = "Rate limit per IP for /v1/chat/completions (requests per 5 minutes)"
+  description = "Rate limit per IP for inference endpoints: /v1/chat/completions, /v1/messages, /v1beta/models/ (requests per 5 minutes)"
   type        = number
   default     = 300
 }
