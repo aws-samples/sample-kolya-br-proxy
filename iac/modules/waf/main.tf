@@ -134,9 +134,10 @@ resource "aws_wafv2_web_acl" "main" {
   }
 
   # Rule 3: AWS Managed - Common Rule Set (SQLi, XSS, etc.)
-  # Certain rules are excluded for /v1/chat/completions because:
+  # Certain rules are excluded because LLM agent request bodies contain:
   # - SizeRestrictions_BODY: Agent requests with tools + conversation history exceed 8KB
   # - CrossSiteScripting_BODY: Code snippets in messages trigger XSS false positives
+  # - GenericLFI_BODY: System prompts with file path examples (../../) trigger LFI false positives
   # - NoUserAgent_HEADER: Some SDK clients don't send User-Agent
   # The API path is already protected by Bearer token auth + per-IP rate limiting.
   rule {
@@ -161,6 +162,13 @@ resource "aws_wafv2_web_acl" "main" {
 
         rule_action_override {
           name = "CrossSiteScripting_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "GenericLFI_BODY"
           action_to_use {
             count {}
           }
