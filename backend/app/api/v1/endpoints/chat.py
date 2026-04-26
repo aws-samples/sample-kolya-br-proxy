@@ -337,10 +337,10 @@ async def create_chat_completion(
             },
             exc_info=True,
         )
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Invalid request")
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "Unknown")
-        error_message = e.response.get("Error", {}).get("Message", str(e))
+        error_message = e.response.get("Error", {}).get("Message", "")
         logger.error(
             f"Bedrock error: model={request_data.model}, request_id={request_id}, "
             f"code={error_code}, message={error_message}",
@@ -352,10 +352,17 @@ async def create_chat_completion(
             "ModelNotReadyException": 503,
             "ServiceUnavailableException": 503,
         }
+        safe_messages = {
+            "ValidationException": "Invalid request parameters",
+            "AccessDeniedException": "Access denied to the requested model",
+            "ThrottlingException": "Rate limit exceeded, please retry later",
+            "ModelNotReadyException": "Model is temporarily unavailable",
+            "ServiceUnavailableException": "Service temporarily unavailable",
+        }
         status_code = status_map.get(error_code, 502)
         raise HTTPException(
             status_code=status_code,
-            detail=error_message,
+            detail=safe_messages.get(error_code, "Upstream service error"),
         )
     except Exception as e:
         logger.error(
@@ -407,7 +414,7 @@ async def _handle_gemini_request(
         logger.error(f"Gemini API error: {e}")
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"Gemini API error: {str(e)[:200]}",
+            detail=f"Gemini API error: status {e.response.status_code}",
         )
 
     # Extract usage including cached tokens for auto-cache billing
@@ -503,7 +510,7 @@ async def stream_gemini_completion(
         )
         error_response = ErrorResponse(
             error=ErrorDetail(
-                message=f"Gemini API error: {str(e)[:200]}",
+                message=f"Gemini API error: status {e.response.status_code}",
                 type="server_error",
                 code=str(e.response.status_code),
             )
@@ -516,7 +523,7 @@ async def stream_gemini_completion(
         )
         error_response = ErrorResponse(
             error=ErrorDetail(
-                message=str(e),
+                message="Internal server error",
                 type="server_error",
                 code="internal_error",
             )
@@ -795,14 +802,21 @@ async def stream_chat_completion(
 
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "Unknown")
-        error_message = e.response.get("Error", {}).get("Message", str(e))
+        error_message = e.response.get("Error", {}).get("Message", "")
         logger.error(
             f"Bedrock streaming error: model={model}, request_id={request_id}, "
             f"code={error_code}, message={error_message}",
         )
+        safe_messages = {
+            "ValidationException": "Invalid request parameters",
+            "AccessDeniedException": "Access denied to the requested model",
+            "ThrottlingException": "Rate limit exceeded, please retry later",
+            "ModelNotReadyException": "Model is temporarily unavailable",
+            "ServiceUnavailableException": "Service temporarily unavailable",
+        }
         error_response = ErrorResponse(
             error=ErrorDetail(
-                message=error_message,
+                message=safe_messages.get(error_code, "Upstream service error"),
                 type=error_code,
                 code=error_code,
             )
@@ -813,10 +827,9 @@ async def stream_chat_completion(
             f"Streaming failed: model={model}, request_id={request_id}, error={e}",
             exc_info=True,
         )
-        # Send error in SSE format
         error_response = ErrorResponse(
             error=ErrorDetail(
-                message=str(e),
+                message="Internal server error",
                 type="server_error",
                 code="internal_error",
             )

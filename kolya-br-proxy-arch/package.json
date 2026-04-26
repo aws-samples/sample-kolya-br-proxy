@@ -74,7 +74,7 @@
     "globals": "^16.5.0",
     "parcel": "^2.16.4",
     "parcel-resolver-tspaths": "^0.0.9",
-    "postcss": "^8.5.6",
+    "postcss": "^8.5.10",
     "tailwindcss": "3.4.1",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "~5.9.3",
