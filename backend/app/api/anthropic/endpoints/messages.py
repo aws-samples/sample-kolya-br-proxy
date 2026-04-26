@@ -249,7 +249,7 @@ async def create_message(
         raise HTTPException(status_code=400, detail="Invalid request")
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "Unknown")
-        error_message = e.response.get("Error", {}).get("Message", str(e))
+        error_message = e.response.get("Error", {}).get("Message", "")
         logger.error(
             f"Bedrock error: model={request_data.model}, request_id={request_id}, "
             f"code={error_code}, message={error_message}",
@@ -261,10 +261,17 @@ async def create_message(
             "ModelNotReadyException": 529,
             "ServiceUnavailableException": 529,
         }
+        safe_messages = {
+            "ValidationException": "Invalid request parameters",
+            "AccessDeniedException": "Access denied to the requested model",
+            "ThrottlingException": "Rate limit exceeded, please retry later",
+            "ModelNotReadyException": "Model is temporarily unavailable",
+            "ServiceUnavailableException": "Service temporarily unavailable",
+        }
         status_code = status_map.get(error_code, 502)
         raise HTTPException(
             status_code=status_code,
-            detail=error_message,
+            detail=safe_messages.get(error_code, "Upstream service error"),
         )
     except Exception as e:
         logger.error(
@@ -407,7 +414,7 @@ async def stream_anthropic_messages(
 
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "Unknown")
-        error_message = e.response.get("Error", {}).get("Message", str(e))
+        error_message = e.response.get("Error", {}).get("Message", "")
         logger.error(
             f"Bedrock streaming error: model={model}, request_id={request_id}, "
             f"code={error_code}, message={error_message}",
@@ -421,10 +428,20 @@ async def stream_anthropic_messages(
             "ModelNotReadyException": "overloaded_error",
             "ServiceUnavailableException": "overloaded_error",
         }
+        safe_messages = {
+            "ValidationException": "Invalid request parameters",
+            "AccessDeniedException": "Access denied to the requested model",
+            "ThrottlingException": "Rate limit exceeded, please retry later",
+            "ModelNotReadyException": "Model is temporarily unavailable",
+            "ServiceUnavailableException": "Service temporarily unavailable",
+        }
         error_type = error_type_map.get(error_code, "api_error")
         error_data = {
             "type": "error",
-            "error": {"type": error_type, "message": error_message},
+            "error": {
+                "type": error_type,
+                "message": safe_messages.get(error_code, "Upstream service error"),
+            },
         }
         yield f"event: error\ndata: {_json.dumps(error_data)}\n\n"
     except Exception as e:
