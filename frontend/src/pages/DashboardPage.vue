@@ -22,7 +22,8 @@
     <q-card>
       <q-card-section>
         <div class="row items-center no-wrap q-gutter-sm q-mb-md">
-          <div class="text-h6 q-mr-sm">Usage Statistics</div>
+          <div class="text-h6">Usage Statistics</div>
+          <q-space />
           <div v-if="groupBy === 'token'" class="row items-center no-wrap q-gutter-xs">
             <span class="text-caption">Active:</span>
             <q-toggle

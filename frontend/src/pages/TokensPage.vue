@@ -47,12 +47,6 @@
           flat
           bordered
         >
-          <template v-slot:body-cell-id="props">
-            <q-td :props="props">
-              <div class="text-mono text-caption">{{ props.row.id }}</div>
-            </q-td>
-          </template>
-
           <template v-slot:body-cell-name="props">
             <q-td :props="props">
               <div class="text-weight-bold">{{ props.row.name }}</div>
@@ -621,16 +615,11 @@ const newToken = ref({
 
 const columns = [
   {
-    name: 'id',
-    label: 'ID',
-    field: 'id',
-    align: 'left' as const,
-  },
-  {
     name: 'name',
     label: 'Name',
     field: 'name',
     align: 'left' as const,
+    sortable: true,
   },
   {
     name: 'key',

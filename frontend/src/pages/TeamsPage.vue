@@ -630,7 +630,7 @@ const policyOptions = [
 ];
 
 const teamColumns = [
-  { name: 'name', label: 'Name', field: 'name', align: 'left' as const },
+  { name: 'name', label: 'Name', field: 'name', align: 'left' as const, sortable: true },
   { name: 'budget', label: 'Monthly Budget', field: 'monthly_budget_usd', align: 'left' as const },
   { name: 'used', label: 'Used', field: 'total_used_usd', align: 'left' as const },
   { name: 'unallocated', label: 'Unallocated', field: 'unallocated_pool_usd', align: 'left' as const },
@@ -639,8 +639,8 @@ const teamColumns = [
 ];
 
 const memberColumns = computed(() => {
-  const cols: { name: string; label: string; field: string; align: 'left' | 'center' | 'right' }[] = [
-    { name: 'name', label: 'Name', field: 'token_name', align: 'left' },
+  const cols: { name: string; label: string; field: string; align: 'left' | 'center' | 'right'; sortable?: boolean }[] = [
+    { name: 'name', label: 'Name', field: 'token_name', align: 'left', sortable: true },
     { name: 'allocation', label: 'Allocation', field: 'allocated_usd', align: 'left' },
     { name: 'used', label: 'Used / Allocation', field: 'used_usd', align: 'left' },
     { name: 'remaining', label: 'Remaining', field: 'remaining_usd', align: 'left' },
