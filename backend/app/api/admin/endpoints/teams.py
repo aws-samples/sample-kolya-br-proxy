@@ -4,14 +4,13 @@ import calendar
 import re
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
 
 from app.api.deps import get_current_user_from_jwt
 from app.core.database import get_db
