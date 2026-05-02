@@ -64,8 +64,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        "ALTER TABLE team_members "
-        "DROP CONSTRAINT IF EXISTS ck_allocated_non_negative"
+        "ALTER TABLE team_members DROP CONSTRAINT IF EXISTS ck_allocated_non_negative"
     )
     op.drop_index("ix_team_members_token_id", "team_members")
     op.drop_index("ix_team_members_team_id", "team_members")

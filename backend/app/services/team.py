@@ -204,9 +204,7 @@ class TeamService:
         await self.db.refresh(member)
         return member
 
-    async def remove_member(
-        self, team_id: UUID, token_id: UUID, user_id: UUID
-    ) -> None:
+    async def remove_member(self, team_id: UUID, token_id: UUID, user_id: UUID) -> None:
         team = await self.get_team(team_id, user_id)
 
         result = await self.db.execute(
@@ -260,9 +258,7 @@ class TeamService:
             pool = team.monthly_budget_usd - total_others
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Exceeds budget. Max allocation for this member: ${pool:.2f}"
-                ),
+                detail=(f"Exceeds budget. Max allocation for this member: ${pool:.2f}"),
             )
 
         target.allocated_usd = new_allocated_usd

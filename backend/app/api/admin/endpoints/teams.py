@@ -371,7 +371,11 @@ async def update_team(
         monthly_reset_policy=request.monthly_reset_policy,
         daily_limit_enabled=request.daily_limit_enabled,
     )
-    return {"id": str(team.id), "name": team.name, "monthly_budget_usd": str(team.monthly_budget_usd)}
+    return {
+        "id": str(team.id),
+        "name": team.name,
+        "monthly_budget_usd": str(team.monthly_budget_usd),
+    }
 
 
 @router.delete("/{team_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -437,9 +441,7 @@ async def add_member(
     )
 
 
-@router.delete(
-    "/{team_id}/members/{token_id}", status_code=status.HTTP_204_NO_CONTENT
-)
+@router.delete("/{team_id}/members/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_member(
     team_id: str,
     token_id: str,
@@ -534,9 +536,7 @@ async def transfer_allocation(
 
     # Invalidate caches for both tokens
     for tid in (from_uuid, to_uuid):
-        result = await db.execute(
-            select(APIToken.token_hash).where(APIToken.id == tid)
-        )
+        result = await db.execute(select(APIToken.token_hash).where(APIToken.id == tid))
         token_hash = result.scalar_one_or_none()
         if token_hash:
             await _invalidate_token_cache(token_hash)
