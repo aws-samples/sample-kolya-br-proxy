@@ -293,6 +293,7 @@ async def get_team_dashboard(
             & (UsageRecord.created_at >= monthly_boundary),
         )
         .where(TeamMember.team_id == team_uuid)
+        .where(APIToken.is_deleted.is_(False))
         .group_by(
             TeamMember.token_id,
             TeamMember.allocated_usd,
