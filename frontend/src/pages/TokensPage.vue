@@ -553,12 +553,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useTokensStore } from 'src/stores/tokens';
+import { useTeamsStore } from 'src/stores/teams';
 import { useModelsStore } from 'src/stores/models';
 import { Notify, Dialog, copyToClipboard } from 'quasar';
 import { getApiBaseUrl } from 'src/utils/api';
 import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, BatchCreateTokenRequest } from 'src/stores/tokens';
 
 const tokensStore = useTokensStore();
+const teamsStore = useTeamsStore();
 const modelsStore = useModelsStore();
 
 const searchQuery = ref('');
@@ -896,7 +898,11 @@ function deleteToken(token: APIToken) {
     class: 'flat-dialog',
   }).onOk(() => {
     deletingTokenId.value = token.id;
-    void tokensStore.deleteToken(token.id).finally(() => {
+    void tokensStore.deleteToken(token.id).then(() => {
+      if (token.team_id) {
+        void teamsStore.fetchTeams();
+      }
+    }).finally(() => {
       deletingTokenId.value = null;
     });
   });

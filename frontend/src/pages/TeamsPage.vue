@@ -854,6 +854,9 @@ async function handleBatchCreate() {
 
 onMounted(async () => {
   await teamsStore.fetchTeams();
+  if (teamsStore.currentTeam) {
+    await teamsStore.fetchTeamDashboard(teamsStore.currentTeam.id);
+  }
   void modelsStore.fetchAvailableModels();
 });
 </script>
