@@ -565,7 +565,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useTeamsStore } from 'src/stores/teams';
 import { useTokensStore } from 'src/stores/tokens';
 import { useModelsStore } from 'src/stores/models';
-import { Dialog } from 'quasar';
+import { Dialog, Notify } from 'quasar';
 import type { TeamListItem, TeamMember } from 'src/stores/teams';
 
 const teamsStore = useTeamsStore();
@@ -834,6 +834,7 @@ async function handleTransfer() {
 
 async function handleBatchCreate() {
   if (!selectedTeam.value) return;
+  if (computedPerMemberAllocation.value === '--') return;
   batchCreating.value = true;
   try {
     const batchData: { names: string; per_member_allocation: string; model_names?: string[] } = {
@@ -847,6 +848,12 @@ async function handleBatchCreate() {
     void tokensStore.fetchTokens(false, true);
     showBatchDialog.value = false;
     batchForm.value = { names: '', model_names: [] };
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: string } } };
+    Notify.create({
+      type: 'negative',
+      message: err.response?.data?.detail || 'Batch create failed',
+    });
   } finally {
     batchCreating.value = false;
   }

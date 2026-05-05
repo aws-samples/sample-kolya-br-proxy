@@ -39,7 +39,10 @@ class TeamService:
             raise HTTPException(status_code=404, detail="Team not found")
 
         members_result = await self.db.execute(
-            select(TeamMember).where(TeamMember.team_id == team_id).with_for_update()
+            select(TeamMember)
+            .join(APIToken, TeamMember.token_id == APIToken.id)
+            .where(TeamMember.team_id == team_id, APIToken.is_deleted.is_(False))
+            .with_for_update()
         )
         members = list(members_result.scalars().all())
         total_allocated = sum((m.allocated_usd for m in members), Decimal("0.00"))
