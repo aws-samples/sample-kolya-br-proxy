@@ -161,6 +161,11 @@ async def invite_admin(
     # Create Cognito user with temporary password
     settings = get_settings()
     if settings.COGNITO_USER_POOL_ID:
+        # Cognito with email alias doesn't allow email-format usernames
+        cognito_username = request.username
+        if "@" in cognito_username:
+            cognito_username = cognito_username.split("@")[0]
+
         try:
             cognito_client = boto3.client(
                 "cognito-idp",
@@ -168,7 +173,7 @@ async def invite_admin(
             )
             cognito_client.admin_create_user(
                 UserPoolId=settings.COGNITO_USER_POOL_ID,
-                Username=request.username,
+                Username=cognito_username,
                 TemporaryPassword=request.temp_password,
                 UserAttributes=[
                     {"Name": "email", "Value": request.email},
@@ -183,7 +188,7 @@ async def invite_admin(
                 try:
                     cognito_client.admin_set_user_password(
                         UserPoolId=settings.COGNITO_USER_POOL_ID,
-                        Username=request.username,
+                        Username=cognito_username,
                         Password=request.temp_password,
                         Permanent=False,
                     )
