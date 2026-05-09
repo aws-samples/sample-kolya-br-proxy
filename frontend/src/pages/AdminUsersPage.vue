@@ -156,7 +156,7 @@ const managePermissions = [
 
 const scopeOptions = [
   { label: 'All', value: 'all' },
-  { label: 'None', value: false },
+  { label: 'None', value: 'none' },
 ];
 
 const columns = [
@@ -210,7 +210,7 @@ async function fetchUsers() {
 function buildPermissionsPayload(perms: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(perms)) {
-    if (val === false) continue;
+    if (val === 'none' || val === false) continue;
     result[key] = val;
   }
   return result;
@@ -243,9 +243,10 @@ function editUser(user: AdminUser) {
   if (user.permissions) {
     for (const key of Object.keys(perms)) {
       if (key in user.permissions) {
-        perms[key] = user.permissions[key];
+        const v = user.permissions[key];
+        perms[key] = v === false ? 'none' : v;
       } else {
-        perms[key] = false;
+        perms[key] = 'none';
       }
     }
   }
