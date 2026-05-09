@@ -156,13 +156,16 @@ api.interceptors.response.use(
       }
     }
 
-    // Handle 403 Forbidden - treat as auth failure, redirect to login
+    // Handle 403 Forbidden - only logout for inactive user, otherwise just reject
     if (error.response?.status === 403) {
-      localStorage.removeItem('access_token');
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login';
+      const detail = error.response?.data?.detail || '';
+      if (detail === 'Inactive user') {
+        localStorage.removeItem('access_token');
+        if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+          window.location.href = '/login';
+        }
       }
-      return Promise.reject(new Error('Access denied'));
+      return Promise.reject(error as Error);
     }
 
     // Handle 5xx errors and network errors with retry logic
