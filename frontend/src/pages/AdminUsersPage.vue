@@ -53,7 +53,7 @@
 
     <!-- Invite Dialog -->
     <q-dialog v-model="showInviteDialog">
-      <q-card style="min-width: 450px">
+      <q-card style="min-width: 550px">
         <q-card-section>
           <div class="text-h6">Invite Admin</div>
         </q-card-section>
@@ -62,21 +62,7 @@
           <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
           <div v-if="inviteForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
-            <div v-for="perm in managePermissions" :key="perm.key" class="row items-center q-mb-sm">
-              <q-select
-                v-model="inviteForm.permissions[perm.key]"
-                :options="scopeOptions"
-                :label="perm.label"
-                outlined
-                dense
-                emit-value
-                map-options
-                style="width: 100%"
-              />
-            </div>
-            <q-separator class="q-my-sm" />
-            <q-checkbox v-model="inviteForm.permissions.view_usage" label="View Usage" />
-            <q-checkbox v-model="inviteForm.permissions.view_monitor" label="View Monitor" />
+            <PermissionEditor v-model="inviteForm.permissions" :resources="resources" />
           </div>
         </q-card-section>
         <q-card-actions align="right">
@@ -88,7 +74,7 @@
 
     <!-- Edit Dialog -->
     <q-dialog v-model="showEditDialog">
-      <q-card style="min-width: 450px">
+      <q-card style="min-width: 550px">
         <q-card-section>
           <div class="text-h6">Edit {{ editForm.email }}</div>
         </q-card-section>
@@ -96,21 +82,7 @@
           <q-select v-model="editForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
           <div v-if="editForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
-            <div v-for="perm in managePermissions" :key="perm.key" class="row items-center q-mb-sm">
-              <q-select
-                v-model="editForm.permissions[perm.key]"
-                :options="scopeOptions"
-                :label="perm.label"
-                outlined
-                dense
-                emit-value
-                map-options
-                style="width: 100%"
-              />
-            </div>
-            <q-separator class="q-my-sm" />
-            <q-checkbox v-model="editForm.permissions.view_usage" label="View Usage" />
-            <q-checkbox v-model="editForm.permissions.view_monitor" label="View Monitor" />
+            <PermissionEditor v-model="editForm.permissions" :resources="resources" />
           </div>
         </q-card-section>
         <q-card-actions align="right">
@@ -127,6 +99,7 @@ import { ref, onMounted } from 'vue';
 import { api } from 'src/boot/axios';
 import { Notify } from 'quasar';
 import { extractErrorMessage } from 'src/utils/error';
+import PermissionEditor from 'src/components/PermissionEditor.vue';
 
 interface AdminUser {
   id: string;
@@ -140,24 +113,25 @@ interface AdminUser {
   last_login_at: string | null;
 }
 
+interface ResourceOption {
+  label: string;
+  value: string;
+}
+
+interface Resources {
+  api_keys: ResourceOption[]; // pragma: allowlist secret
+  teams: ResourceOption[];
+  models: ResourceOption[];
+}
+
 const users = ref<AdminUser[]>([]);
 const loading = ref(false);
 const submitting = ref(false);
 const showInviteDialog = ref(false);
 const showEditDialog = ref(false);
+const resources = ref<Resources>({ api_keys: [], teams: [], models: [] });
 
 const roleOptions = ['super_admin', 'admin'];
-
-const managePermissions = [
-  { key: 'manage_api_keys', label: 'Manage API Keys' },
-  { key: 'manage_teams', label: 'Manage Teams' },
-  { key: 'manage_models', label: 'Manage Models' },
-];
-
-const scopeOptions = [
-  { label: 'All', value: 'all' },
-  { label: 'None', value: 'none' },
-];
 
 const columns = [
   { name: 'email', label: 'Email', field: 'email', align: 'left' as const },
@@ -170,6 +144,7 @@ const columns = [
 function formatPermLabel(key: string, val: unknown): string {
   const name = key.replace(/^manage_/, '').replace(/_/g, ' ');
   if (val === 'all' || val === true) return name;
+  if (Array.isArray(val)) return `${name} (${val.length})`;
   if (val === false) return '';
   return name;
 }
@@ -204,6 +179,32 @@ async function fetchUsers() {
     // handled by interceptor
   } finally {
     loading.value = false;
+  }
+}
+
+async function fetchResources() {
+  try {
+    const [tokensRes, teamsRes, modelsRes] = await Promise.all([
+      api.get('/admin/tokens'),
+      api.get('/admin/teams'),
+      api.get('/admin/models'),
+    ]);
+    resources.value = {
+      api_keys: (tokensRes.data || []).map((t: { id: string; name: string }) => ({
+        label: t.name,
+        value: t.id,
+      })),
+      teams: (teamsRes.data || []).map((t: { id: string; name: string }) => ({
+        label: t.name,
+        value: t.id,
+      })),
+      models: (modelsRes.data || []).map((m: { id: string; model_name?: string; friendly_name?: string }) => ({
+        label: m.friendly_name || m.model_name || m.id,
+        value: m.id,
+      })),
+    };
+  } catch {
+    // non-critical
   }
 }
 
@@ -288,5 +289,7 @@ async function deactivateUser(user: AdminUser) {
   }
 }
 
-onMounted(fetchUsers);
+onMounted(async () => {
+  await Promise.all([fetchUsers(), fetchResources()]);
+});
 </script>
