@@ -42,6 +42,8 @@ class UserResponse(BaseModel):
     last_name: str | None
     is_active: bool
     is_admin: bool
+    role: str
+    permissions: dict | None
     email_verified: bool
     current_balance: str
 
@@ -161,6 +163,8 @@ async def refresh_access_token(
                 last_name=user.last_name,
                 is_active=user.is_active,
                 is_admin=user.is_admin,
+                role=user.role.value if user.role else "admin",
+                permissions=user.permissions,
                 email_verified=user.email_verified,
                 current_balance=str(user.current_balance),
             ),
@@ -288,6 +292,8 @@ async def get_current_user_info(
         last_name=current_user.last_name,
         is_active=current_user.is_active,
         is_admin=current_user.is_admin,
+        role=current_user.role.value if current_user.role else "admin",
+        permissions=current_user.permissions,
         email_verified=current_user.email_verified,
         current_balance=str(current_user.current_balance),
     )
@@ -330,6 +336,8 @@ async def update_profile(
         last_name=current_user.last_name,
         is_active=current_user.is_active,
         is_admin=current_user.is_admin,
+        role=current_user.role.value if current_user.role else "admin",
+        permissions=current_user.permissions,
         email_verified=current_user.email_verified,
         current_balance=str(current_user.current_balance),
     )
@@ -506,6 +514,8 @@ async def microsoft_callback(
 
             settings = get_settings()
 
+            from app.models.user import UserRole
+
             user = User(
                 email=email,
                 password_hash=None,  # No password for OAuth users
@@ -515,6 +525,8 @@ async def microsoft_callback(
                 last_name=last_name,
                 current_balance=Decimal(str(settings.INITIAL_USER_BALANCE_USD)),
                 is_active=True,
+                is_admin=True,
+                role=UserRole.ADMIN,
                 email_verified=True,  # Microsoft accounts are pre-verified
             )
             db.add(user)
@@ -567,6 +579,8 @@ async def microsoft_callback(
             last_name=user.last_name,
             is_active=user.is_active,
             is_admin=user.is_admin,
+            role=user.role.value if user.role else "admin",
+            permissions=user.permissions,
             email_verified=user.email_verified,
             current_balance=str(user.current_balance),
         ),
@@ -745,6 +759,8 @@ async def cognito_callback(
 
         settings = get_settings()
 
+        from app.models.user import UserRole
+
         user = User(
             email=email,
             password_hash=None,  # No password for OAuth users
@@ -753,6 +769,8 @@ async def cognito_callback(
             last_name=last_name,
             current_balance=Decimal(str(settings.INITIAL_USER_BALANCE_USD)),
             is_active=True,
+            is_admin=True,
+            role=UserRole.ADMIN,
             email_verified=True,  # Cognito accounts are pre-verified
         )
         db.add(user)
@@ -805,6 +823,8 @@ async def cognito_callback(
             last_name=user.last_name,
             is_active=user.is_active,
             is_admin=user.is_admin,
+            role=user.role.value if user.role else "admin",
+            permissions=user.permissions,
             email_verified=user.email_verified,
             current_balance=str(user.current_balance),
         ),
