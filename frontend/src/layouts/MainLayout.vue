@@ -114,7 +114,7 @@ const allMenuLinks = [
     caption: 'API Key management',
     icon: 'vpn_key',
     to: '/tokens',
-    permission: 'manage_tokens',
+    permission: 'manage_api_keys',
   },
   {
     title: 'Models',

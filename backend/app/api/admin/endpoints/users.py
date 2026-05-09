@@ -92,23 +92,32 @@ async def invite_admin(
         )
 
     existing = await db.execute(select(User).where(User.email == request.email))
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="User with this email already exists",
-        )
+    user = existing.scalar_one_or_none()
 
     role = UserRole(request.role)
 
-    user = User(
-        email=request.email,
-        role=role,
-        permissions=request.permissions,
-        is_active=True,
-        is_admin=True,
-        email_verified=False,
-    )
-    db.add(user)
+    if user:
+        if user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="User with this email already exists",
+            )
+        # Reactivate previously deactivated user
+        user.is_active = True
+        user.role = role
+        user.permissions = request.permissions
+        user.is_admin = True
+    else:
+        user = User(
+            email=request.email,
+            role=role,
+            permissions=request.permissions,
+            is_active=True,
+            is_admin=True,
+            email_verified=False,
+        )
+        db.add(user)
+
     await db.commit()
     await db.refresh(user)
 

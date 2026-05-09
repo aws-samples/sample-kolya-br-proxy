@@ -62,7 +62,7 @@
           <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
           <div v-if="inviteForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
-            <q-checkbox v-model="inviteForm.permissions.manage_tokens" label="Manage Tokens" />
+            <q-checkbox v-model="inviteForm.permissions.manage_api_keys" label="Manage API Keys" />
             <q-checkbox v-model="inviteForm.permissions.manage_teams" label="Manage Teams" />
             <q-checkbox v-model="inviteForm.permissions.manage_models" label="Manage Models" />
             <q-checkbox v-model="inviteForm.permissions.view_usage" label="View Usage" />
@@ -86,7 +86,7 @@
           <q-select v-model="editForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
           <div v-if="editForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
-            <q-checkbox v-model="editForm.permissions.manage_tokens" label="Manage Tokens" />
+            <q-checkbox v-model="editForm.permissions.manage_api_keys" label="Manage API Keys" />
             <q-checkbox v-model="editForm.permissions.manage_teams" label="Manage Teams" />
             <q-checkbox v-model="editForm.permissions.manage_models" label="Manage Models" />
             <q-checkbox v-model="editForm.permissions.view_usage" label="View Usage" />
@@ -137,7 +137,7 @@ const columns = [
 ];
 
 const defaultPermissions = () => ({
-  manage_tokens: true,
+  manage_api_keys: true,
   manage_teams: true,
   manage_models: true,
   view_usage: true,

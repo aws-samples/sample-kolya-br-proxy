@@ -285,7 +285,7 @@ def build_token_response(
 )
 async def create_token(
     request: CreateTokenRequest,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
@@ -342,7 +342,7 @@ async def create_token(
 )
 async def batch_create_tokens(
     request: BatchCreateTokenRequest,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
@@ -406,7 +406,7 @@ async def batch_create_tokens(
 @router.get("", response_model=List[TokenResponse])
 async def list_tokens(
     include_inactive: bool = False,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     db: AsyncSession = Depends(get_db),
 ):
@@ -520,7 +520,7 @@ async def list_tokens(
 @router.get("/{token_id}", response_model=TokenResponse)
 async def get_token(
     token_id: str,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     db: AsyncSession = Depends(get_db),
 ):
@@ -565,7 +565,7 @@ async def get_token(
 async def update_token(
     token_id: str,
     request: UpdateTokenRequest,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
@@ -657,7 +657,7 @@ async def update_token(
 @router.delete("/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_token(
     token_id: str,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
@@ -710,7 +710,7 @@ async def delete_token(
 @router.post("/{token_id}/revoke", response_model=TokenResponse)
 async def revoke_token(
     token_id: str,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     db: AsyncSession = Depends(get_db),
 ):
@@ -760,7 +760,7 @@ async def revoke_token(
 @router.get("/{token_id}/plain", response_model=dict)
 async def get_plain_token(
     token_id: str,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
 ):
     """
@@ -827,7 +827,7 @@ class AdjustBalanceResponse(BaseModel):
 async def adjust_token_balance(
     token_id: str,
     request: AdjustBalanceRequest,
-    current_user: User = Depends(require_permission("manage_tokens")),
+    current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     db: AsyncSession = Depends(get_db),
 ):
