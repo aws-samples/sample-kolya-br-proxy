@@ -1,30 +1,31 @@
 <template>
   <div>
     <div v-for="perm in managePermissions" :key="perm.key" class="q-mb-md">
-      <div class="text-caption text-weight-medium q-mb-xs">{{ perm.label }}</div>
-      <q-btn-toggle
-        :model-value="getScope(perm.key)"
-        @update:model-value="(v: string) => setScope(perm.key, v)"
-        :options="scopeToggleOptions"
-        dense
-        no-caps
-        toggle-color="primary"
-        class="q-mb-xs"
-      />
       <q-select
-        v-if="getScope(perm.key) === 'custom'"
-        :model-value="getSelectedIds(perm.key)"
-        @update:model-value="(v: string[]) => setSelectedIds(perm.key, v)"
-        :options="getResourceOptions(perm.key)"
+        :model-value="getDisplayValue(perm.key)"
+        :options="getOptions(perm.key)"
+        :label="perm.label"
         multiple
-        emit-value
-        map-options
         outlined
         dense
         use-chips
-        class="q-mt-xs"
-        :label="`Select ${perm.label.replace('Manage ', '')}`"
-      />
+        emit-value
+        map-options
+        option-value="value"
+        option-label="label"
+        @update:model-value="(v: string[]) => onSelectionChange(perm.key, v)"
+      >
+        <template v-slot:option="{ itemProps, opt, selected, toggleOption }">
+          <q-item v-bind="itemProps">
+            <q-item-section side>
+              <q-checkbox :model-value="selected" @update:model-value="toggleOption(opt)" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label>{{ opt.label }}</q-item-label>
+            </q-item-section>
+          </q-item>
+        </template>
+      </q-select>
     </div>
     <q-separator class="q-my-sm" />
     <q-checkbox :model-value="!!modelValue.view_usage" @update:model-value="(v: boolean) => update('view_usage', v)" label="View Usage" />
@@ -44,6 +45,8 @@ interface Resources {
   models: ResourceOption[];
 }
 
+const ALL_VALUE = '__all__';
+
 const props = defineProps<{
   modelValue: Record<string, unknown>;
   resources: Resources;
@@ -54,57 +57,44 @@ const emit = defineEmits<{
 }>();
 
 const managePermissions = [
-  { key: 'manage_api_keys', resourceKey: 'api_keys' },
-  { key: 'manage_teams', resourceKey: 'teams' },
-  { key: 'manage_models', resourceKey: 'models' },
-].map((p) => ({
-  ...p,
-  label: p.key.replace(/^manage_/, '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-  get label() {
-    return `Manage ${p.key.replace(/^manage_/, '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}`;
-  },
-}));
-
-const scopeToggleOptions = [
-  { label: 'All', value: 'all' },
-  { label: 'Custom', value: 'custom' },
-  { label: 'None', value: 'none' },
+  { key: 'manage_api_keys', resourceKey: 'api_keys' as const, label: 'Manage API Keys' },
+  { key: 'manage_teams', resourceKey: 'teams' as const, label: 'Manage Teams' },
+  { key: 'manage_models', resourceKey: 'models' as const, label: 'Manage Models' },
 ];
 
-function getScope(key: string): string {
-  const val = props.modelValue[key];
-  if (val === 'all' || val === true) return 'all';
-  if (val === 'none' || val === false || val === undefined) return 'none';
-  if (Array.isArray(val)) return 'custom';
-  return 'none';
-}
-
-function getSelectedIds(key: string): string[] {
-  const val = props.modelValue[key];
-  return Array.isArray(val) ? val : [];
-}
-
-function getResourceOptions(key: string): ResourceOption[] {
+function getOptions(key: string): ResourceOption[] {
   const perm = managePermissions.find((p) => p.key === key);
   if (!perm) return [];
-  return props.resources[perm.resourceKey as keyof Resources] || [];
+  const resourceList = props.resources[perm.resourceKey] || [];
+  return [{ label: 'All', value: ALL_VALUE }, ...resourceList];
+}
+
+function getDisplayValue(key: string): string[] {
+  const val = props.modelValue[key];
+  if (val === 'all' || val === true) return [ALL_VALUE];
+  if (Array.isArray(val)) return val;
+  return [];
+}
+
+function onSelectionChange(key: string, newValues: string[]) {
+  const oldValues = getDisplayValue(key);
+  const hadAll = oldValues.includes(ALL_VALUE);
+  const hasAll = newValues.includes(ALL_VALUE);
+
+  if (!hadAll && hasAll) {
+    update(key, 'all');
+  } else if (hadAll && hasAll && newValues.length > 1) {
+    update(key, newValues.filter((v) => v !== ALL_VALUE));
+  } else if (!hasAll && newValues.length > 0) {
+    update(key, newValues);
+  } else if (!hasAll && newValues.length === 0) {
+    update(key, 'none');
+  } else {
+    update(key, 'all');
+  }
 }
 
 function update(key: string, value: unknown) {
   emit('update:modelValue', { ...props.modelValue, [key]: value });
-}
-
-function setScope(key: string, scope: string) {
-  if (scope === 'all') {
-    update(key, 'all');
-  } else if (scope === 'none') {
-    update(key, 'none');
-  } else {
-    update(key, getSelectedIds(key));
-  }
-}
-
-function setSelectedIds(key: string, ids: string[]) {
-  update(key, ids);
 }
 </script>
