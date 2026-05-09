@@ -53,7 +53,7 @@
 
     <!-- Invite Dialog -->
     <q-dialog v-model="showInviteDialog">
-      <q-card style="min-width: 550px">
+      <q-card dark style="min-width: 550px">
         <q-card-section>
           <div class="text-h6">Invite Admin</div>
         </q-card-section>
@@ -76,7 +76,7 @@
 
     <!-- Invite Link Dialog -->
     <q-dialog v-model="showInviteLinkDialog">
-      <q-card style="min-width: 450px">
+      <q-card dark style="min-width: 450px">
         <q-card-section>
           <div class="text-h6">Invite Link</div>
         </q-card-section>
@@ -96,7 +96,7 @@
 
     <!-- Edit Dialog -->
     <q-dialog v-model="showEditDialog">
-      <q-card style="min-width: 550px">
+      <q-card dark style="min-width: 550px">
         <q-card-section>
           <div class="text-h6">Edit {{ editForm.email }}</div>
         </q-card-section>

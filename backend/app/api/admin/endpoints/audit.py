@@ -17,7 +17,7 @@ from app.api.deps import (
 )
 from app.core.database import get_db
 from app.models.audit_log import AuditAction, AuditLog
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.audit_log import AuditLogService
 
 ACTIVITY_ACTIONS = [
@@ -193,10 +193,21 @@ async def list_activity(
     """
     start_date = datetime.utcnow() - timedelta(days=days)
 
-    base_filter = (
+    filters = [
         AuditLog.action.in_(ACTIVITY_ACTIONS),
         AuditLog.created_at >= start_date,
-    )
+    ]
+
+    # Non-super_admin users cannot see super_admin operations
+    if current_user.role != UserRole.SUPER_ADMIN:
+        super_admin_result = await db.execute(
+            select(User.id).where(User.role == UserRole.SUPER_ADMIN)
+        )
+        super_admin_ids = [row.id for row in super_admin_result]
+        if super_admin_ids:
+            filters.append(AuditLog.user_id.notin_(super_admin_ids))
+
+    base_filter = tuple(filters)
 
     total_result = await db.execute(select(func.count(AuditLog.id)).where(*base_filter))
     total = total_result.scalar() or 0
