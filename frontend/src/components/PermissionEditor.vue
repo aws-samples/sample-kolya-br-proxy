@@ -45,8 +45,6 @@ interface Resources {
   models: ResourceOption[];
 }
 
-const ALL_VALUE = '__all__';
-
 const props = defineProps<{
   modelValue: Record<string, unknown>;
   resources: Resources;
@@ -65,32 +63,28 @@ const managePermissions = [
 function getOptions(key: string): ResourceOption[] {
   const perm = managePermissions.find((p) => p.key === key);
   if (!perm) return [];
-  const resourceList = props.resources[perm.resourceKey] || [];
-  return [{ label: 'All', value: ALL_VALUE }, ...resourceList];
+  return props.resources[perm.resourceKey] || [];
+}
+
+function getAllIds(key: string): string[] {
+  return getOptions(key).map((o) => o.value);
 }
 
 function getDisplayValue(key: string): string[] {
   const val = props.modelValue[key];
-  if (val === 'all' || val === true) return [ALL_VALUE];
+  if (val === 'all' || val === true) return getAllIds(key);
   if (Array.isArray(val)) return val;
   return [];
 }
 
 function onSelectionChange(key: string, newValues: string[]) {
-  const oldValues = getDisplayValue(key);
-  const hadAll = oldValues.includes(ALL_VALUE);
-  const hasAll = newValues.includes(ALL_VALUE);
-
-  if (!hadAll && hasAll) {
-    update(key, 'all');
-  } else if (hadAll && hasAll && newValues.length > 1) {
-    update(key, newValues.filter((v) => v !== ALL_VALUE));
-  } else if (!hasAll && newValues.length > 0) {
-    update(key, newValues);
-  } else if (!hasAll && newValues.length === 0) {
+  const allIds = getAllIds(key);
+  if (newValues.length === 0) {
     update(key, 'none');
-  } else {
+  } else if (newValues.length === allIds.length) {
     update(key, 'all');
+  } else {
+    update(key, newValues);
   }
 }
 
