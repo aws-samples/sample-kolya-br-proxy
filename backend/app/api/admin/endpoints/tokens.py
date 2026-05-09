@@ -422,7 +422,6 @@ async def batch_create_tokens(
 async def list_tokens(
     include_inactive: bool = False,
     current_user: User = Depends(require_permission("manage_api_keys")),
-    token_service: TokenService = Depends(get_token_service),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -432,20 +431,24 @@ async def list_tokens(
 
     Returns list of user's tokens (without plain token keys).
     """
-    tokens = await token_service.get_user_tokens(
-        user_id=current_user.id,
-        include_inactive=include_inactive,
-    )
+    # Scope filtering: if admin has access to specific tokens, query by IDs directly
+    allowed_ids = get_allowed_resource_ids(current_user, "manage_api_keys")
+    if allowed_ids is not None:
+        allowed_uuids = [UUID(id_) for id_ in allowed_ids]
+        query = select(APIToken).where(
+            APIToken.id.in_(allowed_uuids),
+            APIToken.is_deleted.is_(False),
+        )
+    else:
+        query = select(APIToken).where(APIToken.is_deleted.is_(False))
+
+    if not include_inactive:
+        query = query.where(APIToken.is_active)
+    result = await db.execute(query)
+    tokens = list(result.scalars().all())
 
     if not tokens:
         return []
-
-    # Scope filtering: if admin only has access to specific tokens
-    allowed_ids = get_allowed_resource_ids(current_user, "manage_api_keys")
-    if allowed_ids is not None:
-        tokens = [t for t in tokens if str(t.id) in allowed_ids]
-        if not tokens:
-            return []
 
     # Batch query: get total, monthly, daily usage for all tokens in one query
     now = datetime.utcnow()

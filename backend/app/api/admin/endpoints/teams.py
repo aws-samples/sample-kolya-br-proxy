@@ -217,7 +217,7 @@ async def list_teams(
             ),
         )
         .outerjoin(TeamMember, TeamMember.team_id == Team.id)
-        .where(Team.user_id == current_user.id, Team.is_active)
+        .where(Team.is_active)
         .group_by(Team.id)
         .order_by(Team.created_at.desc())
     )
