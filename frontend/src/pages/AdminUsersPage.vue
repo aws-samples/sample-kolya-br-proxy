@@ -184,22 +184,19 @@ async function fetchUsers() {
 
 async function fetchResources() {
   try {
-    const [tokensRes, teamsRes, modelsRes] = await Promise.all([
-      api.get('/admin/tokens'),
-      api.get('/admin/teams'),
-      api.get('/admin/models'),
-    ]);
+    const res = await api.get('/admin/users/resources');
+    const data = res.data;
     resources.value = {
-      api_keys: (tokensRes.data || []).map((t: { id: string; name: string }) => ({
+      api_keys: (data.api_keys || []).map((t: { id: string; name: string }) => ({
         label: t.name,
         value: t.id,
       })),
-      teams: (teamsRes.data || []).map((t: { id: string; name: string }) => ({
+      teams: (data.teams || []).map((t: { id: string; name: string }) => ({
         label: t.name,
         value: t.id,
       })),
-      models: (modelsRes.data || []).map((m: { id: string; model_name?: string; friendly_name?: string }) => ({
-        label: m.friendly_name || m.model_name || m.id,
+      models: (data.models || []).map((m: { id: string; name: string }) => ({
+        label: m.name,
         value: m.id,
       })),
     };

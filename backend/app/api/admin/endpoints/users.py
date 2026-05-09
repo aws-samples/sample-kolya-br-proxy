@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_audit_log_service, get_current_superadmin
 from app.core.database import get_db
 from app.models.audit_log import AuditAction
+from app.models.model import Model
+from app.models.team import Team
+from app.models.token import APIToken
 from app.models.user import User, UserRole
 from app.services.audit_log import AuditLogService
 
@@ -55,6 +58,32 @@ class UpdateAdminRequest(BaseModel):
     role: str | None = None
     permissions: dict | None = None
     is_active: bool | None = None
+
+
+@router.get("/resources")
+async def list_assignable_resources(
+    current_user: User = Depends(get_current_superadmin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all resources (tokens, teams, models) for permission assignment."""
+    tokens_result = await db.execute(
+        select(APIToken.id, APIToken.name)
+        .where(APIToken.is_active.is_(True), APIToken.is_deleted.is_(False))
+        .order_by(APIToken.name)
+    )
+    teams_result = await db.execute(select(Team.id, Team.name).order_by(Team.name))
+    models_result = await db.execute(
+        select(Model.id, Model.model_name)
+        .where(Model.is_active.is_(True), Model.is_deleted.is_(False))
+        .order_by(Model.model_name)
+    )
+    return {
+        "api_keys": [{"id": str(r.id), "name": r.name} for r in tokens_result.all()],
+        "teams": [{"id": str(r.id), "name": r.name} for r in teams_result.all()],
+        "models": [
+            {"id": str(r.id), "name": r.model_name} for r in models_result.all()
+        ],
+    }
 
 
 @router.get("", response_model=List[AdminUserResponse])
