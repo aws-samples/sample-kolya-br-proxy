@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -16,9 +16,22 @@ from app.api.deps import (
     get_current_user_from_jwt,
 )
 from app.core.database import get_db
-from app.models.audit_log import AuditAction
+from app.models.audit_log import AuditAction, AuditLog
 from app.models.user import User
 from app.services.audit_log import AuditLogService
+
+ACTIVITY_ACTIONS = [
+    AuditAction.ADMIN_CREATED,
+    AuditAction.ADMIN_UPDATED,
+    AuditAction.ADMIN_DELETED,
+    AuditAction.TOKEN_CREATED,
+    AuditAction.TOKEN_UPDATED,
+    AuditAction.TOKEN_DELETED,
+    AuditAction.TEAM_CREATED,
+    AuditAction.TEAM_UPDATED,
+    AuditAction.TEAM_DELETED,
+    AuditAction.MODEL_UPDATED,
+]
 
 router = APIRouter()
 
@@ -169,7 +182,6 @@ class PaginatedActivityResponse(BaseModel):
 @router.get("/activity", response_model=PaginatedActivityResponse)
 async def list_activity(
     current_user: User = Depends(get_current_user_from_jwt),
-    audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
@@ -177,16 +189,27 @@ async def list_activity(
 ):
     """
     Activity feed visible to all admins.
-    Shows recent operations (last N days) without sensitive fields (IP, user-agent).
+    Shows only management operations (token/team/model/admin CRUD).
     """
     start_date = datetime.utcnow() - timedelta(days=days)
 
-    logs, total = await audit_service.get_audit_logs(
-        page=page,
-        page_size=page_size,
-        start_date=start_date,
-        success=True,
+    base_filter = (
+        AuditLog.action.in_(ACTIVITY_ACTIONS),
+        AuditLog.created_at >= start_date,
     )
+
+    total_result = await db.execute(select(func.count(AuditLog.id)).where(*base_filter))
+    total = total_result.scalar() or 0
+
+    offset = (page - 1) * page_size
+    result = await db.execute(
+        select(AuditLog)
+        .where(*base_filter)
+        .order_by(AuditLog.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    logs = list(result.scalars().all())
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 0
 
