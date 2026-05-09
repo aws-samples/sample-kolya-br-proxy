@@ -38,7 +38,10 @@ export const useAuthStore = defineStore('auth', {
       if (state.user.role === 'super_admin') return true;
       if (!state.user.permissions || Object.keys(state.user.permissions).length === 0)
         return true;
-      return state.user.permissions[permission] ?? false;
+      const val = state.user.permissions[permission];
+      if (val === 'all' || val === true) return true;
+      if (Array.isArray(val) && val.length > 0) return true;
+      return false;
     },
   },
 

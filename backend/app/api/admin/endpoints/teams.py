@@ -12,7 +12,11 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_audit_log_service, require_permission
+from app.api.deps import (
+    get_allowed_resource_ids,
+    get_audit_log_service,
+    require_permission,
+)
 from app.models.audit_log import AuditAction
 from app.services.audit_log import AuditLogService
 from app.core.database import get_db
@@ -126,6 +130,16 @@ class BatchCreateMembersResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _check_team_scope(user: User, team_id: str) -> None:
+    """Raise 403 if user doesn't have access to this specific team."""
+    allowed_ids = get_allowed_resource_ids(user, "manage_teams")
+    if allowed_ids is not None and team_id not in allowed_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to manage this team",
+        )
+
+
 async def _invalidate_token_cache(token_hash: str) -> None:
     from app.api.admin.endpoints.tokens import (
         _invalidate_token_cache as _do_invalidate,
@@ -187,7 +201,8 @@ async def list_teams(
     now = datetime.utcnow()
     month_start = datetime(now.year, now.month, 1)
 
-    result = await db.execute(
+    allowed_ids = get_allowed_resource_ids(current_user, "manage_teams")
+    query = (
         select(
             Team.id,
             Team.name,
@@ -206,6 +221,11 @@ async def list_teams(
         .group_by(Team.id)
         .order_by(Team.created_at.desc())
     )
+    if allowed_ids is not None:
+        allowed_uuids = [UUID(id_) for id_ in allowed_ids]
+        query = query.where(Team.id.in_(allowed_uuids))
+
+    result = await db.execute(query)
     rows = result.all()
 
     # Get total monthly usage per team
@@ -248,6 +268,7 @@ async def get_team_dashboard(
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
     except ValueError:
@@ -362,6 +383,7 @@ async def update_team(
     audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
     except ValueError:
@@ -406,6 +428,7 @@ async def delete_team(
     audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
     except ValueError:
@@ -436,6 +459,7 @@ async def add_member(
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
         token_uuid = UUID(request.token_id)
@@ -471,6 +495,7 @@ async def remove_member(
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
         token_uuid = UUID(token_id)
@@ -500,6 +525,7 @@ async def adjust_member(
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
         token_uuid = UUID(token_id)
@@ -535,6 +561,7 @@ async def transfer_allocation(
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
         from_uuid = UUID(request.from_token_id)
@@ -581,6 +608,7 @@ async def batch_create_members(
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
 ):
+    _check_team_scope(current_user, team_id)
     try:
         team_uuid = UUID(team_id)
     except ValueError:

@@ -373,28 +373,53 @@ async def get_current_superadmin(
 
 
 def require_permission(permission: str):
-    """Factory that returns a dependency checking a specific permission."""
+    """Factory that returns a dependency checking a specific permission.
+
+    Permission values in the user's permissions JSON can be:
+    - true / "all": full access to all resources of this type
+    - list of IDs: access only to those specific resources
+    - false / missing: no access
+    """
 
     async def _check_permission(
         current_user: User = Depends(get_current_user_from_jwt),
     ) -> User:
-        # Super admin bypasses all checks
         if current_user.role == UserRole.SUPER_ADMIN:
             return current_user
-        # Admin with specific permission or legacy is_admin users
         if current_user.role == UserRole.ADMIN or current_user.is_admin:
             user_perms = current_user.permissions or {}
             if not user_perms:
                 return current_user
-            if user_perms.get(permission, False):
-                return current_user
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Permission denied: {permission}",
-            )
+            perm_value = user_perms.get(permission)
+            if perm_value is None or perm_value is False:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Permission denied: {permission}",
+                )
+            # true, "all", or a list of IDs all grant access
+            return current_user
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
 
     return _check_permission
+
+
+def get_allowed_resource_ids(user: User, permission: str) -> Optional[list[str]]:
+    """Get the list of resource IDs the user is allowed to manage.
+
+    Returns None if the user has full access ("all" or super_admin).
+    Returns a list of ID strings if access is scoped.
+    """
+    if user.role == UserRole.SUPER_ADMIN:
+        return None
+    user_perms = user.permissions or {}
+    if not user_perms:
+        return None
+    perm_value = user_perms.get(permission)
+    if perm_value is True or perm_value == "all":
+        return None
+    if isinstance(perm_value, list):
+        return perm_value
+    return None

@@ -29,12 +29,12 @@
               v-for="(val, key) in props.row.permissions"
               :key="key"
               :color="val ? 'positive' : 'grey'"
-              :label="String(key)"
+              :label="formatPermLabel(String(key), val)"
               class="q-mr-xs"
             />
           </template>
           <template v-else>
-            <span class="text-grey">none</span>
+            <q-badge color="positive" label="all" />
           </template>
         </q-td>
       </template>
@@ -53,7 +53,7 @@
 
     <!-- Invite Dialog -->
     <q-dialog v-model="showInviteDialog">
-      <q-card style="min-width: 400px">
+      <q-card style="min-width: 450px">
         <q-card-section>
           <div class="text-h6">Invite Admin</div>
         </q-card-section>
@@ -62,9 +62,19 @@
           <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
           <div v-if="inviteForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
-            <q-checkbox v-model="inviteForm.permissions.manage_api_keys" label="Manage API Keys" />
-            <q-checkbox v-model="inviteForm.permissions.manage_teams" label="Manage Teams" />
-            <q-checkbox v-model="inviteForm.permissions.manage_models" label="Manage Models" />
+            <div v-for="perm in managePermissions" :key="perm.key" class="row items-center q-mb-sm">
+              <q-select
+                v-model="inviteForm.permissions[perm.key]"
+                :options="scopeOptions"
+                :label="perm.label"
+                outlined
+                dense
+                emit-value
+                map-options
+                style="width: 100%"
+              />
+            </div>
+            <q-separator class="q-my-sm" />
             <q-checkbox v-model="inviteForm.permissions.view_usage" label="View Usage" />
             <q-checkbox v-model="inviteForm.permissions.view_monitor" label="View Monitor" />
           </div>
@@ -78,7 +88,7 @@
 
     <!-- Edit Dialog -->
     <q-dialog v-model="showEditDialog">
-      <q-card style="min-width: 400px">
+      <q-card style="min-width: 450px">
         <q-card-section>
           <div class="text-h6">Edit {{ editForm.email }}</div>
         </q-card-section>
@@ -86,9 +96,19 @@
           <q-select v-model="editForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
           <div v-if="editForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
-            <q-checkbox v-model="editForm.permissions.manage_api_keys" label="Manage API Keys" />
-            <q-checkbox v-model="editForm.permissions.manage_teams" label="Manage Teams" />
-            <q-checkbox v-model="editForm.permissions.manage_models" label="Manage Models" />
+            <div v-for="perm in managePermissions" :key="perm.key" class="row items-center q-mb-sm">
+              <q-select
+                v-model="editForm.permissions[perm.key]"
+                :options="scopeOptions"
+                :label="perm.label"
+                outlined
+                dense
+                emit-value
+                map-options
+                style="width: 100%"
+              />
+            </div>
+            <q-separator class="q-my-sm" />
             <q-checkbox v-model="editForm.permissions.view_usage" label="View Usage" />
             <q-checkbox v-model="editForm.permissions.view_monitor" label="View Monitor" />
           </div>
@@ -114,7 +134,7 @@ interface AdminUser {
   first_name: string | null;
   last_name: string | null;
   role: string;
-  permissions: Record<string, boolean> | null;
+  permissions: Record<string, unknown> | null;
   is_active: boolean;
   created_at: string;
   last_login_at: string | null;
@@ -128,6 +148,17 @@ const showEditDialog = ref(false);
 
 const roleOptions = ['super_admin', 'admin'];
 
+const managePermissions = [
+  { key: 'manage_api_keys', label: 'Manage API Keys' },
+  { key: 'manage_teams', label: 'Manage Teams' },
+  { key: 'manage_models', label: 'Manage Models' },
+];
+
+const scopeOptions = [
+  { label: 'All', value: 'all' },
+  { label: 'None', value: false },
+];
+
 const columns = [
   { name: 'email', label: 'Email', field: 'email', align: 'left' as const },
   { name: 'role', label: 'Role', field: 'role', align: 'left' as const },
@@ -136,10 +167,17 @@ const columns = [
   { name: 'actions', label: 'Actions', field: 'id', align: 'center' as const },
 ];
 
-const defaultPermissions = () => ({
-  manage_api_keys: true,
-  manage_teams: true,
-  manage_models: true,
+function formatPermLabel(key: string, val: unknown): string {
+  const name = key.replace(/^manage_/, '').replace(/_/g, ' ');
+  if (val === 'all' || val === true) return name;
+  if (val === false) return '';
+  return name;
+}
+
+const defaultPermissions = (): Record<string, unknown> => ({
+  manage_api_keys: 'all', // pragma: allowlist secret
+  manage_teams: 'all',
+  manage_models: 'all',
   view_usage: true,
   view_monitor: true,
 });
@@ -169,6 +207,15 @@ async function fetchUsers() {
   }
 }
 
+function buildPermissionsPayload(perms: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(perms)) {
+    if (val === false) continue;
+    result[key] = val;
+  }
+  return result;
+}
+
 async function submitInvite() {
   submitting.value = true;
   try {
@@ -177,7 +224,7 @@ async function submitInvite() {
       role: inviteForm.value.role,
     };
     if (inviteForm.value.role === 'admin') {
-      payload.permissions = inviteForm.value.permissions;
+      payload.permissions = buildPermissionsPayload(inviteForm.value.permissions);
     }
     await api.post('/admin/users', payload);
     Notify.create({ type: 'positive', message: 'Admin invited', position: 'top' });
@@ -192,11 +239,21 @@ async function submitInvite() {
 }
 
 function editUser(user: AdminUser) {
+  const perms = defaultPermissions();
+  if (user.permissions) {
+    for (const key of Object.keys(perms)) {
+      if (key in user.permissions) {
+        perms[key] = user.permissions[key];
+      } else {
+        perms[key] = false;
+      }
+    }
+  }
   editForm.value = {
     id: user.id,
     email: user.email,
     role: user.role,
-    permissions: user.permissions ? { ...defaultPermissions(), ...user.permissions } : defaultPermissions(),
+    permissions: perms,
   };
   showEditDialog.value = true;
 }
@@ -206,7 +263,7 @@ async function submitEdit() {
   try {
     const payload: Record<string, unknown> = { role: editForm.value.role };
     if (editForm.value.role === 'admin') {
-      payload.permissions = editForm.value.permissions;
+      payload.permissions = buildPermissionsPayload(editForm.value.permissions);
     }
     await api.put(`/admin/users/${editForm.value.id}`, payload);
     Notify.create({ type: 'positive', message: 'Admin updated', position: 'top' });
