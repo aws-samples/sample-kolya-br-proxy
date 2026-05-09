@@ -22,6 +22,7 @@ class APIToken(Base):
 
     # Token information
     name = Column(String(255), nullable=False)
+    description = Column(String(500), nullable=True)
     token_hash = Column(String(255), unique=True, nullable=False, index=True)
     encrypted_token = Column(
         String(512), nullable=True

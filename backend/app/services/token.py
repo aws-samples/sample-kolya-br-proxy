@@ -40,6 +40,7 @@ class TokenService:
         self,
         user_id: UUID,
         name: str,
+        description: Optional[str] = None,
         expires_at: Optional[datetime] = None,
         quota_usd: Optional[Decimal] = None,
         monthly_quota_usd: Optional[Decimal] = None,
@@ -73,6 +74,7 @@ class TokenService:
         token = APIToken(
             user_id=user_id,
             name=name,
+            description=description,
             token_hash=token_hash,
             encrypted_token=encrypted,
             expires_at=expires_at,

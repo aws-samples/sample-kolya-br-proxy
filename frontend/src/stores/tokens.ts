@@ -10,6 +10,7 @@ export interface TokenMetadata {
 export interface APIToken {
   id: string;
   name: string;
+  description: string | null;
   key_prefix: string;
   expires_at: string | null;
   quota_usd: string | null;
@@ -34,6 +35,7 @@ export interface APITokenWithKey extends APIToken {
 
 export interface CreateTokenRequest {
   name: string;
+  description?: string;
   expires_at?: string;
   quota_usd?: number;
   allowed_ips?: string[];

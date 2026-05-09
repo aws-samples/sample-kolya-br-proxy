@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user_from_jwt, get_token_service
 from app.core.database import get_db
 from app.core.security import decrypt_token
+from app.models.model import Model
 from app.models.team import Team, TeamMember
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -70,6 +71,7 @@ class CreateTokenRequest(BaseModel):
     """Create token request."""
 
     name: str
+    description: str | None = None
     expires_at: datetime | None = None
     quota_usd: Decimal | None = None
     monthly_quota_usd: Decimal | None = None
@@ -107,6 +109,7 @@ class UpdateTokenRequest(BaseModel):
     """Update token request."""
 
     name: str | None = None
+    description: str | None = None
     expires_at: datetime | None = None
     quota_usd: Decimal | None = None
     monthly_quota_usd: Decimal | None = None
@@ -121,6 +124,7 @@ class TokenResponse(BaseModel):
 
     id: str
     name: str
+    description: str | None = None
     key_prefix: str = "sk-ant-api03"
     expires_at: datetime | None
     quota_usd: str | None
@@ -141,6 +145,7 @@ class TokenResponse(BaseModel):
     team_id: str | None = None
     team_name: str | None = None
     allocated_usd: str | None = None
+    allowed_models: List[str] = []
 
     class Config:
         from_attributes = True
@@ -227,6 +232,7 @@ def build_token_response(
     team_id: str | None = None,
     team_name: str | None = None,
     allocated_usd: Decimal | None = None,
+    allowed_models: List[str] | None = None,
 ) -> TokenResponse:
     """Build TokenResponse with calculated usage."""
     token.calculate_used_usd(used_usd)
@@ -243,6 +249,7 @@ def build_token_response(
     return TokenResponse(
         id=str(token.id),
         name=token.name,
+        description=token.description,
         key_prefix=_extract_key_prefix(token),
         expires_at=token.expires_at,
         quota_usd=str(token.quota_usd) if token.quota_usd else None,
@@ -267,6 +274,7 @@ def build_token_response(
         team_id=team_id,
         team_name=team_name,
         allocated_usd=str(allocated_usd) if allocated_usd is not None else None,
+        allowed_models=allowed_models or [],
     )
 
 
@@ -300,6 +308,7 @@ async def create_token(
     token, plain_token = await token_service.create_token(
         user_id=current_user.id,
         name=request.name,
+        description=request.description,
         expires_at=request.expires_at,
         quota_usd=request.quota_usd,
         monthly_quota_usd=request.monthly_quota_usd,
@@ -455,6 +464,17 @@ async def list_tokens(
         for row in team_result
     }
 
+    # Get allowed models for all tokens in one query
+    models_query = select(Model.token_id, Model.model_name).where(
+        Model.token_id.in_(token_ids),
+        Model.is_active.is_(True),
+        Model.is_deleted.is_(False),
+    )
+    models_result = await db.execute(models_query)
+    models_map: dict[UUID, list[str]] = {}
+    for row in models_result:
+        models_map.setdefault(row.token_id, []).append(row.model_name)
+
     # Build responses with usage data
     token_responses = []
     for token in tokens:
@@ -471,6 +491,7 @@ async def list_tokens(
                 team_id=team_info[0] if team_info else None,
                 team_name=team_info[1] if team_info else None,
                 allocated_usd=team_info[2] if team_info else None,
+                allowed_models=models_map.get(token.id),
             )
         )
 
@@ -575,6 +596,8 @@ async def update_token(
     # Update token fields directly (avoid redundant query)
     if request.name is not None:
         token.name = request.name
+    if request.description is not None:
+        token.description = request.description
     if request.expires_at is not None:
         token.expires_at = request.expires_at
     if request.quota_usd is not None:

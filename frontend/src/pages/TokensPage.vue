@@ -47,122 +47,132 @@
           flat
           bordered
         >
-          <template v-slot:body-cell-name="props">
-            <q-td :props="props">
-              <div class="text-weight-bold">{{ props.row.name }}</div>
-            </q-td>
-          </template>
-
-          <template v-slot:body-cell-key="props">
-            <q-td :props="props">
-              <div class="row items-center no-wrap">
-                <span class="text-mono">{{ props.row.key_prefix }}_••••••••</span>
-                <q-btn
-                  flat
-                  dense
-                  round
-                  size="xs"
-                  icon="content_copy"
-                  color="grey-7"
-                  @click="copyTokenKey(props.row)"
-                  :loading="copyingTokenId === props.row.id"
-                  class="q-ml-xs"
-                >
-                  <q-tooltip>Copy Key</q-tooltip>
-                </q-btn>
-              </div>
-            </q-td>
-          </template>
-
-          <template v-slot:body-cell-status="props">
-            <q-td :props="props">
-              <q-badge
-                :color="getStatusColor(props.row)"
-                :label="getStatusLabel(props.row)"
-              />
-            </q-td>
-          </template>
-
-          <template v-slot:body-cell-quota="props">
-            <q-td :props="props">
-              <div v-if="props.row.quota_usd">
-                ${{ Number(props.row.used_usd).toFixed(2) }} / ${{ Number(props.row.quota_usd).toFixed(2) }}
-                <q-linear-progress
-                  :value="getQuotaProgress(props.row)"
-                  :color="getQuotaColor(props.row)"
-                  class="q-mt-xs"
-                />
-              </div>
-              <div v-else-if="props.row.allocated_usd">
-                ${{ Number(props.row.used_usd).toFixed(2) }} / ${{ Number(props.row.allocated_usd).toFixed(2) }}
-                <span class="text-caption text-grey-6 q-ml-xs">(team)</span>
-                <q-linear-progress
-                  :value="getQuotaProgress(props.row)"
-                  :color="getQuotaColor(props.row)"
-                  class="q-mt-xs"
-                />
-              </div>
-              <div v-else class="text-grey-7">Unlimited</div>
-            </q-td>
-          </template>
-
-          <template v-slot:body-cell-expires_at="props">
-            <q-td :props="props">
-              <div v-if="props.row.expires_at">
-                {{ formatDate(props.row.expires_at) }}
-              </div>
-              <div v-else class="text-grey-7">Never expires</div>
-            </q-td>
-          </template>
-
-          <template v-slot:body-cell-cache="props">
-            <q-td :props="props">
-              <q-badge
-                :color="getCacheBadge(props.row).color"
-                :label="getCacheBadge(props.row).label"
-              />
-            </q-td>
-          </template>
-
-          <template v-slot:body-cell-actions="props">
-            <q-td :props="props">
-              <q-btn
-                flat
-                dense
-                round
-                size="xs"
-                icon="settings"
-                color="grey-7"
-                @click="openSettings(props.row)"
-                class="q-mr-xs"
-              >
-                <q-tooltip>Cache Settings</q-tooltip>
-              </q-btn>
-              <q-btn
-                flat
-                dense
-                round
-                size="xs"
-                icon="account_balance_wallet"
-                color="positive"
-                @click="rechargeToken(props.row)"
-                class="q-mr-xs"
-              >
-                <q-tooltip>Recharge</q-tooltip>
-              </q-btn>
-              <q-btn
-                flat
-                dense
-                round
-                size="xs"
-                icon="delete"
-                color="negative"
-                @click="deleteToken(props.row)"
-                :loading="deletingTokenId === props.row.id"
-              >
-                <q-tooltip>Delete</q-tooltip>
-              </q-btn>
-            </q-td>
+          <template v-slot:body="props">
+            <q-tr :props="props" @click="props.expand = !props.expand" class="cursor-pointer">
+              <q-td v-for="col in props.cols" :key="col.name" :props="props">
+                <template v-if="col.name === 'name'">
+                  <div class="text-weight-bold">{{ props.row.name }}</div>
+                </template>
+                <template v-else-if="col.name === 'key'">
+                  <div class="row items-center no-wrap">
+                    <span class="text-mono">{{ props.row.key_prefix }}_••••••••</span>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="content_copy"
+                      color="grey-7"
+                      @click.stop="copyTokenKey(props.row)"
+                      :loading="copyingTokenId === props.row.id"
+                      class="q-ml-xs"
+                    >
+                      <q-tooltip>Copy Key</q-tooltip>
+                    </q-btn>
+                  </div>
+                </template>
+                <template v-else-if="col.name === 'status'">
+                  <q-badge
+                    :color="getStatusColor(props.row)"
+                    :label="getStatusLabel(props.row)"
+                  />
+                </template>
+                <template v-else-if="col.name === 'quota'">
+                  <div v-if="props.row.quota_usd">
+                    ${{ Number(props.row.used_usd).toFixed(2) }} / ${{ Number(props.row.quota_usd).toFixed(2) }}
+                    <q-linear-progress
+                      :value="getQuotaProgress(props.row)"
+                      :color="getQuotaColor(props.row)"
+                      class="q-mt-xs"
+                    />
+                  </div>
+                  <div v-else-if="props.row.allocated_usd">
+                    ${{ Number(props.row.used_usd).toFixed(2) }} / ${{ Number(props.row.allocated_usd).toFixed(2) }}
+                    <span class="text-caption text-grey-6 q-ml-xs">(team)</span>
+                    <q-linear-progress
+                      :value="getQuotaProgress(props.row)"
+                      :color="getQuotaColor(props.row)"
+                      class="q-mt-xs"
+                    />
+                  </div>
+                  <div v-else class="text-grey-7">Unlimited</div>
+                </template>
+                <template v-else-if="col.name === 'expires_at'">
+                  <div v-if="props.row.expires_at">
+                    {{ formatDate(props.row.expires_at) }}
+                  </div>
+                  <div v-else class="text-grey-7">Never expires</div>
+                </template>
+                <template v-else-if="col.name === 'cache'">
+                  <q-badge
+                    :color="getCacheBadge(props.row).color"
+                    :label="getCacheBadge(props.row).label"
+                  />
+                </template>
+                <template v-else-if="col.name === 'actions'">
+                  <q-btn
+                    flat
+                    dense
+                    round
+                    size="xs"
+                    icon="settings"
+                    color="grey-7"
+                    @click.stop="openSettings(props.row)"
+                    class="q-mr-xs"
+                  >
+                    <q-tooltip>Cache Settings</q-tooltip>
+                  </q-btn>
+                  <q-btn
+                    flat
+                    dense
+                    round
+                    size="xs"
+                    icon="account_balance_wallet"
+                    color="positive"
+                    @click.stop="rechargeToken(props.row)"
+                    class="q-mr-xs"
+                  >
+                    <q-tooltip>Recharge</q-tooltip>
+                  </q-btn>
+                  <q-btn
+                    flat
+                    dense
+                    round
+                    size="xs"
+                    icon="delete"
+                    color="negative"
+                    @click.stop="deleteToken(props.row)"
+                    :loading="deletingTokenId === props.row.id"
+                  >
+                    <q-tooltip>Delete</q-tooltip>
+                  </q-btn>
+                </template>
+                <template v-else>
+                  {{ col.value }}
+                </template>
+              </q-td>
+            </q-tr>
+            <q-tr v-show="props.expand" :props="props">
+              <q-td colspan="100%">
+                <div class="q-pa-sm">
+                  <span class="text-caption text-grey-5">Models: </span>
+                  <template v-if="props.row.allowed_models && props.row.allowed_models.length > 0">
+                    <q-chip
+                      v-for="model in props.row.allowed_models"
+                      :key="model"
+                      size="sm"
+                      color="grey-9"
+                      text-color="grey-3"
+                      dense
+                      class="q-mr-xs"
+                    >
+                      {{ model }}
+                    </q-chip>
+                  </template>
+                  <span v-else class="text-grey-7 text-caption">All models (no restriction)</span>
+                </div>
+              </q-td>
+            </q-tr>
           </template>
         </q-table>
       </q-card-section>
@@ -232,6 +242,15 @@
               rounded
               dark
               :rules="[(val) => !!val || 'Please enter name']"
+              class="q-mb-md"
+            />
+
+            <q-input
+              v-model="newToken.description"
+              label="Description (optional)"
+              outlined
+              rounded
+              dark
               class="q-mb-md"
             />
 
@@ -609,6 +628,7 @@ const cacheTtlOptions = [
 
 const newToken = ref({
   name: '',
+  description: '',
   quota_usd: undefined as number | undefined,
   expires_at: '',
   cacheEnabled: false,
@@ -622,6 +642,12 @@ const columns = [
     field: 'name',
     align: 'left' as const,
     sortable: true,
+  },
+  {
+    name: 'description',
+    label: 'Description',
+    field: 'description',
+    align: 'left' as const,
   },
   {
     name: 'key',
@@ -745,6 +771,9 @@ async function handleCreateToken() {
       name: newToken.value.name,
     };
 
+    if (newToken.value.description) {
+      tokenData.description = newToken.value.description;
+    }
     if (newToken.value.quota_usd !== undefined) {
       tokenData.quota_usd = newToken.value.quota_usd;
     }
@@ -768,6 +797,7 @@ async function handleCreateToken() {
       // Reset form
       newToken.value = {
         name: '',
+        description: '',
         quota_usd: undefined,
         expires_at: '',
         cacheEnabled: false,
