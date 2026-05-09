@@ -59,6 +59,8 @@
         </q-card-section>
         <q-card-section>
           <q-input v-model="inviteForm.email" label="Email" type="email" outlined class="q-mb-md" />
+          <q-input v-model="inviteForm.username" label="Username" outlined class="q-mb-md" hint="Cognito login username" />
+          <q-input v-model="inviteForm.temp_password" label="Temporary Password" type="password" outlined class="q-mb-md" hint="User must change on first login" />
           <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
           <div v-if="inviteForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
@@ -181,6 +183,8 @@ const defaultPermissions = (): Record<string, unknown> => ({
 
 const inviteForm = ref({
   email: '',
+  username: '',
+  temp_password: '',
   role: 'admin',
   permissions: defaultPermissions(),
 });
@@ -246,6 +250,8 @@ async function submitInvite() {
   try {
     const payload: Record<string, unknown> = {
       email: inviteForm.value.email,
+      username: inviteForm.value.username,
+      temp_password: inviteForm.value.temp_password,
       role: inviteForm.value.role,
     };
     if (inviteForm.value.role === 'admin') {
@@ -255,7 +261,7 @@ async function submitInvite() {
     showInviteDialog.value = false;
     inviteLink.value = `${window.location.origin}/login`;
     showInviteLinkDialog.value = true;
-    inviteForm.value = { email: '', role: 'admin', permissions: defaultPermissions() };
+    inviteForm.value = { email: '', username: '', temp_password: '', role: 'admin', permissions: defaultPermissions() };
     await fetchUsers();
   } catch (error: unknown) {
     Notify.create({ type: 'negative', message: extractErrorMessage(error), position: 'top' });

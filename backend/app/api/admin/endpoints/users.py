@@ -1,14 +1,18 @@
 """Admin user management endpoints."""
 
+import logging
 from typing import List
 from uuid import UUID
 
+import boto3
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_audit_log_service, get_current_superadmin
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.audit_log import AuditAction
 from app.models.model import Model
@@ -16,6 +20,8 @@ from app.models.team import Team
 from app.models.token import APIToken
 from app.models.user import User, UserRole
 from app.services.audit_log import AuditLogService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -50,6 +56,8 @@ class AdminUserResponse(BaseModel):
 
 class InviteAdminRequest(BaseModel):
     email: EmailStr
+    username: str
+    temp_password: str
     role: str = "admin"
     permissions: dict | None = None
 
@@ -111,8 +119,8 @@ async def invite_admin(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Invite a new admin by email (pre-registration).
-    The invited user will be activated when they first login via OAuth.
+    Invite a new admin by email.
+    Creates a Cognito user with temporary password and a local user record.
     """
     if request.role not in VALID_ROLES:
         raise HTTPException(
@@ -146,6 +154,48 @@ async def invite_admin(
             email_verified=False,
         )
         db.add(user)
+
+    # Create Cognito user with temporary password
+    settings = get_settings()
+    if settings.COGNITO_USER_POOL_ID:
+        try:
+            cognito_client = boto3.client(
+                "cognito-idp",
+                region_name=settings.COGNITO_REGION or settings.AWS_REGION,
+            )
+            cognito_client.admin_create_user(
+                UserPoolId=settings.COGNITO_USER_POOL_ID,
+                Username=request.username,
+                TemporaryPassword=request.temp_password,
+                UserAttributes=[
+                    {"Name": "email", "Value": request.email},
+                    {"Name": "email_verified", "Value": "true"},
+                ],
+                MessageAction="SUPPRESS",
+            )
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            if error_code == "UsernameExistsException":
+                # User already exists in Cognito, just reset password
+                try:
+                    cognito_client.admin_set_user_password(
+                        UserPoolId=settings.COGNITO_USER_POOL_ID,
+                        Username=request.username,
+                        Password=request.temp_password,
+                        Permanent=False,
+                    )
+                except ClientError as reset_err:
+                    logger.error(f"Failed to reset Cognito password: {reset_err}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to reset Cognito password: {reset_err.response['Error']['Message']}",
+                    )
+            else:
+                logger.error(f"Failed to create Cognito user: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to create Cognito user: {e.response['Error']['Message']}",
+                )
 
     await db.commit()
     await db.refresh(user)
