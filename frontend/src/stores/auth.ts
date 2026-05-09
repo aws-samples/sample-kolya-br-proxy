@@ -10,7 +10,7 @@ export interface User {
   is_active: boolean;
   is_admin: boolean;
   role?: 'super_admin' | 'admin';
-  permissions?: Record<string, boolean> | null;
+  permissions?: Record<string, boolean | string | string[]> | null;
   email_verified: boolean;
   current_balance: string;
 }
