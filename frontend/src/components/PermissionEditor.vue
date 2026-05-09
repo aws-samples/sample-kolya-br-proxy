@@ -9,6 +9,7 @@
         multiple
         outlined
         dense
+        dark
         emit-value
         map-options
         option-value="value"
@@ -28,8 +29,8 @@
       </q-select>
     </div>
     <q-separator class="q-my-sm" />
-    <q-checkbox :model-value="!!modelValue.view_usage" @update:model-value="(v: boolean) => update('view_usage', v)" label="View Usage" />
-    <q-checkbox :model-value="!!modelValue.view_monitor" @update:model-value="(v: boolean) => update('view_monitor', v)" label="View Monitor" />
+    <q-checkbox dark :model-value="!!modelValue.view_usage" @update:model-value="(v: boolean) => update('view_usage', v)" label="View Usage" />
+    <q-checkbox dark :model-value="!!modelValue.view_monitor" @update:model-value="(v: boolean) => update('view_monitor', v)" label="View Monitor" />
   </div>
 </template>
 

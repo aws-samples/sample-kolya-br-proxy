@@ -58,10 +58,10 @@
           <div class="text-h6">Invite Admin</div>
         </q-card-section>
         <q-card-section>
-          <q-input v-model="inviteForm.email" label="Email" type="email" outlined class="q-mb-md" />
-          <q-input v-model="inviteForm.username" label="Username" outlined class="q-mb-md" hint="Cognito login username" />
-          <q-input v-model="inviteForm.temp_password" label="Temporary Password" type="password" outlined class="q-mb-md" hint="User must change on first login" />
-          <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
+          <q-input v-model="inviteForm.email" label="Email" type="email" outlined dark class="q-mb-md" />
+          <q-input v-model="inviteForm.username" label="Username" outlined dark class="q-mb-md" hint="Cognito login username" />
+          <q-input v-model="inviteForm.temp_password" label="Temporary Password" type="password" outlined dark class="q-mb-md" hint="User must change on first login" />
+          <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined dark class="q-mb-md" />
           <div v-if="inviteForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
             <PermissionEditor v-model="inviteForm.permissions" :resources="resources" />
@@ -101,7 +101,7 @@
           <div class="text-h6">Edit {{ editForm.email }}</div>
         </q-card-section>
         <q-card-section>
-          <q-select v-model="editForm.role" :options="roleOptions" label="Role" outlined class="q-mb-md" />
+          <q-select v-model="editForm.role" :options="roleOptions" label="Role" outlined dark class="q-mb-md" />
           <div v-if="editForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
             <PermissionEditor v-model="editForm.permissions" :resources="resources" />
