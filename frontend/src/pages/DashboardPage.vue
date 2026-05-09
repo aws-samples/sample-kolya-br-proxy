@@ -145,6 +145,7 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { useTokensStore } from 'src/stores/tokens';
 import { useDashboardStore } from 'src/stores/dashboard';
+import { useAuthStore } from 'src/stores/auth';
 import { api } from 'src/boot/axios';
 
 const tokensStore = useTokensStore();
@@ -405,11 +406,16 @@ async function exportCsv() {
 }
 
 onMounted(async () => {
-  await Promise.all([
-    tokensStore.fetchTokens(),
-    fetchUsageByToken(),
-    fetchUsageByModel(),
-  ]);
+  const authStore = useAuthStore();
+  const tasks: Promise<unknown>[] = [];
+  if (authStore.hasPermission('manage_api_keys')) {
+    tasks.push(tokensStore.fetchTokens());
+  }
+  if (authStore.hasPermission('view_usage')) {
+    tasks.push(fetchUsageByToken());
+    tasks.push(fetchUsageByModel());
+  }
+  await Promise.all(tasks);
 });
 </script>
 
