@@ -16,7 +16,7 @@
             <q-avatar size="28px" class="q-mr-sm">
               <img src="~assets/kbp.png" alt="KBP" />
             </q-avatar>
-            <span class="title-text">BR Enterprise Proxy</span>
+            <span class="title-text">Kolya BR Proxy</span>
           </div>
         </q-toolbar-title>
 

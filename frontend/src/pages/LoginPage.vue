@@ -5,7 +5,7 @@
         <q-card class="login-card q-pa-md glass-card">
           <q-card-section class="text-center">
             <div class="text-h4 text-weight-bold text-primary q-mb-md">
-              BR Enterprise Proxy
+              Kolya BR Proxy
             </div>
             <div class="text-subtitle1 text-grey-7">Admin Panel Login</div>
           </q-card-section>
