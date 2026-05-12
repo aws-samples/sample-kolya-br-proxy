@@ -262,9 +262,9 @@ Config(
 #### 配置参数
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120      # 保持连接 120 秒
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700     # 保持连接 ~61 分钟（超过 ALB 空闲超时）
 UVICORN_LIMIT_CONCURRENCY = 100       # 每个 worker 最多 100 个并发连接
-UVICORN_LIMIT_MAX_REQUESTS = 10000    # 处理 10000 个请求后重启 worker
+UVICORN_LIMIT_MAX_REQUESTS = 0        # 禁用（不自动重启 worker）
 ```
 
 #### 启动配置
@@ -274,9 +274,9 @@ uvicorn.run(
     "main:app",
     host="0.0.0.0",
     port=settings.PORT,
-    timeout_keep_alive=120,
+    timeout_keep_alive=3700,
     limit_concurrency=100,
-    limit_max_requests=10000,
+    limit_max_requests=None,
 )
 ```
 
@@ -284,9 +284,9 @@ uvicorn.run(
 
 | 参数 | 作用 | 为什么需要 |
 |------|------|-----------|
-| `timeout_keep_alive=120` | 保持连接 2 分钟 | 支持 AI 流式响应（可能很长） |
+| `timeout_keep_alive=3700` | 保持连接 ~61 分钟 | 必须超过 ALB 空闲超时，防止连接提前关闭 |
 | `limit_concurrency=100` | 限制并发连接数 | 防止单个 worker 过载 |
-| `limit_max_requests=10000` | 定期重启 worker | 防止内存泄漏累积 |
+| `limit_max_requests=None` | 禁用（不自动重启） | Worker 无限期运行 |
 
 ---
 
@@ -372,15 +372,13 @@ async with async_session_maker() as session:
 
 #### 实现原理
 
-使用 PBKDF2-HMAC-SHA256 哈希（600,000 次迭代）实现 O(1) 数据库索引查找，替代 O(n) 线性扫描。PBKDF2 有意设计为计算缓慢，使得对泄露哈希的暴力破解不可行，代价是每次哈希操作需要几百毫秒。由于每个 API 请求只计算一次哈希，这一权衡倾向于安全性而非原始速度，同时保留了 O(1) 查找。
+使用 `hashlib.sha256` 哈希实现 O(1) 数据库索引查找，替代 O(n) 线性扫描。SHA256 极快（亚毫秒级），因此 token 验证延迟主要由 Redis 缓存查找决定，而非哈希计算本身。
 
 ```python
 # 生成 token 哈希（security.py）
 def hash_token(token: str) -> str:
-    """使用 PBKDF2-HMAC-SHA256 对 token 进行哈希（600,000 次迭代）"""
-    return hashlib.pbkdf2_hmac(
-        "sha256", token.encode(), salt, 600_000
-    ).hex()
+    """使用 SHA256 对 token 进行哈希"""
+    return hashlib.sha256(token.encode()).hexdigest()
 ```
 
 #### 工作流程
@@ -389,10 +387,10 @@ def hash_token(token: str) -> str:
 
 ```python
 # 用户创建 API Token
-plain_token = generate_api_token()  # 生成: kbr_abc123def456...
+plain_token = generate_api_token()  # 生成: sk-ant-api03_abc123def456...
 
 # 计算哈希值存入数据库
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256 哈希
+token_hash = hash_token(plain_token)  # SHA256 哈希
 
 # 数据库存储
 token = APIToken(
@@ -405,7 +403,7 @@ token = APIToken(
 
 ```python
 # 客户端发送请求
-Authorization: Bearer kbr_abc123def456...
+Authorization: Bearer sk-ant-api03_abc123def456...
 
 # 后端验证（优化后）
 token_hash = hash_token(plain_token)  # 计算哈希
@@ -424,7 +422,7 @@ result = await db.execute(
 在哈希查表之上，Redis 缓存层（`CachedTokenService`）可以完全跳过 DB 查询：
 
 ```
-请求 → PBKDF2 哈希 → Redis GET token:{hash}
+请求 → SHA256 哈希 → Redis GET token:{hash}
                         ├─ 缓存命中 → 返回缓存的 APIToken（~1ms）
                         └─ 缓存未命中 → DB SELECT → Redis SET（TTL 300s）→ 返回
 ```
@@ -441,9 +439,9 @@ result = await db.execute(
 | 方法 | 查询方式 | 时间复杂度 | 实际耗时 | 说明 |
 |------|---------|-----------|---------|------|
 | **优化前** | 遍历所有 token 逐个解密比对 | O(n) | ~10 秒 | 20,000 个 token |
-| **优化后（DB）** | PBKDF2 哈希 + 索引查询 | O(1) | ~300 毫秒 | PBKDF2 ~300ms + DB 索引 ~0.5ms |
-| **优化后（Redis 命中）** | PBKDF2 哈希 + Redis GET | O(1) | ~301 毫秒 | PBKDF2 ~300ms + Redis ~1ms，不占用 DB 连接 |
-| **性能提升** | - | - | **约 33 倍** | 安全性与性能的权衡 |
+| **优化后（DB）** | SHA256 哈希 + 索引查询 | O(1) | ~1-2 毫秒 | SHA256 <0.01ms + DB 索引 ~0.5ms + 网络 ~1ms |
+| **优化后（Redis 命中）** | SHA256 哈希 + Redis GET | O(1) | ~1 毫秒 | SHA256 <0.01ms + Redis ~1ms，不占用 DB 连接 |
+| **性能提升** | - | - | **约 5000-10000 倍** | Redis 缓存查找主导验证耗时 |
 
 #### 性能测试结果
 
@@ -456,10 +454,10 @@ for token in all_tokens:  # 20,000 次循环
         return token
 # 耗时：~10 秒（每次解密 0.5ms × 20,000）
 
-# 优化后（PBKDF2 哈希 + 索引）
-token_hash = hash_token(plain_token)  # ~300ms（PBKDF2，600k 次迭代）
+# 优化后（SHA256 哈希 + 索引）
+token_hash = hash_token(plain_token)  # <0.01ms（SHA256，瞬时完成）
 token = db.query(APIToken).filter_by(token_hash=token_hash).first()  # 0.5ms
-# 耗时：~300 毫秒（PBKDF2 为主要耗时；DB 查找可忽略不计）
+# 耗时：~1 毫秒（Redis 缓存查找为主要耗时）
 ```
 
 #### 数据库索引
@@ -486,12 +484,12 @@ class APIToken(Base):
 # 假设数据库被攻击者获取
 # 攻击者看到的数据：
 {
-    "token_hash": "<pbkdf2-hash>",         # PBKDF2-HMAC-SHA256 哈希
+    "token_hash": "<sha256-hash>",         # SHA256 哈希
     "encrypted_token": "<fernet-token>"  # Fernet 加密
 }
 
 # 攻击者无法：
-# ❌ 从 token_hash 反推原始 token（PBKDF2 单向哈希 + 计算代价高昂）
+# ❌ 从 token_hash 反推原始 token（SHA256 单向哈希）
 # ❌ 解密 encrypted_token（需要 KBR_JWT_SECRET_KEY）
 # ❌ 使用 token_hash 调用 API（API 需要原始 token）
 ```
@@ -499,8 +497,8 @@ class APIToken(Base):
 **2. 无需密钥管理**
 
 ```python
-# 哈希查找：使用固定 salt（非逐用户密钥）
-token_hash = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 600_000).hex()
+# 哈希查找：简单 SHA256（不需要密钥）
+token_hash = hashlib.sha256(token.encode()).hexdigest()
 
 # 对比：加密存储需要密钥
 _fernet = Fernet(_get_encryption_key())  # 需要 KBR_JWT_SECRET_KEY
@@ -519,9 +517,9 @@ encrypted = _fernet.encrypt(token.encode())
 
 ```python
 # 1. 哈希（用于查找）
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256，600k 次迭代
+token_hash = hash_token(plain_token)  # SHA256
 # 用途：数据库索引查询，O(1) 性能
-# 安全：单向哈希 + 计算代价高昂，难以暴力破解
+# 安全：单向哈希，token 前缀提供足够的熵
 
 # 2. 加密（用于存储）
 encrypted_token = encrypt_token(plain_token)  # Fernet，需要密钥
@@ -535,7 +533,7 @@ encrypted_token = encrypt_token(plain_token)  # Fernet，需要密钥
 
 ```python
 # 每个 API 请求都需要验证 token
-# 使用 PBKDF2 哈希查找，约 300ms 完成
+# 使用 SHA256 哈希查找，亚毫秒完成（Redis 缓存查找主导耗时）
 
 @router.post("/v1/chat/completions")
 async def chat(token: str = Depends(get_api_token)):
@@ -576,7 +574,7 @@ start = time.time()
 token = await token_service.validate_token(plain_token)
 duration = time.time() - start
 
-if duration > 1.0:  # 超过 1 秒（PBKDF2 正常约 300ms）
+if duration > 1.0:  # 超过 1 秒（SHA256 瞬时完成，Redis 查找正常约 1ms）
     logger.warning("Slow token validation", extra={
         "duration": duration,
         "token_id": token.id if token else None
@@ -670,7 +668,7 @@ alb.ingress.kubernetes.io/target-group-attributes: >
 
 #### 问题
 
-当流成功连接到 Bedrock 但始终没有产出实际内容时（例如区域过载、模型在排队），连接会一直占用信号量槽位和客户端连接。Bedrock 的 `read_timeout`（300 秒）只在完全没有字节到达时触发 -- 元数据事件（如 `messageStart`、`contentBlockStart`）会重置 socket 计时器，但并没有给用户返回实际文本。
+当流成功连接到 Bedrock 但始终没有产出实际内容时（例如区域过载、模型在排队），连接会一直占用信号量槽位和客户端连接。Bedrock 的 `read_timeout`（3600 秒）只在完全没有字节到达时触发 -- 元数据事件（如 `messageStart`、`contentBlockStart`）会重置 socket 计时器，但并没有给用户返回实际文本。
 
 #### 解决方案
 
@@ -695,11 +693,11 @@ STREAM_MODEL_FALLBACK_CHAIN = ""     # 逗号分隔的备用模型，例如 "us.
 #### 在超时层级中的位置
 
 ```
-Bedrock read_timeout (300s)          -- 每次 chunk 的 socket 超时（完全无字节）
+Bedrock read_timeout (3600s)         -- 每次 chunk 的 socket 超时（完全无字节）
   ↕
 STREAM_FIRST_CONTENT_TIMEOUT (600s)  -- 流已连接但无实际内容
   ↕
-ALB idle timeout (600s)              -- 外层兜底（心跳保持连接活跃）
+ALB idle timeout (3600s)             -- 外层兜底（心跳保持连接活跃）
 ```
 
 流式故障转移超时与 `read_timeout` **相互独立**。流可以接收元数据事件（保持 socket 活跃），但如果在配置的窗口内没有实际内容到达，仍然会触发故障转移。
@@ -750,7 +748,7 @@ query = query.where(UsageRecord.created_at >= cutoff_date)
 │  AWS ALB (Application Load Balancer)                        │
 │  - 负载均衡到多个 Pod                                         │
 │  - 健康检查                                                   │
-│  - 空闲超时：10 分钟（API）/ 5 分钟（前端）                    │
+│  - 空闲超时：60 分钟（API）/ 5 分钟（前端）                    │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -762,8 +760,8 @@ query = query.where(UsageRecord.created_at >= cutoff_date)
 ┌─────────────────────────────────────────────────────────────┐
 │  Uvicorn Worker (每个 Pod)                                   │
 │  - limit_concurrency: 100 (最多 100 并发连接)                │
-│  - timeout_keep_alive: 120s (支持长连接)                     │
-│  - limit_max_requests: 10000 (定期重启防内存泄漏)             │
+│  - timeout_keep_alive: 3700s (超过 ALB 空闲超时)             │
+│  - limit_max_requests: 禁用 (不自动重启)                      │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -818,9 +816,9 @@ query = query.where(UsageRecord.created_at >= cutoff_date)
 | 层级 | 配置项 | 超时时间 | 说明 |
 |------|--------|---------|------|
 | **Bedrock 连接** | `connect_timeout` | 10 秒 | 建立连接的超时 |
-| **Bedrock 读取** | `read_timeout` | **300 秒 (5 分钟)** | 每次 chunk 读取超时（覆盖 thinking 模型暂停和长 prefill） |
-| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 120 秒 | 空闲连接超时（不影响请求） |
-| **ALB 空闲超时（API）** | `idle_timeout` | **600 秒 (10 分钟)** | 外层兜底；必须大于 read_timeout，确保 Bedrock 错误先返回 |
+| **Bedrock 读取** | `read_timeout` | **3600 秒 (1 小时)** | 每次 chunk 读取超时（覆盖 thinking 模型暂停和长 prefill） |
+| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 3700 秒 | 空闲连接超时（不影响请求） |
+| **ALB 空闲超时（API）** | `idle_timeout` | **3600 秒 (1 小时)** | 外层兜底；必须大于 read_timeout，确保 Bedrock 错误先返回 |
 | **ALB 空闲超时（前端）** | `idle_timeout` | 300 秒 (5 分钟) | 前端静态资源 |
 | **流式故障转移** | `STREAM_FIRST_CONTENT_TIMEOUT` | **600 秒 (10 分钟)** | 流连接后，若超时内无实际内容则触发故障转移 |
 | **流式心跳** | `STREAM_HEARTBEAT_INTERVAL` | 15 秒 | 保持连接活跃 |
@@ -837,7 +835,7 @@ Config(
     region_name=settings.AWS_REGION,
     retries={"max_attempts": 3, "mode": "adaptive"},
     connect_timeout=10,    # 连接超时：10 秒
-    read_timeout=300,      # 读取超时：5 分钟，覆盖 thinking 模型暂停
+    read_timeout=3600,     # 读取超时：1 小时，覆盖 thinking 模型暂停
     max_pool_connections=settings.BEDROCK_MAX_CONCURRENT_REQUESTS,
     tcp_keepalive=True,
 )
@@ -846,8 +844,8 @@ Config(
 #### 说明
 
 - **连接超时（10 秒）**：建立 TCP 连接的最大时间
-- **读取超时（300 秒）**：每次 socket read 的最大等待时间，作用于首字节和后续每个 streaming chunk。Thinking 模型（如 Claude extended thinking）在推理阶段可能暂停数分钟才产出输出
-- ✅ 300 秒覆盖 thinking 模型暂停、长 prefill 延迟和 Bedrock 排队等待
+- **读取超时（3600 秒）**：每次 socket read 的最大等待时间，作用于首字节和后续每个 streaming chunk。Thinking 模型（如 Claude extended thinking）在推理阶段可能暂停数分钟才产出输出
+- ✅ 3600 秒覆盖 thinking 模型暂停、长 prefill 延迟和 Bedrock 排队等待
 
 ---
 
@@ -858,7 +856,7 @@ Config(
 - `backend/app/core/config.py`
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 秒 = 2 分钟
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700  # 3700 秒 = ~61 分钟
 ```
 
 #### 重要说明
@@ -866,7 +864,7 @@ UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 秒 = 2 分钟
 ⚠️ **这不是请求超时！**
 
 `timeout_keep_alive` 是**空闲连接**的保持时间：
-- 如果连接在 120 秒内没有新请求，就关闭连接
+- 如果连接在 3700 秒内没有新请求，就关闭连接
 - **不影响正在进行的请求**
 - 请求可以运行任意长时间（受其他超时限制）
 
@@ -882,7 +880,7 @@ POST /v1/chat/completions
 # ↓
 # 响应完成
 
-# 连接空闲 120 秒后关闭（如果没有新请求）
+# 连接空闲 3700 秒后关闭（如果没有新请求）
 ```
 
 ---
@@ -897,10 +895,10 @@ POST /v1/chat/completions
 
 ```yaml
 # API 后端的 ALB 配置
-alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
+alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
 ```
 
-**600 秒 = 10 分钟**
+**3600 秒 = 1 小时**
 
 #### 前端配置
 
@@ -915,7 +913,7 @@ alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds
 
 - ALB 空闲超时：如果连接在指定时间内没有数据传输，ALB 会断开连接
 - **对于流式响应很重要！**
-- ✅ ALB 空闲超时（600 秒）> Bedrock read timeout（300 秒），确保 Bedrock 错误先返回有意义的错误信息，而不是 504
+- ✅ ALB 空闲超时（3600 秒）>= Bedrock read timeout（3600 秒），确保 Bedrock 错误先返回有意义的错误信息，而不是 504
 - 流式场景下心跳每 15 秒发送一次，无论 idle timeout 多大都不会超时
 
 #### AWS ALB 限制
@@ -973,7 +971,7 @@ async def stream_chat_completion(...):
 #### ALB 的判断逻辑
 
 - 只要有**任何数据传输**（包括心跳），就不算空闲
-- 心跳每 15 秒发送一次，远小于 ALB 的 600 秒超时
+- 心跳每 15 秒发送一次，远小于 ALB 的 3600 秒超时
 - ✅ 即使任务运行很长时间，也不会被断开
 
 ---
@@ -1032,12 +1030,12 @@ POST /v1/chat/completions
 # 假设一个任务需要 3 分钟，且中间没有输出
 # 0s      - 请求到达
 # 0-180s  - Bedrock 处理中（无数据传输）
-# 300s    - Bedrock read_timeout 触发，后端返回有意义的错误 ❌
+# 3600s   - Bedrock read_timeout 触发，后端返回有意义的错误 ❌
 # （如果 read_timeout 未触发）
-# 600s    - ALB 空闲超时，断开连接作为最终兜底 ❌
+# 3600s   - ALB 空闲超时，断开连接作为最终兜底 ❌
 ```
 
-**结论：** ❌ 非流式任务超过 300 秒会被 read_timeout 终止。长任务请使用 streaming。
+**结论：** ❌ 非流式任务超过 3600 秒会被 read_timeout 终止。长任务请使用 streaming。
 
 ---
 
@@ -1046,15 +1044,15 @@ POST /v1/chat/completions
 ```
 客户端
   ↓
-AWS ALB (10 分钟空闲超时) ✅ 外层兜底，大于 read_timeout
+AWS ALB (60 分钟空闲超时) ✅ 外层兜底，匹配 read_timeout
   ↓
-Uvicorn (120 秒 keep-alive，不影响请求)
+Uvicorn (3700 秒 keep-alive，不影响请求)
   ↓
 FastAPI Application (无超时限制)
   ↓
 流式故障转移 (600 秒首内容超时) ✅ L1: 同模型不同区域, L2: 备用模型
   ↓
-Bedrock Client (300 秒读取超时) ✅ 覆盖 thinking 模型暂停
+Bedrock Client (3600 秒读取超时) ✅ 覆盖 thinking 模型暂停
   ↓
 AWS Bedrock API
 ```
@@ -1077,8 +1075,8 @@ async def create_chat_completion(...):
 
     **超时链：**
     - Bedrock connect: 10 秒（TCP 连接）
-    - Bedrock read: 300 秒（每次 chunk 读取超时，覆盖 thinking 暂停）
-    - ALB idle: 600 秒（外层兜底；流式心跳保持连接活跃）
+    - Bedrock read: 3600 秒（每次 chunk 读取超时，覆盖 thinking 暂停）
+    - ALB idle: 3600 秒（外层兜底；流式心跳保持连接活跃）
 
     **建议：** 长任务请使用 streaming。
     """
@@ -1188,9 +1186,9 @@ KBR_BEDROCK_EXPECTED_PODS=3
 KBR_BEDROCK_RATE_BURST=10
 
 # Uvicorn 服务器
-KBR_UVICORN_TIMEOUT_KEEP_ALIVE=120
+KBR_UVICORN_TIMEOUT_KEEP_ALIVE=3700
 KBR_UVICORN_LIMIT_CONCURRENCY=100
-KBR_UVICORN_LIMIT_MAX_REQUESTS=10000
+KBR_UVICORN_LIMIT_MAX_REQUESTS=0
 
 # 流式响应心跳
 KBR_STREAM_HEARTBEAT_INTERVAL=15
@@ -1252,8 +1250,8 @@ resources:
    - Pod 数量变化
 
 4. **请求超时**
-   - 超过 300 秒的请求数（read timeout）
-   - ALB 超时错误数（600 秒兜底）
+   - 超过 3600 秒的请求数（read timeout）
+   - ALB 超时错误数（3600 秒兜底）
    - 平均响应时间
 
 ---
@@ -1264,7 +1262,7 @@ resources:
 
 #### 1. 504 Gateway Timeout
 
-**原因：** Bedrock 读取超时（300 秒）或 ALB 空闲超时（600 秒）
+**原因：** Bedrock 读取超时（3600 秒）或 ALB 空闲超时（3600 秒）
 
 **解决方案：**
 - 使用流式响应（推荐）

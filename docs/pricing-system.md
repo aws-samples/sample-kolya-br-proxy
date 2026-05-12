@@ -250,16 +250,19 @@ When prompt caching is enabled (`KBR_PROMPT_CACHE_AUTO_INJECT=true`), Bedrock re
 | Token Type | Field | Pricing |
 |------------|-------|---------|
 | Regular input | `input_tokens` | 1.0x base input price |
-| Cache write | `cache_creation_input_tokens` | 1.25x base input price (25% premium) |
+| Cache write (5m TTL) | `cache_creation_input_tokens` | 1.25x base input price (25% premium) |
+| Cache write (1h TTL, default) | `cache_creation_input_tokens` | 2.0x base input price (100% premium) |
 | Cache read | `cache_read_input_tokens` | 0.1x base input price (90% discount) |
+
+The cache write multiplier depends on the configured TTL (`KBR_PROMPT_CACHE_TTL`, default: `"1h"`). The 1h TTL reduces cache misses in long-running sessions.
 
 **Full Formula (with cache):**
 
 ```python
-total_cost = (input_tokens × input_price)                          # Regular input
-           + (completion_tokens × output_price)                    # Output
-           + (cache_creation_input_tokens × input_price × 1.25)   # Cache write premium
-           + (cache_read_input_tokens × input_price × 0.1)        # Cache read discount
+total_cost = (input_tokens × input_price)                                          # Regular input
+           + (completion_tokens × output_price)                                    # Output
+           + (cache_creation_input_tokens × input_price × WRITE_MULTIPLIER[ttl])   # Cache write (1.25x for 5m, 2.0x for 1h)
+           + (cache_read_input_tokens × input_price × 0.1)                         # Cache read discount
 ```
 
 **Example** — Claude Sonnet (input price = $3.00 / 1M tokens):

@@ -1,4 +1,4 @@
-# Kolya BR Proxy — Deployment SOP
+# BR Enterprise Proxy — Deployment SOP
 
 This document covers the full deployment and teardown lifecycle on AWS EKS.
 
@@ -374,8 +374,8 @@ When no token context is available the field shows `[-]`.
 Example output:
 
 ```
-2026-04-11 08:23:01,234 - kolya_br_proxy.router - INFO - [my-team-key] streaming request to us-west-2
-2026-04-11 08:23:05,678 - kolya_br_proxy.router - WARNING - [-] health check from unknown caller
+2026-04-11 08:23:01,234 - app.router - INFO - [my-team-key] streaming request to us-west-2
+2026-04-11 08:23:05,678 - app.router - WARNING - [-] health check from unknown caller
 ```
 
 ---

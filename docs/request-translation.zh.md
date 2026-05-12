@@ -1,6 +1,6 @@
 # 请求转换管线
 
-Kolya BR Proxy 如何将请求转换为上游 LLM API 调用，以及如何将响应转换回来。代理支持两种客户端 API 格式：
+BR Enterprise Proxy 如何将请求转换为上游 LLM API 调用，以及如何将响应转换回来。代理支持两种客户端 API 格式：
 
 - **OpenAI 兼容**（`POST /v1/chat/completions`）-- 路由到 AWS Bedrock（非 Gemini）或 Google Gemini（模型以 `gemini-` 开头）
 - **Anthropic Messages API**（`POST /v1/messages`）-- 近乎直通 Bedrock InvokeModel

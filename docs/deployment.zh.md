@@ -1,4 +1,4 @@
-# Kolya BR Proxy — 部署 SOP
+# BR Enterprise Proxy — 部署 SOP
 
 本文档涵盖 AWS EKS 上的完整部署和销毁流程。
 
@@ -374,8 +374,8 @@ Terraform workspace（`prod` vs 其他）决定资源规格：
 输出示例：
 
 ```
-2026-04-11 08:23:01,234 - kolya_br_proxy.router - INFO - [my-team-key] streaming request to us-west-2
-2026-04-11 08:23:05,678 - kolya_br_proxy.router - WARNING - [-] health check from unknown caller
+2026-04-11 08:23:01,234 - app.router - INFO - [my-team-key] streaming request to us-west-2
+2026-04-11 08:23:05,678 - app.router - WARNING - [-] health check from unknown caller
 ```
 
 ---

@@ -1,6 +1,6 @@
 # Request Translation Pipeline
 
-How Kolya BR Proxy translates requests into upstream LLM API calls, and converts responses back. The proxy supports two client-facing API formats:
+How BR Enterprise Proxy translates requests into upstream LLM API calls, and converts responses back. The proxy supports two client-facing API formats:
 
 - **OpenAI-compatible** (`POST /v1/chat/completions`) -- routes to AWS Bedrock (non-Gemini) or Google Gemini (model starts with `gemini-`)
 - **Anthropic Messages API** (`POST /v1/messages`) -- near-passthrough to Bedrock InvokeModel

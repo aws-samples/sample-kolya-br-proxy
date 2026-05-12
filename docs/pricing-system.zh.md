@@ -249,16 +249,19 @@ flowchart TD
 | Token 类型 | 字段 | 计费方式 |
 |-----------|------|---------|
 | 常规 input | `input_tokens` | 1.0x 基础 input 价格 |
-| Cache 写入 | `cache_creation_input_tokens` | 1.25x 基础 input 价格（25% 溢价） |
+| Cache 写入（5m TTL） | `cache_creation_input_tokens` | 1.25x 基础 input 价格（25% 溢价） |
+| Cache 写入（1h TTL，默认） | `cache_creation_input_tokens` | 2.0x 基础 input 价格（100% 溢价） |
 | Cache 读取 | `cache_read_input_tokens` | 0.1x 基础 input 价格（90% 折扣） |
+
+Cache 写入倍率取决于配置的 TTL（`KBR_PROMPT_CACHE_TTL`，默认：`"1h"`）。1h TTL 在长时间会话中减少 cache miss。
 
 **完整公式（含 cache）：**
 
 ```python
-总费用 = (input_tokens × input_price)                          # 常规 input
-       + (completion_tokens × output_price)                    # Output
-       + (cache_creation_input_tokens × input_price × 1.25)   # Cache 写入溢价
-       + (cache_read_input_tokens × input_price × 0.1)        # Cache 读取折扣
+总费用 = (input_tokens × input_price)                                          # 常规 input
+       + (completion_tokens × output_price)                                    # Output
+       + (cache_creation_input_tokens × input_price × WRITE_MULTIPLIER[ttl])   # Cache 写入（5m: 1.25x, 1h: 2.0x）
+       + (cache_read_input_tokens × input_price × 0.1)                         # Cache 读取折扣
 ```
 
 **示例** — Claude Sonnet（input 价格 = $3.00 / 1M tokens）：

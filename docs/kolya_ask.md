@@ -103,7 +103,7 @@ When conversation history approaches the context limit, Claude Code uses Haiku t
 
 ```
 INFO: Waiting for application startup.
-10:18:22 - Starting Kolya BR Proxy...
+10:18:22 - Starting BR Enterprise Proxy...
          - Database engine initialized, tables created/verified
          - Rate limiter: Redis distributed mode, global 8.33 req/s (500 RPM),
            burst=10, local fallback 2.78 req/s (÷3 pods)
@@ -134,7 +134,7 @@ INFO: Waiting for application startup.
              Update model pricing from AWS (02:00 UTC)
              Update Gemini model pricing from Google (02:30 UTC)
          - Pricing update scheduler started
-         - Kolya BR Proxy started successfully
+         - BR Enterprise Proxy started successfully
 
 INFO: Application startup complete.
 INFO: Uvicorn running on http://0.0.0.0:8000

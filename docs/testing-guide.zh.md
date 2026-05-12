@@ -2,7 +2,7 @@
 
 ## 概述
 
-本指南介绍如何运行 Kolya BR Proxy 价格系统的单元测试。
+本指南介绍如何运行 BR Enterprise Proxy 后端的单元测试套件。
 
 ## 前置条件
 
@@ -62,7 +62,11 @@ open htmlcov/index.html
 
 ### 测试文件
 
-- `tests/test_pricing.py` - 价格系统测试
+- `tests/test_pricing.py` - 价格计算与模型定价测试
+- `tests/test_json_formatter.py` - JSON 响应格式化测试
+- `tests/test_metrics.py` - Prometheus 指标端点测试
+- `tests/test_prompt_cache_injection.py` - Prompt Cache 自动注入逻辑测试
+- `tests/test_stream_failover.py` - 两级流式 failover 机制测试
 
 ### 测试类
 

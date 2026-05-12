@@ -1,6 +1,6 @@
 # 架构文档
 
-Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 和 Anthropic Messages API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）以及通过原生 generateContent API 访问 Google Gemini 模型的 AI 网关。
+BR Enterprise Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 和 Anthropic Messages API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）以及通过原生 generateContent API 访问 Google Gemini 模型的 AI 网关。
 
 ---
 

@@ -1,6 +1,6 @@
 # 提示缓存（Prompt Caching）
 
-Kolya BR Proxy 支持对 AWS Bedrock 上的 Anthropic 模型自动注入提示缓存断点。该功能通过缓存稳定的前缀（系统提示词、工具定义、对话历史）来降低成本和延迟。
+BR Enterprise Proxy 支持对 AWS Bedrock 上的 Anthropic 模型自动注入提示缓存断点。该功能通过缓存稳定的前缀（系统提示词、工具定义、对话历史）来降低成本和延迟。
 
 ## 工作原理
 

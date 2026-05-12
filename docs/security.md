@@ -1,12 +1,12 @@
 # Security Design: WAF, CORS, CSRF & Token Security
 
-This document covers the security protection design in Kolya BR Proxy, including AWS WAF (rate limiting and managed rule sets at the ALB layer), Cross-Origin Resource Sharing (CORS), Cross-Site Request Forgery (CSRF) protection, API token hashing, refresh token hardening, and JWT library choices — how these attacks work, why an API gateway must defend against them, and the specific implementation in this project.
+This document covers the security protection design in BR Enterprise Proxy, including AWS WAF (rate limiting and managed rule sets at the ALB layer), Cross-Origin Resource Sharing (CORS), Cross-Site Request Forgery (CSRF) protection, API token hashing, refresh token hardening, and JWT library choices — how these attacks work, why an API gateway must defend against them, and the specific implementation in this project.
 
 ---
 
 ## Why Does an API Gateway Need Security Protection?
 
-Kolya BR Proxy serves two types of clients:
+BR Enterprise Proxy serves two types of clients:
 
 1. **API clients** (Cline, Cursor, OpenAI SDK) — Call `/v1/*` endpoints with Bearer Tokens
 2. **Browser clients** (Vue admin dashboard) — Call `/admin/*` endpoints with JWT (Bearer Token)
@@ -51,7 +51,7 @@ The correct approach is to **only allow your own frontend domain** and reject al
 ### Attack Scenario
 
 ```
-1. Admin logs into the Kolya BR Proxy dashboard (browser holds JWT)
+1. Admin logs into the BR Enterprise Proxy dashboard (browser holds JWT)
 2. Admin opens attacker's malicious site evil.com in a new tab
 3. evil.com's JavaScript sends a GET request to https://api.kbp.kolya.fun/admin/tokens
 4. If CORS is configured as *, the browser allows evil.com to read the response
@@ -122,7 +122,7 @@ For this project's JSON API, the CORS preflight mechanism provides some protecti
 This project stores refresh tokens in HttpOnly cookies (`kbr_refresh_token`, `Path=/admin/auth`), which means the browser automatically attaches them to matching requests. This makes CSRF protection directly relevant:
 
 ```
-1. Admin is logged into the Kolya BR Proxy dashboard (browser holds HttpOnly refresh token cookie)
+1. Admin is logged into the BR Enterprise Proxy dashboard (browser holds HttpOnly refresh token cookie)
 2. Admin opens a malicious page evil.com in another tab
 3. evil.com submits a hidden form POST to https://api.kbp.kolya.fun/admin/auth/refresh
    (Content-Type: application/x-www-form-urlencoded, bypasses CORS preflight)
@@ -593,7 +593,7 @@ deploy-all.sh
 
 ### Design
 
-API tokens are hashed before storage using **PBKDF2-HMAC-SHA256** with **600,000 iterations**, keyed with `JWT_SECRET_KEY`. This approach evolved through several iterations (SHA256 → HMAC-SHA256 → BLAKE2b → SHA3 → PBKDF2) to balance security and performance.
+API tokens are hashed before storage using **plain SHA256** (`hashlib.sha256(token.encode()).hexdigest()`). This provides a fast, deterministic hash for indexed database lookups.
 
 The hashing scheme serves two purposes:
 
@@ -606,12 +606,12 @@ Additionally, tokens are **encrypted with Fernet** (AES-128-CBC) using a key der
 
 | Field | Algorithm | Purpose |
 |-------|-----------|---------|
-| `token_hash` | PBKDF2-HMAC-SHA256 (600k iterations, keyed) | Authentication lookup (indexed) |
+| `token_hash` | SHA256 (plain, unkeyed) | Authentication lookup (indexed) |
 | `encrypted_token` | Fernet (AES-128-CBC) | Admin retrieval of original token |
 
-### Why PBKDF2 Over Plain SHA256?
+### Security Properties
 
-Plain SHA256 is fast — an attacker with a leaked database can brute-force token hashes at billions of attempts per second. PBKDF2 with 600,000 iterations makes each attempt computationally expensive, increasing the cost of offline attacks by orders of magnitude. The `JWT_SECRET_KEY` as salt adds a server-side secret that an attacker must also possess to mount an offline attack.
+Since SHA256 is fast, brute-force resistance relies on **token entropy** rather than computational hardness. API tokens are generated with `secrets.token_urlsafe(32)` (256 bits of entropy), making exhaustive search infeasible regardless of hash speed. The `token_hash` field enables constant-time lookup via `secrets.compare_digest()`. If the original token value is needed (e.g., for display in the admin dashboard), `encrypted_token` (Fernet AES, keyed from `JWT_SECRET_KEY`) provides the recovery path.
 
 ### Key Files
 
@@ -619,6 +619,30 @@ Plain SHA256 is fast — an attacker with a leaked database can brute-force toke
 - `backend/app/core/redis.py` — `RedisCache` wrapper with JSON serialization and graceful degradation
 - `backend/app/services/token.py` — Token creation and validation service
 - `backend/app/services/token_cache.py` — `CachedTokenService` with Redis cache (TTL 300s) and DB fallback
+
+---
+
+## Authorization Model (RBAC)
+
+### Role-Based Access Control with Resource-Level Permissions
+
+The admin dashboard enforces RBAC with two roles. **`super_admin`** has unrestricted access to all resources and operations. **`admin`** users have scoped permissions defined by a `permissions` JSON field on the user record. Each permission key (e.g., `tokens`, `teams`) can be set to:
+
+| Permission Value | Meaning |
+|-----------------|---------|
+| `true` or `"all"` | Full access to all resources of this type |
+| `["uuid-1", "uuid-2", ...]` | Access restricted to specific resource UUIDs |
+| `false` or absent | No access |
+
+The system uses three helper functions in `backend/app/api/deps.py`:
+
+- **`require_permission(permission)`** — FastAPI dependency factory; returns 403 if the user lacks the specified permission.
+- **`get_allowed_resource_ids(user, permission)`** — Returns `None` for full access, a list of allowed UUIDs for scoped access, or an empty list for no access.
+- **`check_resource_scope(user, permission, resource_id)`** — Raises 403 if the user does not have access to a specific resource.
+
+### Teams and Budget Management
+
+Teams provide organizational grouping with monthly spending quotas and daily auto-limits. Team budget enforcement ensures that individual teams cannot exceed their allocated spending, providing cost governance across the organization.
 
 ---
 
@@ -673,7 +697,7 @@ The migration was a drop-in replacement at the API level. The project enforces a
 | `backend/app/middleware/security.py` | SecurityMiddleware (Origin/Referer/custom header validation + security response headers) |
 | `backend/main.py` | CORS middleware configuration, SecurityMiddleware registration |
 | `backend/app/core/config.py` | `ALLOWED_ORIGINS` configuration and production validation |
-| `backend/app/core/security.py` | JWT/API Token generation, PBKDF2 hashing, verification, Fernet encryption |
+| `backend/app/core/security.py` | JWT/API Token generation, SHA256 hashing, verification, Fernet encryption |
 | `backend/app/services/token.py` | API Token CRUD service (hash + encrypt on create, hash lookup on validate) |
 | `backend/app/services/token_cache.py` | Cached token validation by hash |
 | `backend/app/services/oauth.py` | OAuth State generation and validation (CSRF + PKCE) |

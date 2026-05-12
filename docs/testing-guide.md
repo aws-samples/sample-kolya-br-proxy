@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers running unit tests for the Kolya BR Proxy pricing system.
+This guide covers running the unit test suite for the BR Enterprise Proxy backend.
 
 ## Prerequisites
 
@@ -62,7 +62,11 @@ open htmlcov/index.html
 
 ### Test Files
 
-- `tests/test_pricing.py` - Pricing system tests
+- `tests/test_pricing.py` - Pricing calculation and model pricing tests
+- `tests/test_json_formatter.py` - JSON response formatting tests
+- `tests/test_metrics.py` - Prometheus metrics endpoint tests
+- `tests/test_prompt_cache_injection.py` - Prompt cache auto-injection logic tests
+- `tests/test_stream_failover.py` - Two-level stream failover mechanism tests
 
 ### Test Classes
 

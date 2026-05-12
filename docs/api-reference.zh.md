@@ -1,6 +1,6 @@
 # API 参考
 
-Kolya BR Proxy 提供四组 API：
+BR Enterprise Proxy 提供四组 API：
 
 | 分组 | 前缀 | 认证方式 | 用途 |
 |------|------|----------|------|

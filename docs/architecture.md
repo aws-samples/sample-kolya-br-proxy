@@ -1,6 +1,6 @@
 # Architecture
 
-Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway that provides both OpenAI-compatible and Anthropic Messages API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.) and Google Gemini models via the native generateContent API.
+Comprehensive architecture documentation for BR Enterprise Proxy -- an AI Gateway that provides both OpenAI-compatible and Anthropic Messages API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.) and Google Gemini models via the native generateContent API.
 
 ---
 

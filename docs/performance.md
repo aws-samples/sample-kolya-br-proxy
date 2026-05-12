@@ -262,9 +262,9 @@ If Bedrock still returns 429 (throttling), the SDK automatically retries with ex
 #### Configuration Parameters
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120      # Keep connection alive for 120 seconds
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700     # Keep connection alive for ~61 minutes (exceeds ALB idle timeout)
 UVICORN_LIMIT_CONCURRENCY = 100       # Max 100 concurrent connections per worker
-UVICORN_LIMIT_MAX_REQUESTS = 10000    # Restart worker after 10000 requests
+UVICORN_LIMIT_MAX_REQUESTS = 0        # Disabled (no automatic worker restart)
 ```
 
 #### Startup Configuration
@@ -274,9 +274,9 @@ uvicorn.run(
     "main:app",
     host="0.0.0.0",
     port=settings.PORT,
-    timeout_keep_alive=120,
+    timeout_keep_alive=3700,
     limit_concurrency=100,
-    limit_max_requests=10000,
+    limit_max_requests=None,
 )
 ```
 
@@ -284,9 +284,9 @@ uvicorn.run(
 
 | Parameter | Purpose | Why Needed |
 |-----------|---------|------------|
-| `timeout_keep_alive=120` | Keep connection for 2 minutes | Support long AI streaming responses |
+| `timeout_keep_alive=3700` | Keep connection for ~61 minutes | Must exceed ALB idle timeout to prevent premature close |
 | `limit_concurrency=100` | Limit concurrent connections | Prevent single worker overload |
-| `limit_max_requests=10000` | Periodic worker restart | Prevent memory leak accumulation |
+| `limit_max_requests=None` | Disabled (no automatic restart) | Worker runs indefinitely |
 
 ---
 
@@ -372,15 +372,13 @@ async with async_session_maker() as session:
 
 #### Implementation Principle
 
-Uses PBKDF2-HMAC-SHA256 hashing (600,000 iterations) to achieve O(1) database index lookup, replacing O(n) linear scanning. PBKDF2 is intentionally slow to compute, making brute-force attacks on leaked hashes impractical, at the cost of a few hundred milliseconds per hash operation. Since each API request only computes one hash, this tradeoff favors security over raw speed while preserving O(1) lookup.
+Uses plain `hashlib.sha256` hashing to achieve O(1) database index lookup, replacing O(n) linear scanning. SHA256 is extremely fast (sub-millisecond), so token validation latency is dominated by the Redis cache lookup rather than the hash computation itself.
 
 ```python
 # Generate token hash (security.py)
 def hash_token(token: str) -> str:
-    """Hash token using PBKDF2-HMAC-SHA256 (600,000 iterations)"""
-    return hashlib.pbkdf2_hmac(
-        "sha256", token.encode(), salt, 600_000
-    ).hex()
+    """Hash token using SHA256"""
+    return hashlib.sha256(token.encode()).hexdigest()
 ```
 
 #### Workflow
@@ -389,10 +387,10 @@ def hash_token(token: str) -> str:
 
 ```python
 # User creates API Token
-plain_token = generate_api_token()  # Generates: kbr_abc123def456...
+plain_token = generate_api_token()  # Generates: sk-ant-api03_abc123def456...
 
 # Calculate hash for database storage
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256 hash
+token_hash = hash_token(plain_token)  # SHA256 hash
 
 # Database storage
 token = APIToken(
@@ -405,7 +403,7 @@ token = APIToken(
 
 ```python
 # Client sends request
-Authorization: Bearer kbr_abc123def456...
+Authorization: Bearer sk-ant-api03_abc123def456...
 
 # Backend validation (optimized)
 token_hash = hash_token(plain_token)  # Calculate hash
@@ -424,7 +422,7 @@ result = await db.execute(
 On top of the hash-based DB lookup, a Redis cache layer (`CachedTokenService`) avoids the DB round-trip entirely for repeat requests:
 
 ```
-Request → PBKDF2 hash → Redis GET token:{hash}
+Request → SHA256 hash → Redis GET token:{hash}
                            ├─ Cache hit  → return cached APIToken  (~1ms)
                            └─ Cache miss → DB SELECT → Redis SET (TTL 300s) → return
 ```
@@ -441,9 +439,9 @@ Under high concurrency, this prevents token validation from competing with long-
 | Method | Query Type | Time Complexity | Actual Time | Notes |
 |--------|-----------|----------------|-------------|-------|
 | **Before** | Iterate all tokens, decrypt and compare | O(n) | ~10 seconds | 20,000 tokens |
-| **After (DB)** | PBKDF2 hash + index query | O(1) | ~300 milliseconds | PBKDF2 ~300ms + DB index ~0.5ms |
-| **After (Redis hit)** | PBKDF2 hash + Redis GET | O(1) | ~301 milliseconds | PBKDF2 ~300ms + Redis ~1ms, no DB connection used |
-| **Improvement** | - | - | **~33x faster** | Security-performance tradeoff |
+| **After (DB)** | SHA256 hash + index query | O(1) | ~1-2 milliseconds | SHA256 <0.01ms + DB index ~0.5ms + network ~1ms |
+| **After (Redis hit)** | SHA256 hash + Redis GET | O(1) | ~1 millisecond | SHA256 <0.01ms + Redis ~1ms, no DB connection used |
+| **Improvement** | - | - | **~5000-10000x faster** | Redis cache lookup dominates validation time |
 
 #### Performance Test Results
 
@@ -456,10 +454,10 @@ for token in all_tokens:  # 20,000 iterations
         return token
 # Time: ~10 seconds (0.5ms per decryption × 20,000)
 
-# After optimization (PBKDF2 hash + index)
-token_hash = hash_token(plain_token)  # ~300ms (PBKDF2, 600k iterations)
+# After optimization (SHA256 hash + index)
+token_hash = hash_token(plain_token)  # <0.01ms (SHA256, instant)
 token = db.query(APIToken).filter_by(token_hash=token_hash).first()  # 0.5ms
-# Time: ~300 milliseconds (PBKDF2 dominates; DB lookup negligible)
+# Time: ~1 millisecond (Redis cache lookup dominates when cached)
 ```
 
 #### Database Index
@@ -486,12 +484,12 @@ class APIToken(Base):
 # Assume database is compromised by attacker
 # Attacker sees:
 {
-    "token_hash": "<pbkdf2-hash>",         # PBKDF2-HMAC-SHA256 hash
+    "token_hash": "<sha256-hash>",         # SHA256 hash
     "encrypted_token": "<fernet-token>"  # Fernet encryption
 }
 
 # Attacker cannot:
-# ❌ Reverse token_hash to original token (PBKDF2 is one-way + computationally expensive)
+# ❌ Reverse token_hash to original token (SHA256 is one-way)
 # ❌ Decrypt encrypted_token (requires KBR_JWT_SECRET_KEY)
 # ❌ Use token_hash to call API (API requires original token)
 ```
@@ -499,8 +497,8 @@ class APIToken(Base):
 **2. No Key Management Required**
 
 ```python
-# Hash lookup: Uses a fixed salt (not a per-user secret key)
-token_hash = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 600_000).hex()
+# Hash lookup: Simple SHA256 (no key needed)
+token_hash = hashlib.sha256(token.encode()).hexdigest()
 
 # Compare: Encryption requires key
 _fernet = Fernet(_get_encryption_key())  # Requires KBR_JWT_SECRET_KEY
@@ -519,9 +517,9 @@ This project uses **hash + encryption** dual protection:
 
 ```python
 # 1. Hash (for lookup)
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256, 600k iterations
+token_hash = hash_token(plain_token)  # SHA256
 # Purpose: Database index query, O(1) performance
-# Security: One-way hash + computationally expensive to brute-force
+# Security: One-way hash, token prefix provides sufficient entropy
 
 # 2. Encryption (for storage)
 encrypted_token = encrypt_token(plain_token)  # Fernet, requires key
@@ -535,7 +533,7 @@ encrypted_token = encrypt_token(plain_token)  # Fernet, requires key
 
 ```python
 # Every API request needs token validation
-# Using PBKDF2 hash lookup, completes in ~300ms
+# Using SHA256 hash lookup, completes in sub-millisecond (Redis cache dominates)
 
 @router.post("/v1/chat/completions")
 async def chat(token: str = Depends(get_api_token)):
@@ -576,7 +574,7 @@ start = time.time()
 token = await token_service.validate_token(plain_token)
 duration = time.time() - start
 
-if duration > 1.0:  # More than 1s (PBKDF2 takes ~300ms normally)
+if duration > 1.0:  # More than 1s (SHA256 is instant, Redis lookup ~1ms normally)
     logger.warning("Slow token validation", extra={
         "duration": duration,
         "token_id": token.id if token else None
@@ -670,7 +668,7 @@ All Pods share one rate limit → Pod 1: ████ (4 streams) ← next reque
 
 #### Problem
 
-When a stream connects to Bedrock successfully but never produces real content (e.g., the region is overloaded, the model is stuck in a queue), the connection sits idle consuming a semaphore slot and a client connection. The Bedrock `read_timeout` (300s) only fires when no bytes arrive at all -- metadata events (e.g., `messageStart`, `contentBlockStart`) reset the socket timer without delivering actual text to the user.
+When a stream connects to Bedrock successfully but never produces real content (e.g., the region is overloaded, the model is stuck in a queue), the connection sits idle consuming a semaphore slot and a client connection. The Bedrock `read_timeout` (3600s) only fires when no bytes arrive at all -- metadata events (e.g., `messageStart`, `contentBlockStart`) reset the socket timer without delivering actual text to the user.
 
 #### Solution
 
@@ -695,11 +693,11 @@ STREAM_MODEL_FALLBACK_CHAIN = ""     # Comma-separated fallback models, e.g. "us
 #### Where It Sits in the Timeout Hierarchy
 
 ```
-Bedrock read_timeout (300s)        -- per-chunk socket timeout (no bytes at all)
+Bedrock read_timeout (3600s)       -- per-chunk socket timeout (no bytes at all)
   ↕
 STREAM_FIRST_CONTENT_TIMEOUT (600s) -- stream connected but no real content
   ↕
-ALB idle timeout (600s)            -- outer fallback (heartbeats keep this alive)
+ALB idle timeout (3600s)           -- outer fallback (heartbeats keep this alive)
 ```
 
 The stream failover timeout is **independent** of `read_timeout`. A stream can receive metadata events (keeping the socket alive) yet still trigger a failover if no real content arrives within the configured window.
@@ -750,7 +748,7 @@ A race condition in concurrent token refresh was fixed using row-level locking (
 │  AWS ALB (Application Load Balancer)                        │
 │  - Load balance across multiple Pods                        │
 │  - Health checks                                            │
-│  - Idle timeout: 10 min (API) / 5 min (Frontend)           │
+│  - Idle timeout: 60 min (API) / 5 min (Frontend)           │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -762,8 +760,8 @@ A race condition in concurrent token refresh was fixed using row-level locking (
 ┌─────────────────────────────────────────────────────────────┐
 │  Uvicorn Worker (per Pod)                                   │
 │  - limit_concurrency: 100 (max 100 concurrent connections) │
-│  - timeout_keep_alive: 120s (support long connections)     │
-│  - limit_max_requests: 10000 (periodic restart)            │
+│  - timeout_keep_alive: 3700s (exceeds ALB idle timeout)    │
+│  - limit_max_requests: disabled (no auto-restart)          │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -818,9 +816,9 @@ A race condition in concurrent token refresh was fixed using row-level locking (
 | Layer | Configuration | Timeout | Description |
 |-------|--------------|---------|-------------|
 | **Bedrock Connect** | `connect_timeout` | 10 seconds | Connection establishment timeout |
-| **Bedrock Read** | `read_timeout` | **300 seconds (5 min)** | Per-chunk read timeout (covers thinking model pauses and long prefill) |
-| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 120 seconds | Idle connection timeout (doesn't affect requests) |
-| **ALB Idle (API)** | `idle_timeout` | **600 seconds (10 min)** | Outer fallback; must exceed read_timeout so Bedrock errors surface first |
+| **Bedrock Read** | `read_timeout` | **3600 seconds (1 hour)** | Per-chunk read timeout (covers thinking model pauses and long prefill) |
+| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 3700 seconds | Idle connection timeout (doesn't affect requests) |
+| **ALB Idle (API)** | `idle_timeout` | **3600 seconds (1 hour)** | Outer fallback; must exceed read_timeout so Bedrock errors surface first |
 | **ALB Idle (Frontend)** | `idle_timeout` | 300 seconds (5 min) | Frontend static resources |
 | **Stream Failover** | `STREAM_FIRST_CONTENT_TIMEOUT` | **600 seconds (10 min)** | After stream connects, failover if no real content within timeout |
 | **Streaming Heartbeat** | `STREAM_HEARTBEAT_INTERVAL` | 15 seconds | Keep connection alive |
@@ -837,7 +835,7 @@ Config(
     region_name=settings.AWS_REGION,
     retries={"max_attempts": 3, "mode": "adaptive"},
     connect_timeout=10,    # Connection timeout: 10 seconds
-    read_timeout=300,      # Read timeout: 5 min, covers thinking model pauses
+    read_timeout=3600,     # Read timeout: 1 hour, covers thinking model pauses
     max_pool_connections=settings.BEDROCK_MAX_CONCURRENT_REQUESTS,
     tcp_keepalive=True,
 )
@@ -846,8 +844,8 @@ Config(
 #### Description
 
 - **Connection timeout (10 seconds)**: Maximum time to establish TCP connection
-- **Read timeout (300 seconds)**: Maximum time to wait between consecutive data chunks on the socket. Applies to both first byte and subsequent streaming chunks. Thinking models (e.g. Claude with extended thinking) may pause for minutes during reasoning before producing output
-- ✅ 300 seconds covers thinking model pauses, long prefill latency, and Bedrock queue wait times
+- **Read timeout (3600 seconds)**: Maximum time to wait between consecutive data chunks on the socket. Applies to both first byte and subsequent streaming chunks. Thinking models (e.g. Claude with extended thinking) may pause for minutes during reasoning before producing output
+- ✅ 3600 seconds covers thinking model pauses, long prefill latency, and Bedrock queue wait times
 
 ---
 
@@ -858,7 +856,7 @@ Config(
 - `backend/app/core/config.py`
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 seconds = 2 minutes
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700  # 3700 seconds = ~61 minutes
 ```
 
 #### Important Note
@@ -866,7 +864,7 @@ UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 seconds = 2 minutes
 ⚠️ **This is NOT a request timeout!**
 
 `timeout_keep_alive` is the **idle connection** keep-alive time:
-- If connection has no new requests within 120 seconds, close the connection
+- If connection has no new requests within 3700 seconds, close the connection
 - **Does not affect ongoing requests**
 - Requests can run for any duration (subject to other timeout limits)
 
@@ -882,7 +880,7 @@ POST /v1/chat/completions
 # ↓
 # Response completed
 
-# Connection closes after 120 seconds of idle (if no new requests)
+# Connection closes after 3700 seconds of idle (if no new requests)
 ```
 
 ---
@@ -897,10 +895,10 @@ POST /v1/chat/completions
 
 ```yaml
 # API backend ALB configuration
-alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=600
+alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
 ```
 
-**600 seconds = 10 minutes**
+**3600 seconds = 1 hour**
 
 #### Frontend Configuration
 
@@ -915,7 +913,7 @@ alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds
 
 - ALB idle timeout: If connection has no data transfer within specified time, ALB disconnects
 - **Important for streaming responses!**
-- ✅ ALB idle timeout (600s) > Bedrock read timeout (300s), ensuring Bedrock errors surface first with meaningful messages instead of a generic 504
+- ✅ ALB idle timeout (3600s) >= Bedrock read timeout (3600s), ensuring Bedrock errors surface first with meaningful messages instead of a generic 504
 - For streaming, heartbeats every 15s keep ALB alive regardless of idle timeout
 
 #### AWS ALB Limits
@@ -973,7 +971,7 @@ End   - Task completes (no total duration limit for streaming)
 #### ALB Decision Logic
 
 - As long as there is **any data transfer** (including heartbeats), it's not considered idle
-- Heartbeat sent every 15 seconds, well within ALB's 600-second timeout
+- Heartbeat sent every 15 seconds, well within ALB's 3600-second timeout
 - ✅ Even if task runs for a long time, connection won't be dropped
 
 ---
@@ -1032,12 +1030,12 @@ POST /v1/chat/completions
 # Assume a task takes 3 minutes with no intermediate output
 # 0s      - Request arrives
 # 0-180s  - Bedrock processing (no data transfer)
-# 300s    - Bedrock read_timeout triggers, backend returns meaningful error ❌
+# 3600s   - Bedrock read_timeout triggers, backend returns meaningful error ❌
 # (If read_timeout didn't trigger)
-# 600s    - ALB idle timeout, disconnects as final fallback ❌
+# 3600s   - ALB idle timeout, disconnects as final fallback ❌
 ```
 
-**Conclusion:** ❌ Non-streaming tasks exceeding 300 seconds will be terminated by read_timeout. Use streaming for longer tasks.
+**Conclusion:** ❌ Non-streaming tasks exceeding 3600 seconds will be terminated by read_timeout. Use streaming for longer tasks.
 
 ---
 
@@ -1046,15 +1044,15 @@ POST /v1/chat/completions
 ```
 Client
   ↓
-AWS ALB (10-minute idle timeout) ✅ Outer fallback, exceeds read_timeout
+AWS ALB (60-minute idle timeout) ✅ Outer fallback, matches read_timeout
   ↓
-Uvicorn (120-second keep-alive, doesn't affect requests)
+Uvicorn (3700-second keep-alive, doesn't affect requests)
   ↓
 FastAPI Application (no timeout limit)
   ↓
 Stream Failover (600-second first-content timeout) ✅ L1: same model different region, L2: fallback model
   ↓
-Bedrock Client (300-second read timeout) ✅ Covers thinking model pauses
+Bedrock Client (3600-second read timeout) ✅ Covers thinking model pauses
   ↓
 AWS Bedrock API
 ```
@@ -1077,8 +1075,8 @@ async def create_chat_completion(...):
 
     **Timeout Chain:**
     - Bedrock connect: 10 seconds (TCP connection)
-    - Bedrock read: 300 seconds (per-chunk timeout, covers thinking pauses)
-    - ALB idle: 600 seconds (outer fallback; heartbeat keeps alive during streaming)
+    - Bedrock read: 3600 seconds (per-chunk timeout, covers thinking pauses)
+    - ALB idle: 3600 seconds (outer fallback; heartbeat keeps alive during streaming)
 
     **Recommendation:** Use streaming for long-running tasks.
     """
@@ -1188,9 +1186,9 @@ KBR_BEDROCK_EXPECTED_PODS=3
 KBR_BEDROCK_RATE_BURST=10
 
 # Uvicorn server
-KBR_UVICORN_TIMEOUT_KEEP_ALIVE=120
+KBR_UVICORN_TIMEOUT_KEEP_ALIVE=3700
 KBR_UVICORN_LIMIT_CONCURRENCY=100
-KBR_UVICORN_LIMIT_MAX_REQUESTS=10000
+KBR_UVICORN_LIMIT_MAX_REQUESTS=0
 
 # Streaming response heartbeat
 KBR_STREAM_HEARTBEAT_INTERVAL=15
@@ -1252,8 +1250,8 @@ resources:
    - Pod count changes
 
 4. **Request Timeouts**
-   - Requests exceeding 300 seconds (read timeout)
-   - ALB timeout errors (600 seconds fallback)
+   - Requests exceeding 3600 seconds (read timeout)
+   - ALB timeout errors (3600 seconds fallback)
    - Average response time
 
 ---
@@ -1264,7 +1262,7 @@ resources:
 
 #### 1. 504 Gateway Timeout
 
-**Cause:** Bedrock read timeout (300 seconds) or ALB idle timeout (600 seconds)
+**Cause:** Bedrock read timeout (3600 seconds) or ALB idle timeout (3600 seconds)
 
 **Solutions:**
 - Use streaming responses (recommended)

@@ -1,6 +1,6 @@
 # OAuth Setup Guide
 
-Kolya BR Proxy uses OAuth exclusively for authentication (no local username/password). Two OAuth providers are supported:
+BR Enterprise Proxy uses OAuth exclusively for authentication (no local username/password). Two OAuth providers are supported:
 
 - **AWS Cognito** (default/recommended) -- AWS-managed user pool authentication
 - **Microsoft Entra ID** (Azure AD) -- personal and enterprise Microsoft accounts
@@ -21,7 +21,7 @@ Cognito is the default provider selected during deployment via `deploy-all.sh`. 
 1. Under your User Pool, go to **App integration** > **App client** > **Create app client**.
 2. Select **Confidential client** (server-side).
 3. Set:
-   - **App client name**: `Kolya BR Proxy`
+   - **App client name**: `BR Enterprise Proxy`
    - **Generate client secret**: Yes
    - **Allowed callback URLs**: `http://localhost:3000/auth/cognito/callback`
      - For production, add `https://<your-domain>/auth/cognito/callback`
@@ -131,7 +131,7 @@ Frontend                     Backend                      Cognito
 
 1. Go to [Azure Portal > App registrations](https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/RegisteredApps) and click **New registration**.
 2. Fill in:
-   - **Name**: `Kolya BR Proxy`
+   - **Name**: `BR Enterprise Proxy`
    - **Supported account types**: "Accounts in any organizational directory and personal Microsoft accounts" (multi-tenant)
    - **Redirect URI**: Platform `Web`, URI `http://localhost:3000/auth/microsoft/callback`
      - For production, add `https://<your-domain>/auth/microsoft/callback`
@@ -143,7 +143,7 @@ Frontend                     Backend                      Cognito
 ### Step 2: Create Client Secret
 
 1. Go to **Certificates & secrets** > **New client secret**.
-2. Set description (e.g. `Kolya BR Proxy Secret`) and expiry (up to 24 months).
+2. Set description (e.g. `BR Enterprise Proxy Secret`) and expiry (up to 24 months).
 3. Click **Add** and immediately copy the **Value** (shown only once).
 
 ### Step 3: Configure API Permissions

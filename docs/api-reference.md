@@ -1,6 +1,6 @@
 # API Reference
 
-Kolya BR Proxy exposes four API groups:
+BR Enterprise Proxy exposes four API groups:
 
 | Group | Prefix | Auth | Purpose |
 |-------|--------|------|---------|
