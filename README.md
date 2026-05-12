@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/kbp.png" alt="BR Enterprise Gateway" width="180" />
+  <img src="assets/kbp.png" alt="Kolya BR Proxy" width="180" />
 </p>
 
-<h1 align="center">BR Enterprise Gateway</h1>
+<h1 align="center">Kolya BR Proxy</h1>
 
 <p align="center">
   <strong>AI Gateway providing OpenAI & Anthropic compatible APIs backed by AWS Bedrock and Google Gemini</strong>
@@ -26,7 +26,7 @@
 
 ---
 
-## Why BR Enterprise Gateway?
+## Why Kolya BR Proxy?
 
 | | |
 |---|---|
