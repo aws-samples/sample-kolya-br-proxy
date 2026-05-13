@@ -41,9 +41,9 @@ variable "rate_limit_global" {
 }
 
 variable "rate_limit_auth" {
-  description = "Rate limit per IP for /admin/auth/* (requests per 5 minutes)"
+  description = "Rate limit per IP for /admin/auth/* (requests per 5 minutes, excludes OPTIONS preflight)"
   type        = number
-  default     = 20
+  default     = 50
 }
 
 variable "rate_limit_chat" {

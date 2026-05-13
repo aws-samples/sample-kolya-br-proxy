@@ -61,6 +61,7 @@ export const useTokensStore = defineStore('tokens', {
   state: () => ({
     tokens: [] as APIToken[],
     loading: false,
+    loaded: false,
   }),
 
   actions: {
@@ -99,6 +100,7 @@ export const useTokensStore = defineStore('tokens', {
         }
       } finally {
         this.loading = false;
+        this.loaded = true;
       }
     },
 

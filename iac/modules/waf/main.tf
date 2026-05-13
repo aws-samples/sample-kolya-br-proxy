@@ -19,6 +19,8 @@ resource "aws_wafv2_web_acl" "main" {
   }
 
   # Rule 1: Rate limit on /admin/auth/* (lowest priority = evaluated first)
+  # Excludes OPTIONS (CORS preflight) — browsers send preflight before every
+  # cross-origin request and counting them inflates the rate unfairly.
   rule {
     name     = "rate-limit-auth"
     priority = 1
@@ -33,17 +35,41 @@ resource "aws_wafv2_web_acl" "main" {
         aggregate_key_type = "IP"
 
         scope_down_statement {
-          byte_match_statement {
-            search_string         = "/admin/auth/"
-            positional_constraint = "STARTS_WITH"
+          and_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/admin/auth/"
+                positional_constraint = "STARTS_WITH"
 
-            field_to_match {
-              uri_path {}
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "LOWERCASE"
+                }
+              }
             }
 
-            text_transformation {
-              priority = 0
-              type     = "LOWERCASE"
+            statement {
+              not_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = "OPTIONS"
+                    positional_constraint = "EXACTLY"
+
+                    field_to_match {
+                      method {}
+                    }
+
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+              }
             }
           }
         }

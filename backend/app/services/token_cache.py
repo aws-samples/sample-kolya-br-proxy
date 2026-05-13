@@ -55,7 +55,7 @@ class CachedTokenService:
             token = await self._token_from_cache(cached_data)
             if token:
                 # Still need to check dynamic conditions
-                if token.is_expired or token.is_quota_exceeded:
+                if not token.is_active or token.is_expired or token.is_quota_exceeded:
                     await self.cache.delete(cache_key)
                     return None
 

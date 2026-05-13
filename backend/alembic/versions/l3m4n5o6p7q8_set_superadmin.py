@@ -14,9 +14,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "UPDATE users SET role = 'super_admin', is_admin = true WHERE email = 'kolya@amazon.com'"
-    )
+    # Ensure the earliest user is super_admin (idempotent)
+    op.execute("""
+        UPDATE users SET role = 'super_admin', is_admin = true
+        WHERE id = (
+            SELECT id FROM users ORDER BY created_at ASC LIMIT 1
+        )
+        AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'super_admin')
+    """)
 
 
 def downgrade() -> None:

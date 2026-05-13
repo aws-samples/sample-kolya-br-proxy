@@ -709,7 +709,7 @@ Update token settings.
 
 #### DELETE /admin/tokens/{token_id}
 
-Permanently delete a token. Returns 204 No Content.
+Soft-delete a token. Sets `is_deleted = true`, `is_active = false`, and invalidates the Redis cache. The token is immediately blocked from API access. Historical usage data is preserved. Returns 204 No Content.
 
 #### POST /admin/tokens/{token_id}/revoke
 

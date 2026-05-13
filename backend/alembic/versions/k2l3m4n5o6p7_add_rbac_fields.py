@@ -32,8 +32,13 @@ def upgrade() -> None:
         sa.Column("permissions", sa.JSON(), nullable=True),
     )
 
-    # Migrate existing super admins
-    op.execute("UPDATE users SET role = 'super_admin' WHERE is_admin = true")
+    # Promote the earliest created user to super_admin
+    op.execute("""
+        UPDATE users SET role = 'super_admin', is_admin = true
+        WHERE id = (
+            SELECT id FROM users ORDER BY created_at ASC LIMIT 1
+        )
+    """)
 
     # Add new audit action enum values
     op.execute("ALTER TYPE auditaction ADD VALUE IF NOT EXISTS 'admin_created'")
