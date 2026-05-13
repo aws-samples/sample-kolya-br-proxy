@@ -249,8 +249,11 @@ flowchart TD
 | Token 类型 | 字段 | 计费方式 |
 |-----------|------|---------|
 | 常规 input | `input_tokens` | 1.0x 基础 input 价格 |
-| Cache 写入 | `cache_creation_input_tokens` | 1.25x 基础 input 价格（25% 溢价） |
+| Cache 写入（5m TTL） | `cache_creation_input_tokens` | 1.25x 基础 input 价格（25% 溢价）— 默认 TTL |
+| Cache 写入（1h TTL） | `cache_creation_input_tokens` | 2.0x 基础 input 价格（100% 溢价）— 扩展 TTL |
 | Cache 读取 | `cache_read_input_tokens` | 0.1x 基础 input 价格（90% 折扣） |
+
+> **TTL 说明**：缓存写入乘数取决于 `PROMPT_CACHE_TTL` 配置。默认 5 分钟 TTL 使用 1.25x 乘数；1 小时 TTL 使用 2.0x 乘数（更高溢价换取更长缓存时间，减少缓存未命中）。
 
 **完整公式（含 cache）：**
 

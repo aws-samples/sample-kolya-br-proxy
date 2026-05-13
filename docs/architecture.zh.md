@@ -219,15 +219,20 @@ erDiagram
     User ||--o{ UsageRecord : "generates"
     User ||--o{ RefreshToken : "has"
     User ||--o{ AuditLog : "triggers"
+    User ||--o{ Team : "creates"
     APIToken ||--o{ UsageRecord : "tracks"
     APIToken ||--o{ Model : "enables"
+    APIToken ||--o{ TeamMember : "belongs to"
+    Team ||--o{ TeamMember : "has"
     RefreshToken ||--o{ RefreshToken : "parent-child"
 
     User {
         uuid id PK
         string email UK
         string password_hash "nullable (unused, OAuth-only)"
-        enum auth_method "MICROSOFT | COGNITO"
+        enum auth_method "LOCAL | MICROSOFT | COGNITO"
+        enum role "super_admin | admin"
+        json permissions "RBAC 权限控制"
         boolean is_active
         boolean is_admin
         boolean email_verified
@@ -244,10 +249,14 @@ erDiagram
         uuid id PK
         uuid user_id FK
         string name
+        string description "nullable"
         string token_hash UK "SHA256"
         string encrypted_token "Fernet AES-128"
         datetime expires_at "nullable"
         decimal quota_usd "Numeric(10,2) nullable"
+        decimal monthly_quota_usd "Numeric(10,2) nullable"
+        string monthly_reset_policy "reset | rollover"
+        datetime monthly_quota_start "nullable"
         string_array allowed_ips "nullable"
         boolean is_active
         boolean is_deleted
@@ -256,6 +265,25 @@ erDiagram
         datetime updated_at
         datetime last_used_at
         datetime deleted_at
+    }
+
+    Team {
+        uuid id PK
+        string name
+        decimal monthly_budget_usd "Numeric(10,2) nullable"
+        string description "nullable"
+        uuid user_id FK
+        boolean is_active
+        datetime created_at
+        datetime updated_at
+    }
+
+    TeamMember {
+        uuid id PK
+        uuid team_id FK
+        uuid token_id FK
+        decimal allocated_usd "Numeric(10,2)"
+        datetime created_at
     }
 
     Model {
@@ -336,8 +364,10 @@ erDiagram
 
 ### 关键模型说明
 
-- **User.auth_method**：枚举值包括 `MICROSOFT`、`COGNITO`。所有用户通过 OAuth 认证，`password_hash` 为 NULL。
-- **APIToken**：同时存储 `token_hash`（SHA256，用于查找）和 `encrypted_token`（Fernet AES，用于恢复）。`quota_usd` 字段限制每个令牌的总消费。模型访问通过关联的 `Model` 表控制，而非数组列。
+- **User.auth_method**：枚举值包括 `LOCAL`、`MICROSOFT`、`COGNITO`。`password_hash` 为 NULL（OAuth 用户）。
+- **User.role**：`super_admin`（完全访问）或 `admin`（受 `permissions` JSON 控制的有限访问）。
+- **APIToken**：同时存储 `token_hash`（SHA256，用于查找）和 `encrypted_token`（Fernet AES，用于恢复）。`quota_usd` 字段限制每个令牌的总消费，`monthly_quota_usd` 支持月度配额。模型访问通过关联的 `Model` 表控制，而非数组列。
+- **Team / TeamMember**：支持将多个 API Token 归入团队，分配月度预算和成员配额。
 - **Model**：每行将一个 Bedrock 模型名称关联到一个 APIToken。令牌只能访问 `is_active=True` 且 `is_deleted=False` 的模型。
 - **RefreshToken.family_id**：将相关令牌分组用于盗用检测。如果已撤销的令牌被重用，整个族群将被撤销。
 
@@ -409,13 +439,16 @@ graph TD
 | `/` | DashboardPage | 是 | 概览，使用统计 |
 | `/tokens` | TokensPage | 是 | API 密钥管理 |
 | `/models` | ModelsPage | 是 | 模型配置 |
+| `/teams` | TeamsPage | 是 | 团队管理 |
 | `/playground` | PlaygroundPage | 是 | 测试对话 |
 | `/monitor` | MonitorPage | 是 | 使用量图表与分析 |
+| `/activity` | ActivityPage | 是 | 活动动态 |
+| `/admin-users` | AdminUsersPage | 是 | 管理员用户管理（仅 super_admin） |
 | `/settings` | SettingsPage | 是 | 账户设置 |
 
 ### 侧边栏导航
 
-`MainLayout.vue` 渲染持久左侧抽屉，包含以下菜单项：仪表板、API 密钥、模型、Playground、监控、设置。顶部栏显示应用标题和用户菜单（邮箱、余额、设置、登出）。
+`MainLayout.vue` 渲染持久左侧抽屉，包含以下菜单项：仪表板、API 密钥、模型、团队、Playground、监控、活动、管理员用户、设置。顶部栏显示应用标题和用户菜单（邮箱、余额、设置、登出）。
 
 ---
 
@@ -555,7 +588,7 @@ graph TD
 
 ## 6. 认证流程
 
-系统支持两种 OAuth 认证方式：**AWS Cognito** 和 **Microsoft Entra ID**（通过 `deploy-all.sh --step 0` 选择）。不支持本地用户名/密码认证。管理面板使用 JWT（访问令牌 + 刷新令牌），而网关 API 使用 API 密钥（`kbr_` 前缀）—— OpenAI 兼容端点通过 `Authorization: Bearer` 传递，Anthropic 端点通过 `x-api-key` 头传递。两种认证方式验证相同的 `kbr_` 令牌。Cognito 回调 URL 从 `terraform.tfvars` 中的 `frontend_domain` 自动派生。
+系统支持三种认证方式：**本地认证（LOCAL）**、**AWS Cognito** 和 **Microsoft Entra ID**（通过 `deploy-all.sh --step 0` 选择 OAuth 提供商）。管理面板使用 JWT（访问令牌 + 刷新令牌），而网关 API 使用 API 密钥（`kbr_` 前缀）—— OpenAI 兼容端点通过 `Authorization: Bearer` 传递，Anthropic 端点通过 `x-api-key` 头传递。两种认证方式验证相同的 `kbr_` 令牌。Cognito 回调 URL 从 `terraform.tfvars` 中的 `frontend_domain` 自动派生。
 
 ### 6.1 OAuth 流程（Cognito / Microsoft）
 

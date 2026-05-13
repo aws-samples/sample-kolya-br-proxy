@@ -374,8 +374,8 @@ When no token context is available the field shows `[-]`.
 Example output:
 
 ```
-2026-04-11 08:23:01,234 - kolya_br_proxy.router - INFO - [my-team-key] streaming request to us-west-2
-2026-04-11 08:23:05,678 - kolya_br_proxy.router - WARNING - [-] health check from unknown caller
+2026-04-11 08:23:01,234 - app.api.v1.endpoints.chat - INFO - [my-team-key] streaming request to us-west-2
+2026-04-11 08:23:05,678 - app.api.v1.endpoints.chat - WARNING - [-] health check from unknown caller
 ```
 
 ---

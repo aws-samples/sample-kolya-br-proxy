@@ -374,9 +374,11 @@ Terraform workspace（`prod` vs 其他）决定资源规格：
 输出示例：
 
 ```
-2026-04-11 08:23:01,234 - kolya_br_proxy.router - INFO - [my-team-key] streaming request to us-west-2
-2026-04-11 08:23:05,678 - kolya_br_proxy.router - WARNING - [-] health check from unknown caller
+2026-04-11 08:23:01,234 - app.api.v1.endpoints.chat - INFO - [my-team-key] streaming request to us-west-2
+2026-04-11 08:23:05,678 - app.api.v1.endpoints.chat - WARNING - [-] health check from unknown caller
 ```
+
+> **注意**：所有模块使用 `logging.getLogger(__name__)` 获取日志记录器，因此日志名称与模块路径一致（如 `app.api.v1.endpoints.chat`、`app.services.bedrock` 等）。
 
 ---
 

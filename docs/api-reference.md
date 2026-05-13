@@ -339,7 +339,7 @@ The proxy supports three thinking types:
 
 #### Claude Code CLI compatibility
 
-To use the proxy with the Claude Code CLI or Anthropic SDK, create a token with the `sk-ant-api03` prefix:
+All tokens are created with the `sk-ant-api03` prefix by default, making them compatible with Claude Code CLI and the Anthropic SDK:
 
 ```bash
 curl -X POST http://localhost:8000/admin/tokens \
@@ -347,7 +347,6 @@ curl -X POST http://localhost:8000/admin/tokens \
   -H "Authorization: Bearer <jwt_token>" \
   -d '{
     "name": "Claude Code Token",
-    "prefix": "sk-ant-api03",
     "quota_usd": 50.00
   }'
 ```
@@ -618,27 +617,33 @@ Update current user profile.
 
 #### POST /admin/tokens
 
-Create a new API token.
+Create a new API token. The token prefix is hardcoded as `sk-ant-api03` and cannot be configured.
 
 **Request body**:
 
 ```json
 {
   "name": "My API Key",
+  "description": "Development token for team Alpha",
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": 100.00,
+  "monthly_quota_usd": 20.00,
+  "monthly_reset_policy": "reset",
   "allowed_ips": ["192.168.1.0/24"],
-  "prefix": "kbr"
+  "token_metadata": {"prompt_cache_enabled": true, "prompt_cache_ttl": "5m"}
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | yes | Token display name |
+| `description` | string | no | Token description |
 | `expires_at` | datetime | no | Expiration timestamp |
-| `quota_usd` | decimal | no | Usage quota in USD |
+| `quota_usd` | decimal | no | Total usage quota in USD |
+| `monthly_quota_usd` | decimal | no | Monthly usage quota in USD |
+| `monthly_reset_policy` | string | no | `"reset"` (default) or `"rollover"` |
 | `allowed_ips` | array | no | IP allowlist (CIDR) |
-| `prefix` | string | no | Token prefix (default: `"kbr"`). Use `"sk-ant-api03"` for Claude Code / Anthropic SDK compatibility |
+| `token_metadata` | object | no | Additional config (e.g. `prompt_cache_enabled`, `prompt_cache_ttl`) |
 
 **Response** (201): `TokenWithKeyResponse` -- includes the plain token value. This is the only time the plain token is returned.
 
@@ -646,18 +651,25 @@ Create a new API token.
 {
   "id": "uuid",
   "name": "My API Key",
-  "token": "kbr_abc123...",
-  "key_prefix": "kbr",
+  "description": "Development token for team Alpha",
+  "token": "sk-ant-api03_abc123...",
+  "key_prefix": "sk-ant-api03",
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": "100.00",
+  "monthly_quota_usd": "20.00",
+  "monthly_reset_policy": "reset",
   "used_usd": "0.00",
+  "monthly_used_usd": "0.00",
+  "daily_used_usd": "0.00",
   "remaining_quota": "100.00",
   "allowed_ips": ["192.168.1.0/24"],
+  "allowed_models": [],
   "is_active": true,
   "is_expired": false,
   "is_quota_exceeded": false,
   "created_at": "2026-01-01T00:00:00",
-  "last_used_at": null
+  "last_used_at": null,
+  "token_metadata": {"prompt_cache_enabled": true, "prompt_cache_ttl": "5m"}
 }
 ```
 
@@ -684,10 +696,14 @@ Update token settings.
 ```json
 {
   "name": "Renamed Key",
+  "description": "Updated description",
   "expires_at": "2027-06-30T00:00:00",
   "quota_usd": 200.00,
+  "monthly_quota_usd": 50.00,
+  "monthly_reset_policy": "rollover",
   "allowed_ips": ["10.0.0.0/8"],
-  "is_active": true
+  "is_active": true,
+  "token_metadata": {"prompt_cache_enabled": true, "prompt_cache_ttl": "1h"}
 }
 ```
 
@@ -1126,6 +1142,150 @@ List all assignable resources (tokens, teams, models) for the permission editor 
   "api_keys": [{ "id": "uuid", "name": "Token Name" }],
   "teams": [{ "id": "uuid", "name": "Team Name" }],
   "models": [{ "id": "model-id", "name": "model-id" }]
+}
+```
+
+### 2.7 Teams Management
+
+Manage team budgets and member allocations. Requires `manage_teams` permission.
+
+#### POST /admin/teams
+
+Create a new team.
+
+**Request body**:
+
+```json
+{
+  "name": "Engineering Team",
+  "monthly_budget_usd": 500.00,
+  "monthly_reset_policy": "reset",
+  "daily_limit_enabled": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | yes | Team name |
+| `monthly_budget_usd` | decimal | yes | Monthly budget in USD |
+| `monthly_reset_policy` | string | no | `"reset"` (default) or `"rollover"` |
+| `daily_limit_enabled` | boolean | no | Enable daily spending limit per member (default: `true`) |
+
+**Response** (201):
+
+```json
+{
+  "id": "uuid",
+  "name": "Engineering Team",
+  "monthly_budget_usd": "500.00",
+  "monthly_reset_policy": "reset",
+  "daily_limit_enabled": true,
+  "unallocated_pool_usd": "500.00"
+}
+```
+
+#### GET /admin/teams
+
+List all teams. Returns `TeamListItem` array with member counts and usage summaries.
+
+#### GET /admin/teams/{team_id}
+
+Get team dashboard with detailed member usage.
+
+**Response** (`TeamDashboardResponse`):
+
+```json
+{
+  "id": "uuid",
+  "name": "Engineering Team",
+  "monthly_budget_usd": "500.00",
+  "monthly_reset_policy": "reset",
+  "daily_limit_enabled": true,
+  "total_allocated_usd": "300.00",
+  "total_used_usd": "45.67",
+  "unallocated_pool_usd": "200.00",
+  "members": [
+    {
+      "token_id": "uuid",
+      "token_name": "Alice",
+      "allocated_usd": "150.00",
+      "used_usd": "23.45",
+      "remaining_usd": "126.55",
+      "daily_limit_usd": "4.84",
+      "daily_used_usd": "1.20",
+      "is_active": true,
+      "last_used_at": "2026-01-15T10:30:00"
+    }
+  ]
+}
+```
+
+#### PUT /admin/teams/{team_id}
+
+Update team settings (name, budget, reset policy, daily limit).
+
+#### DELETE /admin/teams/{team_id}
+
+Delete a team. Returns 204 No Content.
+
+#### POST /admin/teams/{team_id}/members
+
+Add a member (token) to the team with a budget allocation.
+
+**Request body**:
+
+```json
+{
+  "token_id": "uuid",
+  "allocated_usd": 100.00
+}
+```
+
+#### DELETE /admin/teams/{team_id}/members/{token_id}
+
+Remove a member from the team.
+
+#### PUT /admin/teams/{team_id}/members/{token_id}
+
+Adjust a member's allocated budget.
+
+**Request body**:
+
+```json
+{
+  "allocated_usd": 150.00
+}
+```
+
+#### POST /admin/teams/{team_id}/transfer
+
+Transfer allocation between members.
+
+**Request body**:
+
+```json
+{
+  "from_token_id": "uuid",
+  "to_token_id": "uuid",
+  "amount": 25.00
+}
+```
+
+#### POST /admin/teams/{team_id}/members/batch
+
+Batch create members with new tokens and equal allocations.
+
+**Request body**:
+
+```json
+{
+  "names": "alice, bob, charlie",
+  "per_member_allocation": 50.00,
+  "expires_at": "2026-12-31T23:59:59",
+  "quota_usd": 100.00,
+  "allowed_ips": null,
+  "token_metadata": null,
+  "model_names": ["claude-sonnet-4-5"]
 }
 ```
 

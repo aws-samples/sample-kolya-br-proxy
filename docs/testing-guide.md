@@ -63,6 +63,10 @@ open htmlcov/index.html
 ### Test Files
 
 - `tests/test_pricing.py` - Pricing system tests
+- `tests/test_json_formatter.py` - JSON log formatter tests
+- `tests/test_metrics.py` - Metrics endpoint tests
+- `tests/test_prompt_cache_injection.py` - Prompt cache injection tests
+- `tests/test_stream_failover.py` - Stream failover mechanism tests
 
 ### Test Classes
 

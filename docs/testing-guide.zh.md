@@ -63,6 +63,10 @@ open htmlcov/index.html
 ### 测试文件
 
 - `tests/test_pricing.py` - 价格系统测试
+- `tests/test_json_formatter.py` - JSON 格式化测试
+- `tests/test_metrics.py` - 指标测试
+- `tests/test_prompt_cache_injection.py` - Prompt 缓存注入测试
+- `tests/test_stream_failover.py` - 流式故障转移测试
 
 ### 测试类
 

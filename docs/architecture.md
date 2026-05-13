@@ -147,6 +147,8 @@ graph TD
         UserModel["User"]
         APITokenModel["APIToken"]
         ModelModel["Model"]
+        TeamModel["Team"]
+        TeamMemberModel["TeamMember"]
         UsageModel["UsageRecord"]
         AuditModel["AuditLog"]
         RefreshModel["RefreshToken"]
@@ -219,17 +221,22 @@ erDiagram
     User ||--o{ UsageRecord : "generates"
     User ||--o{ RefreshToken : "has"
     User ||--o{ AuditLog : "triggers"
+    User ||--o{ Team : "manages"
     APIToken ||--o{ UsageRecord : "tracks"
     APIToken ||--o{ Model : "enables"
+    APIToken ||--o| TeamMember : "belongs to"
+    Team ||--o{ TeamMember : "has"
     RefreshToken ||--o{ RefreshToken : "parent-child"
 
     User {
         uuid id PK
         string email UK
         string password_hash "nullable (unused, OAuth-only)"
-        enum auth_method "MICROSOFT | COGNITO"
+        enum auth_method "LOCAL | MICROSOFT | COGNITO"
         boolean is_active
         boolean is_admin
+        enum role "super_admin | admin"
+        json permissions "RBAC permission scopes"
         boolean email_verified
         decimal current_balance "Numeric(10,2)"
         string microsoft_id UK "nullable"
@@ -244,10 +251,14 @@ erDiagram
         uuid id PK
         uuid user_id FK
         string name
+        string description "nullable"
         string token_hash UK "SHA256"
         string encrypted_token "Fernet AES-128"
         datetime expires_at "nullable"
         decimal quota_usd "Numeric(10,2) nullable"
+        decimal monthly_quota_usd "Numeric(10,2) nullable"
+        string monthly_reset_policy "nullable (reset | rollover)"
+        datetime monthly_quota_start "nullable"
         string_array allowed_ips "nullable"
         boolean is_active
         boolean is_deleted
@@ -256,6 +267,28 @@ erDiagram
         datetime updated_at
         datetime last_used_at
         datetime deleted_at
+    }
+
+    Team {
+        uuid id PK
+        uuid user_id FK
+        string name
+        decimal monthly_budget_usd "Numeric(10,2)"
+        string monthly_reset_policy "reset | rollover"
+        boolean daily_limit_enabled
+        datetime monthly_budget_start
+        boolean is_active
+        datetime created_at
+        datetime updated_at
+    }
+
+    TeamMember {
+        uuid id PK
+        uuid team_id FK "CASCADE"
+        uuid token_id FK "CASCADE, unique"
+        decimal allocated_usd "Numeric(10,2)"
+        datetime created_at
+        datetime updated_at
     }
 
     Model {
@@ -336,8 +369,9 @@ erDiagram
 
 ### Key Model Notes
 
-- **User.auth_method**: Enum with values `MICROSOFT`, `COGNITO`. All users authenticate via OAuth and have `password_hash = NULL`.
-- **APIToken**: Stores both `token_hash` (SHA256, for lookup) and `encrypted_token` (Fernet AES, for recovery). The `quota_usd` field limits total spending per token. Model access is controlled via the related `Model` table rather than an array column.
+- **User.auth_method**: Enum with values `LOCAL`, `MICROSOFT`, `COGNITO`. OAuth users have `password_hash = NULL`. The `role` field (`super_admin` or `admin`) and `permissions` JSON field implement RBAC.
+- **APIToken**: Stores both `token_hash` (SHA256, for lookup) and `encrypted_token` (Fernet AES, for recovery). The `quota_usd` field limits total spending per token; `monthly_quota_usd` limits monthly spending with configurable `monthly_reset_policy`. Model access is controlled via the related `Model` table rather than an array column.
+- **Team / TeamMember**: Teams group tokens under a shared monthly budget. Each `TeamMember` links a token to a team with an `allocated_usd` budget. The token's `monthly_quota_usd` is overridden by the team allocation when the token is a team member.
 - **Model**: Each row links one Bedrock model name to one APIToken. A token can access only models with `is_active=True` and `is_deleted=False`.
 - **RefreshToken.family_id**: Groups related tokens for theft detection. If a revoked token is reused, the entire family is revoked.
 
@@ -354,10 +388,13 @@ graph TD
         CognitoCallback["CognitoCallbackPage"]
         MSCallback["MicrosoftCallbackPage"]
         Dashboard["DashboardPage"]
+        Teams["TeamsPage"]
         Tokens["TokensPage"]
         Models["ModelsPage"]
         Playground["PlaygroundPage"]
         Monitor["MonitorPage"]
+        Activity["ActivityPage"]
+        AdminUsers["AdminUsersPage"]
         Settings["SettingsPage"]
         NotFound["ErrorNotFound"]
     end
@@ -388,10 +425,13 @@ graph TD
     Router -->|"requiresAuth: false"| MSCallback
 
     MainLayout --> Dashboard
+    MainLayout --> Teams
     MainLayout --> Tokens
     MainLayout --> Models
     MainLayout --> Playground
     MainLayout --> Monitor
+    MainLayout --> Activity
+    MainLayout --> AdminUsers
     MainLayout --> Settings
 
     Pages --> Stores
@@ -407,15 +447,18 @@ graph TD
 | `/auth/cognito/callback` | CognitoCallbackPage | No | Cognito OAuth callback |
 | `/auth/microsoft/callback` | MicrosoftCallbackPage | No | Microsoft OAuth callback |
 | `/` | DashboardPage | Yes | Overview, usage stats |
+| `/teams` | TeamsPage | Yes | Team budget management |
 | `/tokens` | TokensPage | Yes | API key management |
 | `/models` | ModelsPage | Yes | Model configuration |
 | `/playground` | PlaygroundPage | Yes | Test conversations |
 | `/monitor` | MonitorPage | Yes | Usage charts & analytics |
+| `/activity` | ActivityPage | Yes | Activity feed (management operations) |
+| `/admin-users` | AdminUsersPage | Yes (super_admin) | Admin user management |
 | `/settings` | SettingsPage | Yes | Account settings |
 
 ### Sidebar Navigation
 
-The `MainLayout.vue` renders a persistent left drawer with these menu items: Dashboard, API Keys, Models, Playground, Monitor, Settings. The header shows the app title and a user menu (email, balance, settings, logout).
+The `MainLayout.vue` renders a persistent left drawer with these menu items: Dashboard, Teams, API Keys, Models, Playground, Monitor, Activity, Admin Users (super_admin only), Settings. The header shows the app title and a user menu (email, balance, settings, logout).
 
 ---
 

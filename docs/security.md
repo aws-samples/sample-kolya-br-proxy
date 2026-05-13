@@ -593,12 +593,12 @@ deploy-all.sh
 
 ### Design
 
-API tokens are hashed before storage using **PBKDF2-HMAC-SHA256** with **600,000 iterations**, keyed with `JWT_SECRET_KEY`. This approach evolved through several iterations (SHA256 → HMAC-SHA256 → BLAKE2b → SHA3 → PBKDF2) to balance security and performance.
+API tokens are hashed before storage using **plain SHA256** (`hashlib.sha256`). The hash is deterministic (same input always produces the same output), so it is indexed in the database for O(1) lookup by hash.
 
 The hashing scheme serves two purposes:
 
 1. **Secure storage** — Even if the database is compromised, the original tokens cannot be recovered from the hashes
-2. **Fast lookup** — The hash is deterministic (same input always produces the same output), so it is indexed in the database for O(1) lookup by hash
+2. **Fast lookup** — The deterministic hash is indexed in the database for O(1) lookup
 
 Additionally, tokens are **encrypted with Fernet** (AES-128-CBC) using a key derived from `JWT_SECRET_KEY`. This allows administrators to retrieve the original token value when needed (e.g., for display in the admin dashboard), while the hash is used for authentication lookups.
 
@@ -606,12 +606,14 @@ Additionally, tokens are **encrypted with Fernet** (AES-128-CBC) using a key der
 
 | Field | Algorithm | Purpose |
 |-------|-----------|---------|
-| `token_hash` | PBKDF2-HMAC-SHA256 (600k iterations, keyed) | Authentication lookup (indexed) |
+| `token_hash` | SHA256 (plain, no salt/key) | Authentication lookup (indexed) |
 | `encrypted_token` | Fernet (AES-128-CBC) | Admin retrieval of original token |
 
-### Why PBKDF2 Over Plain SHA256?
+### Security Note
 
-Plain SHA256 is fast — an attacker with a leaked database can brute-force token hashes at billions of attempts per second. PBKDF2 with 600,000 iterations makes each attempt computationally expensive, increasing the cost of offline attacks by orders of magnitude. The `JWT_SECRET_KEY` as salt adds a server-side secret that an attacker must also possess to mount an offline attack.
+Plain SHA256 is fast, which means an attacker with a leaked database could brute-force token hashes quickly. However, API tokens are generated with high entropy (`secrets.token_urlsafe(32)`, 256 bits), making brute-force infeasible regardless of hash speed. The Fernet-encrypted token provides a second layer of protection requiring `JWT_SECRET_KEY` to decrypt.
+
+> **Note:** This is distinct from refresh token hashing, which uses PBKDF2-HMAC-SHA256 with 100,000 iterations (see [Refresh Token Security Hardening](#refresh-token-security-hardening) below).
 
 ### Key Files
 
@@ -663,6 +665,53 @@ The migration was a drop-in replacement at the API level. The project enforces a
 
 ---
 
+## Role-Based Access Control (RBAC)
+
+### User Roles
+
+The system implements two-tier RBAC via the `role` and `permissions` fields on the `User` model:
+
+| Role | Access |
+|------|--------|
+| `super_admin` | Full access to all endpoints and resources |
+| `admin` | Scoped access controlled by the `permissions` JSON object |
+
+### Permissions Object
+
+Admin users have a `permissions` JSON field that controls access to specific resource types:
+
+| Permission | Values | Controls |
+|-----------|--------|----------|
+| `manage_api_keys` | `true`/`"all"`, `[id, ...]`, `false` | API token CRUD |
+| `manage_teams` | `true`/`"all"`, `[id, ...]`, `false` | Team CRUD |
+| `manage_models` | `true`/`"all"`, `[id, ...]`, `false` | Model configuration |
+| `view_usage` | `true`/`false` | Usage statistics |
+| `view_monitor` | `true`/`false` | Request monitor |
+
+- `true` or `"all"`: full access to all resources of that type
+- Array of UUIDs: access only to those specific resources
+- `false` or missing: no access (403)
+
+### Endpoint Guards
+
+| Endpoint Group | Required Permission |
+|----------------|-------------------|
+| `/admin/tokens/*` | `manage_api_keys` |
+| `/admin/teams/*` | `manage_teams` |
+| `/admin/models/*` | `manage_models` |
+| `/admin/usage/*` | `view_usage` |
+| `/admin/monitor/*` | `view_monitor` |
+| `/admin/users/*` | `super_admin` role only |
+| `/admin/audit-logs` | `super_admin` role only |
+| `/admin/audit-logs/activity` | Any admin |
+
+### Key Files
+
+- `backend/app/models/user.py` — `UserRole` enum, `role` and `permissions` columns
+- `backend/app/api/deps.py` — `require_permission()`, `check_resource_scope()`, `get_allowed_resource_ids()`
+
+---
+
 ## Key Source Files
 
 | File | Responsibility |
@@ -673,7 +722,7 @@ The migration was a drop-in replacement at the API level. The project enforces a
 | `backend/app/middleware/security.py` | SecurityMiddleware (Origin/Referer/custom header validation + security response headers) |
 | `backend/main.py` | CORS middleware configuration, SecurityMiddleware registration |
 | `backend/app/core/config.py` | `ALLOWED_ORIGINS` configuration and production validation |
-| `backend/app/core/security.py` | JWT/API Token generation, PBKDF2 hashing, verification, Fernet encryption |
+| `backend/app/core/security.py` | JWT/API Token generation, SHA256 hashing (API tokens), PBKDF2 hashing (refresh tokens), verification, Fernet encryption |
 | `backend/app/services/token.py` | API Token CRUD service (hash + encrypt on create, hash lookup on validate) |
 | `backend/app/services/token_cache.py` | Cached token validation by hash |
 | `backend/app/services/oauth.py` | OAuth State generation and validation (CSRF + PKCE) |

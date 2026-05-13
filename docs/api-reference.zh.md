@@ -383,7 +383,7 @@ with client.messages.stream(
 
 #### 配合 Claude Code CLI 使用
 
-本代理完全兼容 Claude Code CLI。创建 token 时设置 `prefix: "sk-ant-api03"` 即可生成与官方 Anthropic API 格式一致的密钥。
+本代理完全兼容 Claude Code CLI。Token 前缀固定为 `sk-ant-api03`，与官方 Anthropic API 格式一致。
 
 **环境变量配置**：
 
@@ -608,7 +608,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 
 创建新的 API Token。
 
-**请求体**：
+**请求体**（`CreateTokenRequest`）：
 
 ```json
 {
@@ -616,7 +616,14 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": 100.00,
   "allowed_ips": ["192.168.1.0/24"],
-  "prefix": "kbr"
+  "description": "用于生产环境的 API Key",
+  "monthly_quota_usd": 50.00,
+  "monthly_reset_policy": "reset",
+  "token_metadata": {
+    "prompt_cache_enabled": true,
+    "prompt_cache_ttl": "1h"
+  },
+  "allowed_models": ["global.anthropic.claude-sonnet-4-5-20250929-v1:0"]
 }
 ```
 
@@ -626,7 +633,13 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 | `expires_at` | datetime | 否 | 过期时间 |
 | `quota_usd` | decimal | 否 | 使用配额（美元） |
 | `allowed_ips` | array | 否 | IP 白名单（CIDR） |
-| `prefix` | string | 否 | Token 前缀（默认: `"kbr"`）。可设为 `"sk-ant-api03"` 生成与 Claude Code / Anthropic SDK 兼容的 token |
+| `description` | string | 否 | Token 描述 |
+| `monthly_quota_usd` | decimal | 否 | 月度配额（美元） |
+| `monthly_reset_policy` | string | 否 | 月度配额重置策略：`"reset"`（重置）或 `"rollover"`（滚动累计） |
+| `token_metadata` | object | 否 | 元数据，如 `prompt_cache_enabled`、`prompt_cache_ttl` |
+| `allowed_models` | array[string] | 否 | 允许使用的模型列表 |
+
+> **注意**：Token 前缀固定为 `sk-ant-api03`，不可自定义。
 
 **响应** (201)：`TokenWithKeyResponse` -- 包含明文 Token 值。这是唯一一次返回明文 Token。
 
@@ -634,13 +647,16 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 {
   "id": "uuid",
   "name": "My API Key",
-  "token": "kbr_abc123...",
-  "key_prefix": "kbr",
+  "token": "sk-ant-api03_abc123...",
+  "key_prefix": "sk-ant-api03",
   "expires_at": "2026-12-31T23:59:59",
   "quota_usd": "100.00",
   "used_usd": "0.00",
   "remaining_quota": "100.00",
   "allowed_ips": ["192.168.1.0/24"],
+  "description": "用于生产环境的 API Key",
+  "monthly_quota_usd": "50.00",
+  "monthly_reset_policy": "reset",
   "is_active": true,
   "is_expired": false,
   "is_quota_exceeded": false,
@@ -675,9 +691,30 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
   "expires_at": "2027-06-30T00:00:00",
   "quota_usd": 200.00,
   "allowed_ips": ["10.0.0.0/8"],
-  "is_active": true
+  "is_active": true,
+  "description": "更新后的描述",
+  "monthly_quota_usd": 100.00,
+  "monthly_reset_policy": "rollover",
+  "token_metadata": {
+    "prompt_cache_enabled": true,
+    "prompt_cache_ttl": "5m"
+  },
+  "allowed_models": ["global.anthropic.claude-sonnet-4-5-20250929-v1:0", "us.amazon.nova-pro-v1:0"]
 }
 ```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | Token 显示名称 |
+| `expires_at` | datetime | 过期时间 |
+| `quota_usd` | decimal | 使用配额（美元） |
+| `allowed_ips` | array | IP 白名单（CIDR） |
+| `is_active` | boolean | 是否启用 |
+| `description` | string | Token 描述 |
+| `monthly_quota_usd` | decimal | 月度配额（美元） |
+| `monthly_reset_policy` | string | `"reset"` 或 `"rollover"` |
+| `token_metadata` | object | 元数据 |
+| `allowed_models` | array[string] | 允许使用的模型列表 |
 
 #### DELETE /admin/tokens/{token_id}
 
@@ -1114,6 +1151,125 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
   "api_keys": [{ "id": "uuid", "name": "Token Name" }],
   "teams": [{ "id": "uuid", "name": "Team Name" }],
   "models": [{ "id": "model-id", "name": "model-id" }]
+}
+```
+
+### 2.7 团队管理
+
+管理 Token 团队，支持预算分配和成员配额管理。需要 `manage_teams` 权限。
+
+#### POST /admin/teams
+
+创建新团队。
+
+**请求体**：
+
+```json
+{
+  "name": "Backend Team",
+  "monthly_budget_usd": 500.00,
+  "description": "后端开发团队"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | string | 是 | 团队名称 |
+| `monthly_budget_usd` | decimal | 否 | 月度预算（美元） |
+| `description` | string | 否 | 团队描述 |
+
+**响应** (201)：`TeamResponse`
+
+#### GET /admin/teams
+
+列出所有团队。
+
+**响应**：`TeamResponse` 数组。
+
+#### GET /admin/teams/{team_id}
+
+获取团队仪表盘，包含成员列表和用量统计。
+
+**响应**：`TeamDashboardResponse`
+
+#### PUT /admin/teams/{team_id}
+
+更新团队信息。
+
+**请求体**（所有字段可选）：
+
+```json
+{
+  "name": "Updated Team Name",
+  "monthly_budget_usd": 1000.00,
+  "description": "更新后的描述"
+}
+```
+
+#### DELETE /admin/teams/{team_id}
+
+删除团队。返回 204 No Content。
+
+#### POST /admin/teams/{team_id}/members
+
+添加成员到团队。
+
+**请求体**：
+
+```json
+{
+  "token_id": "uuid",
+  "allocated_usd": 100.00
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `token_id` | uuid | 是 | API Token UUID |
+| `allocated_usd` | decimal | 是 | 分配给成员的配额（美元） |
+
+#### DELETE /admin/teams/{team_id}/members/{token_id}
+
+从团队中移除成员。返回 204 No Content。
+
+#### PUT /admin/teams/{team_id}/members/{token_id}
+
+调整成员配额。
+
+**请求体**：
+
+```json
+{
+  "allocated_usd": 200.00
+}
+```
+
+#### POST /admin/teams/{team_id}/transfer
+
+成员间转移配额。
+
+**请求体**：
+
+```json
+{
+  "from_token_id": "uuid",
+  "to_token_id": "uuid",
+  "amount_usd": 50.00
+}
+```
+
+#### POST /admin/teams/{team_id}/members/batch
+
+批量添加成员。
+
+**请求体**：
+
+```json
+{
+  "members": [
+    { "token_id": "uuid1", "allocated_usd": 100.00 },
+    { "token_id": "uuid2", "allocated_usd": 200.00 }
+  ]
 }
 ```
 

@@ -262,9 +262,9 @@ Config(
 #### 配置参数
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120      # 保持连接 120 秒
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700     # 保持连接 3700 秒（必须 > ALB idle_timeout 3600s）
 UVICORN_LIMIT_CONCURRENCY = 100       # 每个 worker 最多 100 个并发连接
-UVICORN_LIMIT_MAX_REQUESTS = 10000    # 处理 10000 个请求后重启 worker
+UVICORN_LIMIT_MAX_REQUESTS = 0        # 禁用（仅在观察到内存泄漏时设置 >0）
 ```
 
 #### 启动配置
@@ -274,9 +274,9 @@ uvicorn.run(
     "main:app",
     host="0.0.0.0",
     port=settings.PORT,
-    timeout_keep_alive=120,
+    timeout_keep_alive=3700,
     limit_concurrency=100,
-    limit_max_requests=10000,
+    limit_max_requests=0,
 )
 ```
 
@@ -284,9 +284,9 @@ uvicorn.run(
 
 | 参数 | 作用 | 为什么需要 |
 |------|------|-----------|
-| `timeout_keep_alive=120` | 保持连接 2 分钟 | 支持 AI 流式响应（可能很长） |
+| `timeout_keep_alive=3700` | 保持连接约 62 分钟 | 必须 > ALB idle_timeout（3600s），防止 ALB 到后端的连接过早关闭 |
 | `limit_concurrency=100` | 限制并发连接数 | 防止单个 worker 过载 |
-| `limit_max_requests=10000` | 定期重启 worker | 防止内存泄漏累积 |
+| `limit_max_requests=0` | 禁用请求限制 | 默认禁用；仅在观察到内存泄漏时设置 >0 |
 
 ---
 
@@ -372,15 +372,13 @@ async with async_session_maker() as session:
 
 #### 实现原理
 
-使用 PBKDF2-HMAC-SHA256 哈希（600,000 次迭代）实现 O(1) 数据库索引查找，替代 O(n) 线性扫描。PBKDF2 有意设计为计算缓慢，使得对泄露哈希的暴力破解不可行，代价是每次哈希操作需要几百毫秒。由于每个 API 请求只计算一次哈希，这一权衡倾向于安全性而非原始速度，同时保留了 O(1) 查找。
+使用 SHA256 哈希实现 O(1) 数据库索引查找，替代 O(n) 线性扫描。SHA256 是确定性的快速哈希（纳秒级），结合 `token_hash` 列上的数据库索引，可实现高效的精确匹配查询。API Token 本身具有高熵（`secrets.token_urlsafe(32)`），因此即使使用快速哈希，暴力破解仍然不可行。
 
 ```python
 # 生成 token 哈希（security.py）
 def hash_token(token: str) -> str:
-    """使用 PBKDF2-HMAC-SHA256 对 token 进行哈希（600,000 次迭代）"""
-    return hashlib.pbkdf2_hmac(
-        "sha256", token.encode(), salt, 600_000
-    ).hex()
+    """使用 SHA256 对 token 进行哈希"""
+    return hashlib.sha256(token.encode()).hexdigest()
 ```
 
 #### 工作流程
@@ -392,7 +390,7 @@ def hash_token(token: str) -> str:
 plain_token = generate_api_token()  # 生成: kbr_abc123def456...
 
 # 计算哈希值存入数据库
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256 哈希
+token_hash = hash_token(plain_token)  # SHA256 哈希
 
 # 数据库存储
 token = APIToken(
@@ -424,9 +422,9 @@ result = await db.execute(
 在哈希查表之上，Redis 缓存层（`CachedTokenService`）可以完全跳过 DB 查询：
 
 ```
-请求 → PBKDF2 哈希 → Redis GET token:{hash}
-                        ├─ 缓存命中 → 返回缓存的 APIToken（~1ms）
-                        └─ 缓存未命中 → DB SELECT → Redis SET（TTL 300s）→ 返回
+请求 → SHA256 哈希 → Redis GET token:{hash}
+                       ├─ 缓存命中 → 返回缓存的 APIToken（~1ms）
+                       └─ 缓存未命中 → DB SELECT → Redis SET（TTL 300s）→ 返回
 ```
 
 - **TTL**：5 分钟 — 在数据新鲜度和节省 DB 连接之间取得平衡
@@ -441,9 +439,9 @@ result = await db.execute(
 | 方法 | 查询方式 | 时间复杂度 | 实际耗时 | 说明 |
 |------|---------|-----------|---------|------|
 | **优化前** | 遍历所有 token 逐个解密比对 | O(n) | ~10 秒 | 20,000 个 token |
-| **优化后（DB）** | PBKDF2 哈希 + 索引查询 | O(1) | ~300 毫秒 | PBKDF2 ~300ms + DB 索引 ~0.5ms |
-| **优化后（Redis 命中）** | PBKDF2 哈希 + Redis GET | O(1) | ~301 毫秒 | PBKDF2 ~300ms + Redis ~1ms，不占用 DB 连接 |
-| **性能提升** | - | - | **约 33 倍** | 安全性与性能的权衡 |
+| **优化后（DB）** | SHA256 哈希 + 索引查询 | O(1) | <1 毫秒 | SHA256 纳秒级 + DB 索引 ~0.5ms |
+| **优化后（Redis 命中）** | SHA256 哈希 + Redis GET | O(1) | ~1 毫秒 | SHA256 纳秒级 + Redis ~1ms，不占用 DB 连接 |
+| **性能提升** | - | - | **约 10,000 倍** | 从 O(n) 解密比对到 O(1) 哈希查找 |
 
 #### 性能测试结果
 
@@ -456,10 +454,10 @@ for token in all_tokens:  # 20,000 次循环
         return token
 # 耗时：~10 秒（每次解密 0.5ms × 20,000）
 
-# 优化后（PBKDF2 哈希 + 索引）
-token_hash = hash_token(plain_token)  # ~300ms（PBKDF2，600k 次迭代）
+# 优化后（SHA256 哈希 + 索引）
+token_hash = hash_token(plain_token)  # 纳秒级（SHA256）
 token = db.query(APIToken).filter_by(token_hash=token_hash).first()  # 0.5ms
-# 耗时：~300 毫秒（PBKDF2 为主要耗时；DB 查找可忽略不计）
+# 耗时：<1 毫秒（SHA256 + DB 索引查找）
 ```
 
 #### 数据库索引
@@ -486,12 +484,12 @@ class APIToken(Base):
 # 假设数据库被攻击者获取
 # 攻击者看到的数据：
 {
-    "token_hash": "<pbkdf2-hash>",         # PBKDF2-HMAC-SHA256 哈希
+    "token_hash": "<sha256-hash>",         # SHA256 哈希
     "encrypted_token": "<fernet-token>"  # Fernet 加密
 }
 
 # 攻击者无法：
-# ❌ 从 token_hash 反推原始 token（PBKDF2 单向哈希 + 计算代价高昂）
+# ❌ 从 token_hash 反推原始 token（SHA256 单向哈希 + token 高熵）
 # ❌ 解密 encrypted_token（需要 KBR_JWT_SECRET_KEY）
 # ❌ 使用 token_hash 调用 API（API 需要原始 token）
 ```
@@ -499,8 +497,8 @@ class APIToken(Base):
 **2. 无需密钥管理**
 
 ```python
-# 哈希查找：使用固定 salt（非逐用户密钥）
-token_hash = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 600_000).hex()
+# 哈希查找：无盐值、无密钥
+token_hash = hashlib.sha256(token.encode()).hexdigest()
 
 # 对比：加密存储需要密钥
 _fernet = Fernet(_get_encryption_key())  # 需要 KBR_JWT_SECRET_KEY
@@ -512,6 +510,7 @@ encrypted = _fernet.encrypt(token.encode())
 - ✅ 不需要密钥存储和管理
 - ✅ 不存在密钥泄露风险
 - ✅ 适合用于数据库索引查询
+- ✅ 速度极快（纳秒级），无性能开销
 
 #### 双重保护机制
 
@@ -519,9 +518,9 @@ encrypted = _fernet.encrypt(token.encode())
 
 ```python
 # 1. 哈希（用于查找）
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256，600k 次迭代
+token_hash = hash_token(plain_token)  # SHA256
 # 用途：数据库索引查询，O(1) 性能
-# 安全：单向哈希 + 计算代价高昂，难以暴力破解
+# 安全：单向哈希 + token 高熵（secrets.token_urlsafe(32)），暴力破解不可行
 
 # 2. 加密（用于存储）
 encrypted_token = encrypt_token(plain_token)  # Fernet，需要密钥
@@ -535,7 +534,7 @@ encrypted_token = encrypt_token(plain_token)  # Fernet，需要密钥
 
 ```python
 # 每个 API 请求都需要验证 token
-# 使用 PBKDF2 哈希查找，约 300ms 完成
+# 使用 SHA256 哈希查找，纳秒级完成
 
 @router.post("/v1/chat/completions")
 async def chat(token: str = Depends(get_api_token)):
@@ -576,7 +575,7 @@ start = time.time()
 token = await token_service.validate_token(plain_token)
 duration = time.time() - start
 
-if duration > 1.0:  # 超过 1 秒（PBKDF2 正常约 300ms）
+if duration > 0.1:  # 超过 100ms（SHA256 哈希 + DB/Redis 查找正常 <10ms）
     logger.warning("Slow token validation", extra={
         "duration": duration,
         "token_id": token.id if token else None
@@ -762,8 +761,8 @@ query = query.where(UsageRecord.created_at >= cutoff_date)
 ┌─────────────────────────────────────────────────────────────┐
 │  Uvicorn Worker (每个 Pod)                                   │
 │  - limit_concurrency: 100 (最多 100 并发连接)                │
-│  - timeout_keep_alive: 120s (支持长连接)                     │
-│  - limit_max_requests: 10000 (定期重启防内存泄漏)             │
+│  - timeout_keep_alive: 3700s (必须 > ALB idle_timeout)       │
+│  - limit_max_requests: 0 (禁用，仅在内存泄漏时启用)           │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -819,7 +818,7 @@ query = query.where(UsageRecord.created_at >= cutoff_date)
 |------|--------|---------|------|
 | **Bedrock 连接** | `connect_timeout` | 10 秒 | 建立连接的超时 |
 | **Bedrock 读取** | `read_timeout` | **300 秒 (5 分钟)** | 每次 chunk 读取超时（覆盖 thinking 模型暂停和长 prefill） |
-| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 120 秒 | 空闲连接超时（不影响请求） |
+| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 3700 秒 | 空闲连接超时（不影响请求，必须 > ALB idle_timeout） |
 | **ALB 空闲超时（API）** | `idle_timeout` | **600 秒 (10 分钟)** | 外层兜底；必须大于 read_timeout，确保 Bedrock 错误先返回 |
 | **ALB 空闲超时（前端）** | `idle_timeout` | 300 秒 (5 分钟) | 前端静态资源 |
 | **流式故障转移** | `STREAM_FIRST_CONTENT_TIMEOUT` | **600 秒 (10 分钟)** | 流连接后，若超时内无实际内容则触发故障转移 |
@@ -858,7 +857,7 @@ Config(
 - `backend/app/core/config.py`
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 秒 = 2 分钟
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700  # 3700 秒 ≈ 62 分钟（必须 > ALB idle_timeout 3600s）
 ```
 
 #### 重要说明
@@ -866,9 +865,10 @@ UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 秒 = 2 分钟
 ⚠️ **这不是请求超时！**
 
 `timeout_keep_alive` 是**空闲连接**的保持时间：
-- 如果连接在 120 秒内没有新请求，就关闭连接
+- 如果连接在 3700 秒内没有新请求，就关闭连接
 - **不影响正在进行的请求**
 - 请求可以运行任意长时间（受其他超时限制）
+- 设为 3700 秒是为了确保 Uvicorn keep-alive > ALB idle_timeout（3600s），防止 ALB 认为后端连接已关闭
 
 #### 实际行为
 
@@ -882,7 +882,7 @@ POST /v1/chat/completions
 # ↓
 # 响应完成
 
-# 连接空闲 120 秒后关闭（如果没有新请求）
+# 连接空闲 3700 秒后关闭（如果没有新请求）
 ```
 
 ---
@@ -1048,7 +1048,7 @@ POST /v1/chat/completions
   ↓
 AWS ALB (10 分钟空闲超时) ✅ 外层兜底，大于 read_timeout
   ↓
-Uvicorn (120 秒 keep-alive，不影响请求)
+Uvicorn (3700 秒 keep-alive，不影响请求)
   ↓
 FastAPI Application (无超时限制)
   ↓
@@ -1188,9 +1188,9 @@ KBR_BEDROCK_EXPECTED_PODS=3
 KBR_BEDROCK_RATE_BURST=10
 
 # Uvicorn 服务器
-KBR_UVICORN_TIMEOUT_KEEP_ALIVE=120
+KBR_UVICORN_TIMEOUT_KEEP_ALIVE=3700
 KBR_UVICORN_LIMIT_CONCURRENCY=100
-KBR_UVICORN_LIMIT_MAX_REQUESTS=10000
+KBR_UVICORN_LIMIT_MAX_REQUESTS=0
 
 # 流式响应心跳
 KBR_STREAM_HEARTBEAT_INTERVAL=15

@@ -262,9 +262,9 @@ If Bedrock still returns 429 (throttling), the SDK automatically retries with ex
 #### Configuration Parameters
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120      # Keep connection alive for 120 seconds
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700     # Keep connection alive (must be > ALB idle_timeout 3600s)
 UVICORN_LIMIT_CONCURRENCY = 100       # Max 100 concurrent connections per worker
-UVICORN_LIMIT_MAX_REQUESTS = 10000    # Restart worker after 10000 requests
+UVICORN_LIMIT_MAX_REQUESTS = 0        # Disabled by default (set >0 only if memory leaks observed)
 ```
 
 #### Startup Configuration
@@ -274,9 +274,9 @@ uvicorn.run(
     "main:app",
     host="0.0.0.0",
     port=settings.PORT,
-    timeout_keep_alive=120,
+    timeout_keep_alive=3700,
     limit_concurrency=100,
-    limit_max_requests=10000,
+    limit_max_requests=0,
 )
 ```
 
@@ -284,9 +284,9 @@ uvicorn.run(
 
 | Parameter | Purpose | Why Needed |
 |-----------|---------|------------|
-| `timeout_keep_alive=120` | Keep connection for 2 minutes | Support long AI streaming responses |
+| `timeout_keep_alive=3700` | Keep connection alive (> ALB idle timeout 3600s) | Ensure ALB closes connections first, not Uvicorn |
 | `limit_concurrency=100` | Limit concurrent connections | Prevent single worker overload |
-| `limit_max_requests=10000` | Periodic worker restart | Prevent memory leak accumulation |
+| `limit_max_requests=0` | Disabled (no periodic restart) | Set >0 only if memory leaks are observed |
 
 ---
 
@@ -372,15 +372,13 @@ async with async_session_maker() as session:
 
 #### Implementation Principle
 
-Uses PBKDF2-HMAC-SHA256 hashing (600,000 iterations) to achieve O(1) database index lookup, replacing O(n) linear scanning. PBKDF2 is intentionally slow to compute, making brute-force attacks on leaked hashes impractical, at the cost of a few hundred milliseconds per hash operation. Since each API request only computes one hash, this tradeoff favors security over raw speed while preserving O(1) lookup.
+Uses plain SHA256 hashing to achieve O(1) database index lookup, replacing O(n) linear scanning. SHA256 is fast and deterministic, making it ideal for indexed lookups. Token security relies on the high entropy of generated tokens (`secrets.token_urlsafe(32)`, 256 bits) rather than slow hashing.
 
 ```python
 # Generate token hash (security.py)
 def hash_token(token: str) -> str:
-    """Hash token using PBKDF2-HMAC-SHA256 (600,000 iterations)"""
-    return hashlib.pbkdf2_hmac(
-        "sha256", token.encode(), salt, 600_000
-    ).hex()
+    """Hash token using SHA256 for fast, deterministic lookup."""
+    return hashlib.sha256(token.encode()).hexdigest()
 ```
 
 #### Workflow
@@ -392,7 +390,7 @@ def hash_token(token: str) -> str:
 plain_token = generate_api_token()  # Generates: kbr_abc123def456...
 
 # Calculate hash for database storage
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256 hash
+token_hash = hash_token(plain_token)  # SHA256 hash
 
 # Database storage
 token = APIToken(
@@ -424,9 +422,9 @@ result = await db.execute(
 On top of the hash-based DB lookup, a Redis cache layer (`CachedTokenService`) avoids the DB round-trip entirely for repeat requests:
 
 ```
-Request → PBKDF2 hash → Redis GET token:{hash}
-                           ├─ Cache hit  → return cached APIToken  (~1ms)
-                           └─ Cache miss → DB SELECT → Redis SET (TTL 300s) → return
+Request → SHA256 hash → Redis GET token:{hash}
+                          ├─ Cache hit  → return cached APIToken  (~1ms)
+                          └─ Cache miss → DB SELECT → Redis SET (TTL 300s) → return
 ```
 
 - **TTL**: 5 minutes — balances freshness with DB connection savings
@@ -441,9 +439,9 @@ Under high concurrency, this prevents token validation from competing with long-
 | Method | Query Type | Time Complexity | Actual Time | Notes |
 |--------|-----------|----------------|-------------|-------|
 | **Before** | Iterate all tokens, decrypt and compare | O(n) | ~10 seconds | 20,000 tokens |
-| **After (DB)** | PBKDF2 hash + index query | O(1) | ~300 milliseconds | PBKDF2 ~300ms + DB index ~0.5ms |
-| **After (Redis hit)** | PBKDF2 hash + Redis GET | O(1) | ~301 milliseconds | PBKDF2 ~300ms + Redis ~1ms, no DB connection used |
-| **Improvement** | - | - | **~33x faster** | Security-performance tradeoff |
+| **After (DB)** | SHA256 hash + index query | O(1) | ~1 millisecond | SHA256 < 0.01ms + DB index ~0.5ms |
+| **After (Redis hit)** | SHA256 hash + Redis GET | O(1) | ~1 millisecond | SHA256 < 0.01ms + Redis ~1ms, no DB connection used |
+| **Improvement** | - | - | **~10,000x faster** | Hash + index eliminates O(n) scan |
 
 #### Performance Test Results
 
@@ -456,10 +454,10 @@ for token in all_tokens:  # 20,000 iterations
         return token
 # Time: ~10 seconds (0.5ms per decryption × 20,000)
 
-# After optimization (PBKDF2 hash + index)
-token_hash = hash_token(plain_token)  # ~300ms (PBKDF2, 600k iterations)
+# After optimization (SHA256 hash + index)
+token_hash = hash_token(plain_token)  # < 0.01ms (SHA256, very fast)
 token = db.query(APIToken).filter_by(token_hash=token_hash).first()  # 0.5ms
-# Time: ~300 milliseconds (PBKDF2 dominates; DB lookup negligible)
+# Time: ~1 millisecond (negligible hash + fast DB index lookup)
 ```
 
 #### Database Index
@@ -486,12 +484,12 @@ class APIToken(Base):
 # Assume database is compromised by attacker
 # Attacker sees:
 {
-    "token_hash": "<pbkdf2-hash>",         # PBKDF2-HMAC-SHA256 hash
+    "token_hash": "<sha256-hash>",         # SHA256 hash
     "encrypted_token": "<fernet-token>"  # Fernet encryption
 }
 
 # Attacker cannot:
-# ❌ Reverse token_hash to original token (PBKDF2 is one-way + computationally expensive)
+# ❌ Reverse token_hash to original token (SHA256 is one-way; tokens have 256 bits of entropy)
 # ❌ Decrypt encrypted_token (requires KBR_JWT_SECRET_KEY)
 # ❌ Use token_hash to call API (API requires original token)
 ```
@@ -499,8 +497,8 @@ class APIToken(Base):
 **2. No Key Management Required**
 
 ```python
-# Hash lookup: Uses a fixed salt (not a per-user secret key)
-token_hash = hashlib.pbkdf2_hmac("sha256", token.encode(), salt, 600_000).hex()
+# Hash lookup: No key or salt needed
+token_hash = hashlib.sha256(token.encode()).hexdigest()
 
 # Compare: Encryption requires key
 _fernet = Fernet(_get_encryption_key())  # Requires KBR_JWT_SECRET_KEY
@@ -519,9 +517,9 @@ This project uses **hash + encryption** dual protection:
 
 ```python
 # 1. Hash (for lookup)
-token_hash = hash_token(plain_token)  # PBKDF2-HMAC-SHA256, 600k iterations
+token_hash = hash_token(plain_token)  # SHA256
 # Purpose: Database index query, O(1) performance
-# Security: One-way hash + computationally expensive to brute-force
+# Security: One-way hash; tokens have 256 bits of entropy making brute-force infeasible
 
 # 2. Encryption (for storage)
 encrypted_token = encrypt_token(plain_token)  # Fernet, requires key
@@ -535,7 +533,7 @@ encrypted_token = encrypt_token(plain_token)  # Fernet, requires key
 
 ```python
 # Every API request needs token validation
-# Using PBKDF2 hash lookup, completes in ~300ms
+# Using SHA256 hash lookup, completes in ~1ms
 
 @router.post("/v1/chat/completions")
 async def chat(token: str = Depends(get_api_token)):
@@ -576,7 +574,7 @@ start = time.time()
 token = await token_service.validate_token(plain_token)
 duration = time.time() - start
 
-if duration > 1.0:  # More than 1s (PBKDF2 takes ~300ms normally)
+if duration > 1.0:  # More than 1s (SHA256 hash + DB lookup is normally < 1ms)
     logger.warning("Slow token validation", extra={
         "duration": duration,
         "token_id": token.id if token else None
@@ -762,8 +760,8 @@ A race condition in concurrent token refresh was fixed using row-level locking (
 ┌─────────────────────────────────────────────────────────────┐
 │  Uvicorn Worker (per Pod)                                   │
 │  - limit_concurrency: 100 (max 100 concurrent connections) │
-│  - timeout_keep_alive: 120s (support long connections)     │
-│  - limit_max_requests: 10000 (periodic restart)            │
+│  - timeout_keep_alive: 3700s (must be > ALB idle 3600s)    │
+│  - limit_max_requests: 0 (disabled by default)             │
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -819,7 +817,7 @@ A race condition in concurrent token refresh was fixed using row-level locking (
 |-------|--------------|---------|-------------|
 | **Bedrock Connect** | `connect_timeout` | 10 seconds | Connection establishment timeout |
 | **Bedrock Read** | `read_timeout` | **300 seconds (5 min)** | Per-chunk read timeout (covers thinking model pauses and long prefill) |
-| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 120 seconds | Idle connection timeout (doesn't affect requests) |
+| **Uvicorn Keep-Alive** | `timeout_keep_alive` | 3700 seconds | Idle connection timeout (must be > ALB idle_timeout 3600s) |
 | **ALB Idle (API)** | `idle_timeout` | **600 seconds (10 min)** | Outer fallback; must exceed read_timeout so Bedrock errors surface first |
 | **ALB Idle (Frontend)** | `idle_timeout` | 300 seconds (5 min) | Frontend static resources |
 | **Stream Failover** | `STREAM_FIRST_CONTENT_TIMEOUT` | **600 seconds (10 min)** | After stream connects, failover if no real content within timeout |
@@ -858,7 +856,7 @@ Config(
 - `backend/app/core/config.py`
 
 ```python
-UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 seconds = 2 minutes
+UVICORN_TIMEOUT_KEEP_ALIVE = 3700  # 3700 seconds (must be > ALB idle_timeout 3600s)
 ```
 
 #### Important Note
@@ -866,7 +864,7 @@ UVICORN_TIMEOUT_KEEP_ALIVE = 120  # 120 seconds = 2 minutes
 ⚠️ **This is NOT a request timeout!**
 
 `timeout_keep_alive` is the **idle connection** keep-alive time:
-- If connection has no new requests within 120 seconds, close the connection
+- If connection has no new requests within 3700 seconds, close the connection
 - **Does not affect ongoing requests**
 - Requests can run for any duration (subject to other timeout limits)
 
@@ -882,7 +880,7 @@ POST /v1/chat/completions
 # ↓
 # Response completed
 
-# Connection closes after 120 seconds of idle (if no new requests)
+# Connection closes after 3700 seconds of idle (if no new requests)
 ```
 
 ---
@@ -1048,7 +1046,7 @@ Client
   ↓
 AWS ALB (10-minute idle timeout) ✅ Outer fallback, exceeds read_timeout
   ↓
-Uvicorn (120-second keep-alive, doesn't affect requests)
+Uvicorn (3700-second keep-alive, doesn't affect requests)
   ↓
 FastAPI Application (no timeout limit)
   ↓
@@ -1188,9 +1186,9 @@ KBR_BEDROCK_EXPECTED_PODS=3
 KBR_BEDROCK_RATE_BURST=10
 
 # Uvicorn server
-KBR_UVICORN_TIMEOUT_KEEP_ALIVE=120
+KBR_UVICORN_TIMEOUT_KEEP_ALIVE=3700
 KBR_UVICORN_LIMIT_CONCURRENCY=100
-KBR_UVICORN_LIMIT_MAX_REQUESTS=10000
+KBR_UVICORN_LIMIT_MAX_REQUESTS=0
 
 # Streaming response heartbeat
 KBR_STREAM_HEARTBEAT_INTERVAL=15
