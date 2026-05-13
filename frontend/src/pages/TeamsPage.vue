@@ -740,7 +740,7 @@ function editTeam(team: TeamListItem) {
 function confirmDeleteTeam(team: TeamListItem) {
   Dialog.create({
     title: 'Delete Team',
-    message: `Are you sure you want to delete team "${team.name}"? Members will become standalone tokens.`,
+    message: `Are you sure you want to delete team "${team.name}"? All API keys in this team will be permanently revoked and cannot be used anymore.`,
     cancel: { label: 'Cancel', color: 'grey-7', flat: true },
     ok: { label: 'Delete', color: 'negative', unelevated: true },
     persistent: true,

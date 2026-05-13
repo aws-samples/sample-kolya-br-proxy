@@ -426,7 +426,10 @@ async def delete_team(
         raise HTTPException(status_code=400, detail="Invalid team ID")
 
     service = TeamService(db)
-    await service.delete_team(team_uuid, current_user.id)
+    token_hashes = await service.delete_team(team_uuid, current_user.id)
+
+    for th in token_hashes:
+        await _invalidate_token_cache(th)
 
     await audit_service.log(
         action=AuditAction.TEAM_DELETED,

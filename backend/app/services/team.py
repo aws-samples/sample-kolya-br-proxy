@@ -127,23 +127,30 @@ class TeamService:
         await self.db.refresh(team)
         return team
 
-    async def delete_team(self, team_id: UUID, user_id: UUID) -> None:
+    async def delete_team(self, team_id: UUID, user_id: UUID) -> List[str]:
+        """Delete team and soft-delete all member tokens.
+
+        Returns list of token_hashes for cache invalidation.
+        """
         team = await self.get_team(team_id, user_id)
 
-        # Clear monthly quota from member tokens (they become standalone)
         members_result = await self.db.execute(
             select(TeamMember)
             .where(TeamMember.team_id == team.id)
             .options(joinedload(TeamMember.token))
         )
+        token_hashes = []
         for member in members_result.scalars().all():
-            if member.token:
-                member.token.monthly_quota_usd = None
-                member.token.monthly_reset_policy = None
-                member.token.monthly_quota_start = None
+            if member.token and not member.token.is_deleted:
+                member.token.is_deleted = True
+                member.token.is_active = False
+                member.token.deleted_at = datetime.utcnow()
+                if member.token.token_hash:
+                    token_hashes.append(member.token.token_hash)
 
         await self.db.delete(team)
         await self.db.commit()
+        return token_hashes
 
     # ------------------------------------------------------------------
     # Member management
