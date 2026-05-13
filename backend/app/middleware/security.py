@@ -125,6 +125,11 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             logger.warning(f"Failed to parse referer: {e}")
             return False
 
+    _CORS_ALLOW_HEADERS = (
+        "Authorization, Content-Type, X-Requested-With, Accept, Origin, "
+        "X-Api-Key, x-api-key, x-goog-api-key"
+    )
+
     def _add_cors_headers(self, response: Response, origin: Optional[str]) -> Response:
         """
         Add CORS headers to response.
@@ -139,12 +144,18 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if origin and self._is_origin_allowed(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = "*"
-            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            )
+            response.headers["Access-Control-Allow-Headers"] = self._CORS_ALLOW_HEADERS
+            response.headers["Access-Control-Max-Age"] = "3600"
         elif "*" in self.exact_origins:
             response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "*"
-            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            )
+            response.headers["Access-Control-Allow-Headers"] = self._CORS_ALLOW_HEADERS
+            response.headers["Access-Control-Max-Age"] = "3600"
         return response
 
     async def dispatch(self, request: Request, call_next) -> Response:
@@ -165,9 +176,12 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if path.startswith("/health"):
             return await call_next(request)
 
-        # Skip security checks for OPTIONS (CORS preflight)
+        # Handle OPTIONS (CORS preflight) directly — BaseHTTPMiddleware can
+        # lose headers set by inner CORSMiddleware, causing intermittent failures.
         if method == "OPTIONS":
-            return await call_next(request)
+            origin = request.headers.get("origin")
+            response = Response(status_code=200)
+            return self._add_cors_headers(response, origin)
 
         # Get origin header
         origin = request.headers.get("origin")

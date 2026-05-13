@@ -6,7 +6,7 @@
     <q-card class="q-mb-md">
       <q-card-section>
         <div class="text-h6">Account Balance</div>
-        <div v-if="tokensStore.loading" class="q-mt-md">
+        <div v-if="!tokensStore.loaded" class="q-mt-md">
           <q-skeleton type="text" width="200px" height="48px" />
         </div>
         <div v-else class="text-h3 text-primary q-mt-md">
@@ -100,6 +100,18 @@
           >
             <q-tooltip>Export CSV</q-tooltip>
           </q-btn>
+          <q-btn
+            v-if="authStore.isSuperAdmin"
+            icon="vpn_key"
+            flat
+            dense
+            round
+            size="xs"
+            color="grey-7"
+            @click="exportKeys"
+          >
+            <q-tooltip>Export All Keys</q-tooltip>
+          </q-btn>
         </div>
 
         <q-table
@@ -143,10 +155,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
+import { Notify } from 'quasar';
 import { useTokensStore } from 'src/stores/tokens';
 import { useDashboardStore } from 'src/stores/dashboard';
 import { useAuthStore } from 'src/stores/auth';
 import { api } from 'src/boot/axios';
+import { getApiBaseUrl } from 'src/utils/api';
 
 const tokensStore = useTokensStore();
 const dashboardStore = useDashboardStore();
@@ -364,7 +378,8 @@ async function exportCsv() {
       params.start_date = start.toISOString();
     } else {
       const d = new Date();
-      d.setDate(d.getDate() - 30);
+      d.setDate(d.getDate() - 89);
+      d.setHours(0, 0, 0, 0);
       params.start_date = d.toISOString();
     }
     if (endDate.value) {
@@ -384,17 +399,25 @@ async function exportCsv() {
     const response = await api.get('/admin/usage/breakdown', { params });
     const rows = response.data.data as Array<Record<string, unknown>>;
 
-    const headers = ['Date', 'API Key', 'Model', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Requests', 'Cost (USD)'];
-    const csvRows = rows.map(r => [
-      r.time_bucket,
-      r.token_name,
-      r.model,
-      r.prompt_tokens,
-      r.completion_tokens,
-      r.total_tokens,
-      r.request_count,
-      r.total_cost,
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+    if (!rows || rows.length === 0) {
+      Notify.create({ type: 'warning', message: 'No data to export', position: 'top' });
+      return;
+    }
+
+    const tokenStatusMap = new Map(
+      tokensStore.tokens.map(t => [t.id, t.is_active ? 'Active' : 'Inactive'])
+    );
+
+    const isSuperAdmin = authStore.isSuperAdmin;
+    const headers = isSuperAdmin
+      ? ['Date', 'API Key', 'Status', 'Model', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Requests', 'Cost (USD)']
+      : ['Date', 'Status', 'Model', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Requests', 'Cost (USD)'];
+    const csvRows = rows.map(r => {
+      const row = isSuperAdmin
+        ? [r.time_bucket, r.token_name, tokenStatusMap.get(String(r.token_id)) ?? 'Unknown', r.model, r.prompt_tokens, r.completion_tokens, r.total_tokens, r.request_count, r.total_cost]
+        : [r.time_bucket, tokenStatusMap.get(String(r.token_id)) ?? 'Unknown', r.model, r.prompt_tokens, r.completion_tokens, r.total_tokens, r.request_count, r.total_cost];
+      return row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
+    });
 
     const csv = [headers.join(','), ...csvRows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -402,11 +425,26 @@ async function exportCsv() {
     const link = document.createElement('a');
     link.href = url;
     link.download = `usage_${params.start_date.slice(0, 10)}_${params.end_date.slice(0, 10)}.csv`;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: string } } };
+    Notify.create({
+      type: 'negative',
+      message: err.response?.data?.detail || 'Failed to export CSV',
+      position: 'top',
+    });
   } finally {
     exporting.value = false;
   }
+}
+
+function exportKeys() {
+  const token = localStorage.getItem('access_token');
+  if (!token) return;
+  window.open(`${getApiBaseUrl()}/admin/tokens/export/keys?token=${encodeURIComponent(token)}`, '_blank');
 }
 
 onMounted(async () => {

@@ -3,13 +3,16 @@ API Token management endpoints.
 """
 
 import calendar
+import csv
+import io
 import uuid as uuid_mod
 from datetime import datetime
 from decimal import Decimal
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,15 +24,16 @@ from app.api.deps import (
     get_token_service,
     require_permission,
 )
-from app.models.audit_log import AuditAction
-from app.services.audit_log import AuditLogService
 from app.core.database import get_db
-from app.core.security import decrypt_token
+from app.core.security import decode_jwt_token, decrypt_token
+from app.models.audit_log import AuditAction
 from app.models.model import Model
 from app.models.team import Team, TeamMember
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
-from app.models.user import User
+from app.models.user import User, UserRole
+from app.services.audit_log import AuditLogService
+from app.services.auth import AuthService
 from app.services.token import TokenService
 
 router = APIRouter()
@@ -530,6 +534,105 @@ async def list_tokens(
         )
 
     return token_responses
+
+
+@router.get("/export/keys")
+async def export_keys_csv(
+    request_obj: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export all API keys as CSV file (super_admin only).
+
+    Accepts JWT via Authorization header OR ?token= query param (for window.open downloads).
+    Returns a downloadable CSV with: Name, Key, Status, Quota, Used, Created.
+    The response is a file attachment — key values never appear in JSON responses.
+    """
+    jwt_token = None
+    auth_header = request_obj.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        jwt_token = auth_header[7:]
+    if not jwt_token:
+        jwt_token = request_obj.query_params.get("token")
+    if not jwt_token:
+        raise HTTPException(status_code=401, detail="Missing authentication")
+
+    try:
+        payload = decode_jwt_token(jwt_token)
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user_id = UUID(payload.get("sub"))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    auth_service = AuthService(db)
+    user = await auth_service.get_user_by_id(user_id)
+    if not user or user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="Super admin access required")
+
+    result = await db.execute(select(APIToken))
+    tokens = list(result.scalars().all())
+
+    usage_result = await db.execute(
+        select(
+            UsageRecord.token_id,
+            func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")),
+        ).group_by(UsageRecord.token_id)
+    )
+    usage_map = {row[0]: row[1] for row in usage_result.all()}
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        ["Name", "Key", "Status", "Quota (USD)", "Used (USD)", "Created At"]
+    )
+
+    for token in tokens:
+        plain_key = ""
+        try:
+            if token.encrypted_token:
+                plain_key = decrypt_token(token.encrypted_token)
+        except Exception:
+            plain_key = "(decrypt failed)"
+
+        if token.is_deleted:
+            token_status = "Deleted"
+        elif not token.is_active:
+            token_status = "Revoked"
+        elif token.is_expired:
+            token_status = "Expired"
+        elif token.is_quota_exceeded:
+            token_status = "Quota Exceeded"
+        else:
+            token_status = "Active"
+
+        used = usage_map.get(token.id, Decimal("0.00"))
+
+        writer.writerow(
+            [
+                token.name,
+                plain_key,
+                token_status,
+                str(token.quota_usd) if token.quota_usd else "Unlimited",
+                str(used),
+                token.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if token.created_at
+                else "",
+            ]
+        )
+
+    filename = f"api_keys_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/{token_id}", response_model=TokenResponse)

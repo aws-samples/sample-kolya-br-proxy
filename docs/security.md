@@ -624,6 +624,20 @@ Plain SHA256 is fast, which means an attacker with a leaked database could brute
 
 ---
 
+## API Token Deletion Protection
+
+When a token is deleted via `DELETE /admin/tokens/{token_id}`, three layers ensure it is immediately blocked from API access:
+
+| Layer | Mechanism | Protection |
+|-------|-----------|------------|
+| 1 | `is_active = false` | `validate_token()` queries `WHERE is_active = TRUE` — DB returns no match |
+| 2 | Redis cache invalidation | `_invalidate_token_cache()` deletes the cached entry on deletion |
+| 3 | Cache-hit guard | Even if a stale cache is hit (race condition), `is_active` is checked before returning the token |
+
+The token is soft-deleted (`is_deleted = true`) to preserve historical usage data for reporting, but `is_active = false` is the authoritative gate for API access.
+
+---
+
 ## Refresh Token Security Hardening
 
 ### PBKDF2 Hashing for Refresh Tokens

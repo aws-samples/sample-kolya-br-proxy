@@ -718,7 +718,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 
 #### DELETE /admin/tokens/{token_id}
 
-永久删除 Token。返回 204 No Content。
+软删除 Token。设置 `is_deleted = true`、`is_active = false`，并失效 Redis 缓存。Token 立即被禁止 API 访问，历史用量数据保留。返回 204 No Content。
 
 #### POST /admin/tokens/{token_id}/revoke
 

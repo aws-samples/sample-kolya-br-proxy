@@ -362,6 +362,7 @@ class TokenService:
             return False
 
         token.is_deleted = True
+        token.is_active = False
         token.deleted_at = datetime.utcnow()
         await self.db.commit()
         return True

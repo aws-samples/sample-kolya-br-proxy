@@ -625,6 +625,20 @@ def hash_token(token: str) -> str:
 
 ---
 
+## API Token 删除保护
+
+通过 `DELETE /admin/tokens/{token_id}` 删除 Token 时，三层机制确保其立即被禁止 API 访问：
+
+| 层级 | 机制 | 防护 |
+|------|------|------|
+| 1 | `is_active = false` | `validate_token()` 查询条件 `WHERE is_active = TRUE` — 数据库直接无匹配 |
+| 2 | Redis 缓存失效 | 删除时调用 `_invalidate_token_cache()` 清除缓存条目 |
+| 3 | 缓存命中守卫 | 即使竞态条件下命中旧缓存，也会检查 `is_active` 后拒绝 |
+
+Token 采用软删除（`is_deleted = true`）以保留历史用量数据用于报表，但 `is_active = false` 是 API 访问的权威拦截门。
+
+---
+
 ## Refresh Token 安全加固
 
 ### PBKDF2 哈希
