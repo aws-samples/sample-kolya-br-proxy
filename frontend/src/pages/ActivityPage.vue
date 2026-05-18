@@ -73,8 +73,9 @@ function parseDetails(details: string | null): string {
   try {
     const obj = JSON.parse(details);
     if (obj.name) return obj.name;
+    if (obj.token_name) return obj.token_name;
     if (obj.email) return obj.email;
-    if (obj.names) return `${obj.count} tokens`;
+    if (obj.names) return obj.names.join(', ');
     return JSON.stringify(obj);
   } catch {
     return details;
