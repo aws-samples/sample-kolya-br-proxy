@@ -292,7 +292,7 @@ async def check_alerts_for_usage(
     today = now.date()
     month_start = datetime(today.year, today.month, 1)
     day_start = datetime(today.year, today.month, today.day)
-    hour_start = now - timedelta(hours=1)
+    hour_start = datetime(today.year, today.month, today.day, now.hour)
 
     usage_q = select(
         func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")).label("total"),
