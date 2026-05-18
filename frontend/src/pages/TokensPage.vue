@@ -139,6 +139,18 @@
                     dense
                     round
                     size="xs"
+                    icon="notifications"
+                    color="warning"
+                    @click.stop="openAlertDialog(props.row)"
+                    class="q-mr-xs"
+                  >
+                    <q-tooltip>Alerts</q-tooltip>
+                  </q-btn>
+                  <q-btn
+                    flat
+                    dense
+                    round
+                    size="xs"
                     icon="delete"
                     color="negative"
                     @click.stop="deleteToken(props.row)"
@@ -566,6 +578,98 @@
       </q-card>
     </q-dialog>
 
+    <!-- Alert Rules Dialog -->
+    <q-dialog v-model="showAlertDialog">
+      <q-card dark style="min-width: 600px; max-width: 700px">
+        <q-card-section>
+          <div class="text-h6">Alerts — {{ alertDialogToken?.name }}</div>
+          <div class="text-caption text-grey-7">
+            {{ tokenHasQuota ? 'Quota-based percentage alerts' : 'Absolute cost alerts' }}
+          </div>
+        </q-card-section>
+
+        <!-- Add new rule -->
+        <q-card-section class="q-pt-none">
+          <div class="row q-col-gutter-sm q-mb-sm items-center">
+            <div class="col">
+              <q-select
+                v-model="newAlertRule.rule_key"
+                :options="alertRuleOptions"
+                label="Rule"
+                outlined rounded dark dense emit-value map-options
+              />
+            </div>
+            <div class="col">
+              <q-input
+                v-model.number="newAlertRule.threshold_value"
+                label="Threshold"
+                outlined rounded dark dense type="number" :suffix="alertThresholdUnit"
+              />
+            </div>
+            <div class="col-auto">
+              <q-btn label="Add" color="grey-8" size="sm" @click="addAlertRule" :loading="addingAlertRule"
+                :disable="!newAlertRule.rule_key || !newAlertRule.threshold_value"
+                unelevated />
+            </div>
+          </div>
+
+          <div class="row items-center q-gutter-sm">
+            <span class="text-caption text-grey-7">Notify via</span>
+            <q-checkbox v-model="newAlertRule.notify_in_app" label="In-app" dark dense size="sm" />
+            <q-checkbox v-model="newAlertRule.notify_email_enabled" label="Email" dark dense size="sm" />
+          </div>
+
+          <q-input v-if="newAlertRule.notify_email_enabled" v-model="newAlertRule.notify_email"
+            label="Email addresses (comma-separated)" outlined rounded dark dense class="q-mt-sm" />
+        </q-card-section>
+
+        <!-- Existing rules -->
+        <q-card-section v-if="tokenAlertRules.length > 0" class="q-pt-none">
+          <q-separator class="q-mb-sm" />
+          <div class="text-caption text-grey-7 q-mb-xs">Active Rules</div>
+          <q-table
+            :rows="tokenAlertRules"
+            :columns="tokenAlertColumns"
+            row-key="id"
+            flat dark dense
+            hide-pagination
+            :rows-per-page-options="[0]"
+            class="bg-transparent"
+          >
+            <template #body-cell-threshold="props">
+              <q-td :props="props">
+                {{ props.row.alert_type === 'hard' ? parseFloat(props.row.threshold_value) + '%' : '$' + parseFloat(props.row.threshold_value) }}
+              </q-td>
+            </template>
+            <template #body-cell-notify="props">
+              <q-td :props="props">
+                <q-icon v-if="props.row.notify_in_app" name="notifications" size="xs" class="q-mr-xs" />
+                <q-icon v-if="props.row.notify_email" name="email" size="xs" class="q-mr-xs" />
+              </q-td>
+            </template>
+            <template #body-cell-active="props">
+              <q-td :props="props">
+                <q-toggle
+                  :model-value="props.row.is_active"
+                  @update:model-value="(val) => toggleAlertRule(props.row.id, val as boolean)"
+                  dark dense size="sm"
+                />
+              </q-td>
+            </template>
+            <template #body-cell-actions="props">
+              <q-td :props="props">
+                <q-btn flat dense round size="xs" icon="delete" color="negative" @click="deleteAlertRule(props.row.id)" />
+              </q-td>
+            </template>
+          </q-table>
+        </q-card-section>
+
+        <q-card-actions align="right" class="q-pt-none">
+          <q-btn label="Close" flat v-close-popup size="sm" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
   </q-page>
 </template>
 
@@ -574,6 +678,8 @@ import { ref, computed, onMounted } from 'vue';
 import { useTokensStore } from 'src/stores/tokens';
 import { useTeamsStore } from 'src/stores/teams';
 import { useModelsStore } from 'src/stores/models';
+import { useAlertsStore, SOFT_RULES, getRuleLabel, getRuleUnit } from 'src/stores/alerts';
+import type { CreateAlertRulePayload } from 'src/stores/alerts';
 import { Notify, Dialog, copyToClipboard } from 'quasar';
 import { getApiBaseUrl } from 'src/utils/api';
 import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, BatchCreateTokenRequest } from 'src/stores/tokens';
@@ -581,6 +687,7 @@ import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, Batc
 const tokensStore = useTokensStore();
 const teamsStore = useTeamsStore();
 const modelsStore = useModelsStore();
+const alertsStore = useAlertsStore();
 
 const searchQuery = ref('');
 
@@ -995,6 +1102,119 @@ async function copyAllBatchTokens() {
     Notify.create({ type: 'positive', message: 'All keys copied to clipboard', position: 'top' });
   } catch {
     Notify.create({ type: 'negative', message: 'Copy failed, please select and copy manually', position: 'top' });
+  }
+}
+
+// --- Alert rules ---
+const showAlertDialog = ref(false);
+const alertDialogToken = ref<APIToken | null>(null);
+const tokenAlertRules = computed(() => alertsStore.rules);
+const tokenAlertColumns = [
+  { name: 'rule', label: 'Rule', field: 'rule_key', align: 'left' as const, format: (val: string) => getRuleLabel(val) },
+  { name: 'threshold', label: 'Threshold', field: 'threshold_value', align: 'left' as const },
+  { name: 'notify', label: 'Notify', field: 'id', align: 'center' as const },
+  { name: 'active', label: 'Active', field: 'is_active', align: 'center' as const },
+  { name: 'actions', label: '', field: 'id', align: 'right' as const },
+];
+const addingAlertRule = ref(false);
+
+const newAlertRule = ref({
+  rule_key: '',
+  threshold_value: undefined as number | undefined,
+  cooldown_hours: 24,
+  notify_in_app: true,
+  notify_email_enabled: false,
+  notify_email: '',
+});
+
+const tokenIsTeamKey = computed(() => {
+  const t = alertDialogToken.value;
+  return !!(t?.team_id && t?.allocated_usd);
+});
+
+const tokenHasQuota = computed(() => {
+  const t = alertDialogToken.value;
+  if (!t) return false;
+  return !!(t.quota_usd || t.allocated_usd);
+});
+
+const tokenHasDailyLimit = computed(() => {
+  const t = alertDialogToken.value;
+  if (!t || !t.team_id) return false;
+  const team = teamsStore.teams.find((tm) => tm.id === t.team_id);
+  return !!team?.daily_limit_enabled;
+});
+
+const alertRuleOptions = computed(() => {
+  if (!tokenHasQuota.value) {
+    return SOFT_RULES.map((r) => ({ label: r.label, value: r.value }));
+  }
+  const options: { label: string; value: string }[] = [];
+  if (tokenIsTeamKey.value) {
+    options.push({ label: 'Monthly quota usage', value: 'monthly_quota_pct' });
+  }
+  options.push({ label: 'Total quota usage', value: 'lifetime_quota_pct' });
+  if (tokenHasDailyLimit.value) {
+    options.push({ label: 'Daily limit usage', value: 'daily_limit_pct' });
+  }
+  return options;
+});
+
+const alertThresholdUnit = computed(() => {
+  if (!newAlertRule.value.rule_key) return tokenHasQuota.value ? '%' : '$';
+  return getRuleUnit(newAlertRule.value.rule_key);
+});
+
+async function openAlertDialog(token: APIToken) {
+  alertDialogToken.value = token;
+  showAlertDialog.value = true;
+  newAlertRule.value = {
+    rule_key: '',
+    threshold_value: undefined,
+    cooldown_hours: 24,
+    notify_in_app: true,
+    notify_email_enabled: false,
+    notify_email: '',
+  };
+  await alertsStore.fetchRules(token.id);
+}
+
+async function addAlertRule() {
+  if (!alertDialogToken.value || !newAlertRule.value.rule_key || !newAlertRule.value.threshold_value) return;
+  addingAlertRule.value = true;
+  try {
+    const alertType = tokenHasQuota.value ? 'hard' : 'soft';
+    const payload: CreateAlertRulePayload = {
+      alert_type: alertType,
+      rule_key: newAlertRule.value.rule_key,
+      threshold_value: newAlertRule.value.threshold_value,
+      token_id: alertDialogToken.value.id,
+      cooldown_hours: newAlertRule.value.cooldown_hours,
+      notify_in_app: newAlertRule.value.notify_in_app,
+      notify_email: newAlertRule.value.notify_email_enabled ? newAlertRule.value.notify_email : undefined,
+    };
+    const result = await alertsStore.createRule(payload);
+    if (result) {
+      await alertsStore.fetchRules(alertDialogToken.value.id);
+      newAlertRule.value.rule_key = '';
+      newAlertRule.value.threshold_value = undefined;
+    }
+  } finally {
+    addingAlertRule.value = false;
+  }
+}
+
+async function toggleAlertRule(ruleId: string, isActive: boolean) {
+  await alertsStore.updateRule(ruleId, { is_active: isActive });
+  if (alertDialogToken.value) {
+    await alertsStore.fetchRules(alertDialogToken.value.id);
+  }
+}
+
+async function deleteAlertRule(ruleId: string) {
+  const deleted = await alertsStore.deleteRule(ruleId);
+  if (deleted && alertDialogToken.value) {
+    await alertsStore.fetchRules(alertDialogToken.value.id);
   }
 }
 

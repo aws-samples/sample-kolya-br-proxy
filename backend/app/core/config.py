@@ -177,6 +177,16 @@ class Settings(BaseSettings):
         description="OTLP HTTP endpoint for xray mode (e.g. http://HOST_IP:4316). Empty = auto-detect via NODE_IP env var.",
     )
 
+    # Alert notification settings (SES for email)
+    ALERT_SES_SENDER_EMAIL: Optional[str] = Field(
+        default=None,
+        description="SES verified sender email for alert notifications",
+    )
+    ALERT_SES_REGION: Optional[str] = Field(
+        default=None,
+        description="AWS region for SES (defaults to AWS_REGION)",
+    )
+
     # System configuration
     INITIAL_USER_BALANCE_USD: float = Field(
         default=5.0, description="Initial balance for new users in USD"

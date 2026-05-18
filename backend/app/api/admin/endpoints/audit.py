@@ -32,6 +32,9 @@ ACTIVITY_ACTIONS = [
     AuditAction.TEAM_UPDATED,
     AuditAction.TEAM_DELETED,
     AuditAction.MODEL_UPDATED,
+    AuditAction.ALERT_RULE_CREATED,
+    AuditAction.ALERT_RULE_UPDATED,
+    AuditAction.ALERT_RULE_DELETED,
 ]
 
 _super_admin_cache: tuple[float, list] = (0.0, [])
