@@ -127,7 +127,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
     _CORS_ALLOW_HEADERS = (
         "Authorization, Content-Type, X-Requested-With, Accept, Origin, "
-        "X-Api-Key, x-api-key, x-goog-api-key"
+        "X-Api-Key, x-api-key, x-goog-api-key, Cache-Control"
     )
 
     def _add_cors_headers(self, response: Response, origin: Optional[str]) -> Response:

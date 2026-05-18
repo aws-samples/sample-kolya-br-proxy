@@ -57,6 +57,11 @@ class AuditAction(enum.Enum):
     TEAM_DELETED = "team_deleted"
     MODEL_UPDATED = "model_updated"
 
+    # Alert Rules
+    ALERT_RULE_CREATED = "alert_rule_created"
+    ALERT_RULE_UPDATED = "alert_rule_updated"
+    ALERT_RULE_DELETED = "alert_rule_deleted"
+
     # Authorization
     UNAUTHORIZED_ACCESS_ATTEMPT = "unauthorized_access_attempt"
     PERMISSION_DENIED = "permission_denied"

@@ -126,6 +126,14 @@
           @click="showTransferDialog = true"
           unelevated
           :disable="selectedTeam.members.length < 2"
+          class="q-mr-sm"
+        />
+        <q-btn
+          color="warning"
+          icon="notifications"
+          label="Alerts"
+          @click="openTeamAlertDialog"
+          unelevated
         />
       </div>
 
@@ -557,6 +565,91 @@
         </q-card-section>
       </q-card>
     </q-dialog>
+    <!-- Team Alert Rules Dialog -->
+    <q-dialog v-model="showTeamAlertDialog">
+      <q-card dark style="min-width: 600px; max-width: 700px">
+        <q-card-section>
+          <div class="text-h6">Team Alerts — {{ selectedTeam?.name }}</div>
+          <div class="text-caption text-grey-7">Alert when team budget usage reaches a percentage</div>
+        </q-card-section>
+
+        <!-- Add new rule -->
+        <q-card-section class="q-pt-none">
+          <div class="row q-col-gutter-sm q-mb-sm items-center">
+            <div class="col">
+              <q-select
+                v-model="newTeamAlertRule.rule_key"
+                :options="teamAlertRuleOptions"
+                label="Rule"
+                outlined rounded dark dense emit-value map-options
+              />
+            </div>
+            <div class="col">
+              <q-input
+                v-model.number="newTeamAlertRule.threshold_value"
+                label="Threshold"
+                outlined rounded dark dense type="number" suffix="%"
+              />
+            </div>
+            <div class="col-auto">
+              <q-btn label="Add" color="grey-8" size="sm" @click="addTeamAlertRule" :loading="addingTeamAlertRule"
+                :disable="!newTeamAlertRule.rule_key || !newTeamAlertRule.threshold_value"
+                unelevated />
+            </div>
+          </div>
+
+          <div class="row items-center q-gutter-sm">
+            <span class="text-caption text-grey-7">Notify via</span>
+            <q-checkbox v-model="newTeamAlertRule.notify_in_app" label="In-app" dark dense size="sm" />
+            <q-checkbox v-model="newTeamAlertRule.notify_email_enabled" label="Email" dark dense size="sm" />
+          </div>
+
+          <q-input v-if="newTeamAlertRule.notify_email_enabled" v-model="newTeamAlertRule.notify_email"
+            label="Email addresses (comma-separated)" outlined rounded dark dense class="q-mt-sm" />
+        </q-card-section>
+
+        <!-- Existing rules -->
+        <q-card-section v-if="teamAlertRules.length > 0" class="q-pt-none">
+          <q-separator class="q-mb-sm" />
+          <div class="text-caption text-grey-7 q-mb-xs">Active Rules</div>
+          <q-table
+            :rows="teamAlertRules"
+            :columns="teamAlertColumns"
+            row-key="id"
+            flat dark dense
+            hide-pagination
+            :rows-per-page-options="[0]"
+            class="bg-transparent"
+          >
+            <template #body-cell-notify="props">
+              <q-td :props="props">
+                <q-icon v-if="props.row.notify_in_app" name="notifications" size="xs" class="q-mr-xs" />
+                <q-icon v-if="props.row.notify_email" name="email" size="xs" class="q-mr-xs" />
+              </q-td>
+            </template>
+            <template #body-cell-active="props">
+              <q-td :props="props">
+                <q-toggle
+                  :model-value="props.row.is_active"
+                  @update:model-value="(val) => toggleTeamAlertRule(props.row.id, val as boolean)"
+                  dark dense size="sm"
+                />
+              </q-td>
+            </template>
+            <template #body-cell-actions="props">
+              <q-td :props="props">
+                <q-btn flat dense round size="xs" icon="delete" color="negative" @click="deleteTeamAlertRule(props.row.id)" />
+              </q-td>
+            </template>
+          </q-table>
+        </q-card-section>
+
+        <q-card-actions align="right" class="q-pt-none">
+          <q-btn label="Close" flat v-close-popup size="sm" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
   </q-page>
 </template>
 
@@ -565,12 +658,16 @@ import { ref, computed, onMounted } from 'vue';
 import { useTeamsStore } from 'src/stores/teams';
 import { useTokensStore } from 'src/stores/tokens';
 import { useModelsStore } from 'src/stores/models';
+import { useAlertsStore, TEAM_RULES, getRuleLabel } from 'src/stores/alerts';
+import type { CreateAlertRulePayload } from 'src/stores/alerts';
 import { Dialog, Notify } from 'quasar';
+import { extractErrorMessage } from 'src/utils/error';
 import type { TeamListItem, TeamMember } from 'src/stores/teams';
 
 const teamsStore = useTeamsStore();
 const tokensStore = useTokensStore();
 const modelsStore = useModelsStore();
+const alertsStore = useAlertsStore();
 
 const selectedTeam = computed(() => teamsStore.currentTeam);
 const teams = computed(() => teamsStore.teams);
@@ -783,6 +880,8 @@ async function handleCreateTeam() {
     await teamsStore.createTeam(createForm.value);
     showCreateDialog.value = false;
     createForm.value = { name: '', monthly_budget_usd: '', monthly_reset_policy: 'reset', daily_limit_enabled: true };
+  } catch (error) {
+    Notify.create({ type: 'negative', message: extractErrorMessage(error, 'Failed to create team'), position: 'top' });
   } finally {
     creating.value = false;
   }
@@ -793,6 +892,8 @@ async function handleUpdateTeam() {
   try {
     await teamsStore.updateTeam(editingTeamId.value, editForm.value);
     showEditDialog.value = false;
+  } catch (error) {
+    Notify.create({ type: 'negative', message: extractErrorMessage(error, 'Failed to update team'), position: 'top' });
   } finally {
     updating.value = false;
   }
@@ -856,6 +957,78 @@ async function handleBatchCreate() {
     });
   } finally {
     batchCreating.value = false;
+  }
+}
+
+// --- Team Alert Rules ---
+const showTeamAlertDialog = ref(false);
+const teamAlertRules = computed(() => alertsStore.rules);
+const teamAlertColumns = [
+  { name: 'rule', label: 'Rule', field: 'rule_key', align: 'left' as const, format: (val: string) => getRuleLabel(val) },
+  { name: 'threshold', label: 'Threshold', field: 'threshold_value', align: 'left' as const, format: (val: string) => parseFloat(val) + '%' },
+  { name: 'notify', label: 'Notify', field: 'id', align: 'center' as const },
+  { name: 'active', label: 'Active', field: 'is_active', align: 'center' as const },
+  { name: 'actions', label: '', field: 'id', align: 'right' as const },
+];
+const addingTeamAlertRule = ref(false);
+
+const teamAlertRuleOptions = TEAM_RULES.map((r) => ({ label: r.label, value: r.value }));
+
+const newTeamAlertRule = ref({
+  rule_key: 'team_budget_pct',
+  threshold_value: undefined as number | undefined,
+  cooldown_hours: 24,
+  notify_in_app: true,
+  notify_email_enabled: false,
+  notify_email: '',
+});
+
+async function openTeamAlertDialog() {
+  if (!selectedTeam.value) return;
+  showTeamAlertDialog.value = true;
+  newTeamAlertRule.value = {
+    rule_key: 'team_budget_pct', threshold_value: undefined,
+    cooldown_hours: 24, notify_in_app: true, notify_email_enabled: false,
+    notify_email: '',
+  };
+  await alertsStore.fetchRules(undefined, selectedTeam.value.id);
+}
+
+async function addTeamAlertRule() {
+  if (!selectedTeam.value || !newTeamAlertRule.value.rule_key || !newTeamAlertRule.value.threshold_value) return;
+  addingTeamAlertRule.value = true;
+  try {
+    const payload: CreateAlertRulePayload = {
+      alert_type: 'hard',
+      rule_key: newTeamAlertRule.value.rule_key,
+      threshold_value: newTeamAlertRule.value.threshold_value,
+      team_id: selectedTeam.value.id,
+      cooldown_hours: newTeamAlertRule.value.cooldown_hours,
+      notify_in_app: newTeamAlertRule.value.notify_in_app,
+      notify_email: newTeamAlertRule.value.notify_email_enabled ? newTeamAlertRule.value.notify_email : undefined,
+    };
+    const result = await alertsStore.createRule(payload);
+    if (result) {
+      await alertsStore.fetchRules(undefined, selectedTeam.value.id);
+
+      newTeamAlertRule.value.threshold_value = undefined;
+    }
+  } finally {
+    addingTeamAlertRule.value = false;
+  }
+}
+
+async function toggleTeamAlertRule(ruleId: string, isActive: boolean) {
+  await alertsStore.updateRule(ruleId, { is_active: isActive });
+  if (selectedTeam.value) {
+    await alertsStore.fetchRules(undefined, selectedTeam.value.id);
+  }
+}
+
+async function deleteTeamAlertRule(ruleId: string) {
+  const deleted = await alertsStore.deleteRule(ruleId);
+  if (deleted && selectedTeam.value) {
+    await alertsStore.fetchRules(undefined, selectedTeam.value.id);
   }
 }
 

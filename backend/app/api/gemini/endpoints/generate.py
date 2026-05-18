@@ -130,6 +130,15 @@ async def _record_usage(
             db.add(usage_record)
             await db.commit()
 
+            try:
+                from app.services.alert import check_alerts_for_usage
+
+                await check_alerts_for_usage(
+                    token_id=token.id, user_id=token.user_id, db=db
+                )
+            except Exception:
+                logger.warning("Alert check failed", exc_info=True)
+
             logger.info(
                 "Gemini usage recorded",
                 extra={"request_id": request_id, "cost_usd": round(cost_usd, 6)},

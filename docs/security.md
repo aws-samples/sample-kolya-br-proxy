@@ -745,7 +745,7 @@ The system implements two-tier RBAC via the `role` and `permissions` fields on t
 
 | Role | Access |
 |------|--------|
-| `super_admin` | Full access to all endpoints and resources |
+| `super_admin` | Full access to all endpoints and resources, bypasses all permission checks |
 | `admin` | Scoped access controlled by the `permissions` JSON object |
 
 ### Permissions Object
@@ -754,15 +754,69 @@ Admin users have a `permissions` JSON field that controls access to specific res
 
 | Permission | Values | Controls |
 |-----------|--------|----------|
-| `manage_api_keys` | `true`/`"all"`, `[id, ...]`, `false` | API token CRUD |
-| `manage_teams` | `true`/`"all"`, `[id, ...]`, `false` | Team CRUD |
+| `manage_api_keys` | `true`/`"all"`, `[id, ...]`, `false` | API token CRUD, alert rules/notifications |
+| `manage_teams` | `true`/`"all"`, `[id, ...]`, `false` | Team CRUD, member management |
 | `manage_models` | `true`/`"all"`, `[id, ...]`, `false` | Model configuration |
 | `view_usage` | `true`/`false` | Usage statistics |
-| `view_monitor` | `true`/`false` | Request monitor |
+| `view_monitor` | `true`/`false` | Pricing table |
+
+Permission value rules:
 
 - `true` or `"all"`: full access to all resources of that type
-- Array of UUIDs: access only to those specific resources
+- Array of UUIDs: access only to those specific resources (only `manage_api_keys`, `manage_teams`, `manage_models` support resource-level scoping)
 - `false` or missing: no access (403)
+- **Special case**: when `permissions` is `null` or empty `{}`, the admin has full access to all business operations (no restrictions applied). Once any key is set in `permissions`, unset keys are treated as denied
+
+### Super Admin vs Admin Comparison
+
+#### Super Admin Only
+
+| Feature | Endpoint | Description |
+|---------|----------|-------------|
+| User management | `/admin/users/*` | Invite, edit, deactivate admin accounts |
+| Audit logs | `/admin/audit` | View all operation audit records and summaries |
+| Pricing management | `/admin/pricing/*` | Manually update model pricing, query pricing details |
+| Observability | `/admin/observability` | View and modify OpenTelemetry configuration |
+| Key export | `GET /admin/tokens/export/keys` | Export all API keys as CSV in plaintext |
+
+#### Both Roles (Admin Governed by permissions)
+
+| Feature | Endpoint | Permission Key | Resource Scoping |
+|---------|----------|---------------|-----------------|
+| API Key CRUD | `/admin/tokens/*` | `manage_api_keys` | Yes (scoped to specific keys) |
+| Key balance/revoke | `/admin/tokens/{id}/adjust`, `/revoke` | `manage_api_keys` | Yes |
+| Alert rules | `/admin/alerts/rules/*` | `manage_api_keys` | — |
+| Alert notifications | `/admin/alerts/notifications/*` | `manage_api_keys` | — |
+| Team CRUD | `/admin/teams/*` | `manage_teams` | Yes (scoped to specific teams) |
+| Team members | `/admin/teams/{id}/members/*` | `manage_teams` | Yes |
+| Model config | `/admin/models/*` | `manage_models` | Yes |
+| Usage stats | `/admin/usage/*` | `view_usage` | — |
+| Pricing table | `/admin/monitor/pricing-table` | `view_monitor` | — |
+
+#### All Admins (No Specific Permission Required)
+
+| Feature | Endpoint | Description |
+|---------|----------|-------------|
+| Dashboard | `/` | Overview page |
+| Activity | `/admin/audit-logs/activity` | Recent admin operations |
+| Playground | `/playground` | Conversation testing |
+| Settings | `/settings` | Personal account settings |
+
+### Frontend Menu Visibility
+
+The sidebar dynamically filters menu items based on permissions. Unauthorized features are hidden:
+
+| Menu Item | Visible When |
+|-----------|-------------|
+| Dashboard | All admins |
+| Teams | `manage_teams` permission |
+| API Keys | `manage_api_keys` permission |
+| Models | `manage_models` permission |
+| Playground | All admins |
+| Monitor | `view_monitor` permission |
+| Activity | All admins |
+| Admin Users | Super Admin only |
+| Settings | All admins |
 
 ### Endpoint Guards
 
@@ -771,10 +825,13 @@ Admin users have a `permissions` JSON field that controls access to specific res
 | `/admin/tokens/*` | `manage_api_keys` |
 | `/admin/teams/*` | `manage_teams` |
 | `/admin/models/*` | `manage_models` |
+| `/admin/alerts/*` | `manage_api_keys` |
 | `/admin/usage/*` | `view_usage` |
 | `/admin/monitor/*` | `view_monitor` |
 | `/admin/users/*` | `super_admin` role only |
-| `/admin/audit-logs` | `super_admin` role only |
+| `/admin/pricing/*` | `super_admin` role only |
+| `/admin/observability` | `super_admin` role only |
+| `/admin/audit` | `super_admin` role only |
 | `/admin/audit-logs/activity` | Any admin |
 
 ### Key Files

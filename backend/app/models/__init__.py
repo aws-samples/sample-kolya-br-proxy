@@ -1,6 +1,7 @@
 """Database models package."""
 
 # Import all models to ensure they are registered with SQLAlchemy
+from app.models.alert import AlertNotification, AlertRule
 from app.models.audit_log import AuditLog
 from app.models.oauth_state import OAuthState
 from app.models.refresh_token import RefreshToken
@@ -13,6 +14,8 @@ from app.models.model import Model
 from app.models.team import Team, TeamMember
 
 __all__ = [
+    "AlertNotification",
+    "AlertRule",
     "User",
     "APIToken",
     "UsageRecord",

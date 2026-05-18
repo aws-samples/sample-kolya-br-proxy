@@ -20,6 +20,12 @@
           </div>
         </q-toolbar-title>
 
+        <q-btn flat round dense icon="notifications" @click="openNotifications">
+          <q-badge v-if="alertsStore.unreadCount > 0" color="red" floating>
+            {{ alertsStore.unreadCount > 99 ? '99+' : alertsStore.unreadCount }}
+          </q-badge>
+        </q-btn>
+
         <q-btn flat round dense icon="account_circle">
           <q-menu dark class="user-menu">
             <q-list dark class="user-menu-list" style="min-width: 200px; background: #292a2d">
@@ -79,18 +85,77 @@
     <q-page-container class="tech-page-container">
       <router-view />
     </q-page-container>
+
+    <!-- Notification Panel -->
+    <q-dialog v-model="showNotificationPanel" position="top" seamless>
+      <q-card dark style="width: 420px; max-height: 500px">
+        <q-card-section class="row items-center justify-between q-pb-sm">
+          <div class="text-h6">Alert Notifications</div>
+          <div class="row items-center q-gutter-xs">
+            <q-btn
+              flat
+              dense
+              label="Mark all read"
+              size="sm"
+              color="primary"
+              @click="handleMarkAllRead"
+              :disable="alertsStore.unreadCount === 0"
+            />
+            <q-btn flat dense round size="sm" icon="close" v-close-popup />
+          </div>
+        </q-card-section>
+        <q-separator />
+        <q-card-section class="q-pa-none" style="max-height: 400px; overflow-y: auto">
+          <q-list v-if="alertsStore.notifications.length > 0">
+            <q-item
+              v-for="n in alertsStore.notifications"
+              :key="n.id"
+              clickable
+              @click="handleReadNotification(n)"
+              :class="{ 'text-weight-bold': !n.is_read }"
+            >
+              <q-item-section avatar>
+                <q-icon
+                  :name="n.is_read ? 'notifications_none' : 'notifications_active'"
+                  :color="n.is_read ? 'grey-7' : 'warning'"
+                />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label :lines="2">{{ n.message }}</q-item-label>
+                <q-item-label caption>
+                  <q-badge
+                    :color="n.scope_type === 'team' ? 'teal-7' : 'blue-7'"
+                    :label="n.scope_type === 'team' ? 'Team' : 'Key'"
+                    class="q-mr-xs"
+                    dense
+                  />
+                  {{ formatNotificationTime(n.created_at) }}
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+          <div v-else class="q-pa-lg text-center text-grey-7">
+            No notifications
+          </div>
+        </q-card-section>
+      </q-card>
+    </q-dialog>
   </q-layout>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from 'src/stores/auth';
+import { useAlertsStore } from 'src/stores/alerts';
+import type { AlertNotification } from 'src/stores/alerts';
 
 const router = useRouter();
 const authStore = useAuthStore();
+const alertsStore = useAlertsStore();
 
 const leftDrawerOpen = ref(false);
+const showNotificationPanel = ref(false);
 
 const user = computed(() => authStore.currentUser);
 
@@ -177,8 +242,42 @@ async function handleLogout() {
   await router.replace('/login');
 }
 
+async function openNotifications() {
+  showNotificationPanel.value = true;
+  await alertsStore.fetchNotifications(true);
+}
+
+function formatNotificationTime(isoStr: string): string {
+  const d = new Date(isoStr);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'Just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}h ago`;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function handleReadNotification(n: AlertNotification) {
+  if (!n.is_read) {
+    await alertsStore.markRead(n.id);
+    alertsStore.notifications = alertsStore.notifications.filter((x) => x.id !== n.id);
+  }
+}
+
+async function handleMarkAllRead() {
+  await alertsStore.markAllRead();
+  alertsStore.notifications = [];
+}
+
 onMounted(() => {
   void authStore.initializeAuth();
+  alertsStore.startPolling();
+});
+
+onUnmounted(() => {
+  alertsStore.stopPolling();
 });
 </script>
 

@@ -106,7 +106,15 @@ resource "aws_iam_policy" "backend_bedrock" {
           "cognito-idp:AdminSetUserPassword"
         ]
         Resource = "*"
-      }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Resource = "*"
+      },
     ]
   })
 

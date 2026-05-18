@@ -6,6 +6,7 @@ All endpoints require JWT authentication.
 from fastapi import APIRouter
 
 from app.api.admin.endpoints import (
+    alerts,
     audit,
     auth,
     models,
@@ -22,6 +23,9 @@ admin_router = APIRouter()
 
 # Authentication endpoints (no auth required for login/register)
 admin_router.include_router(auth.router, prefix="/auth", tags=["admin-auth"])
+
+# Alert management endpoints (JWT auth required)
+admin_router.include_router(alerts.router, prefix="/alerts", tags=["admin-alerts"])
 
 # Team management endpoints (JWT auth required)
 admin_router.include_router(teams.router, prefix="/teams", tags=["admin-teams"])
