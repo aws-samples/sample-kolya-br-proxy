@@ -457,6 +457,7 @@ async def add_member(
     request: AddMemberRequest,
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
     check_resource_scope(current_user, "manage_teams", team_id)
     try:
@@ -480,6 +481,17 @@ async def add_member(
     if token_row and token_row.token_hash:
         await _invalidate_token_cache(token_row.token_hash)
 
+    await audit_service.log(
+        action=AuditAction.TEAM_MEMBER_ADDED,
+        user=current_user,
+        resource_type="team",
+        resource_id=team_id,
+        details={
+            "token_name": token_row.name if token_row else "",
+            "allocated_usd": str(request.allocated_usd),
+        },
+    )
+
     return TeamMemberSimpleResponse(
         token_id=str(member.token_id),
         token_name=token_row.name if token_row else "",
@@ -493,6 +505,7 @@ async def remove_member(
     token_id: str,
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
     check_resource_scope(current_user, "manage_teams", team_id)
     try:
@@ -501,17 +514,25 @@ async def remove_member(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    # Get token hash before removal for cache invalidation
+    # Get token info before removal for cache invalidation and audit log
     token_result = await db.execute(
-        select(APIToken.token_hash).where(APIToken.id == token_uuid)
+        select(APIToken.token_hash, APIToken.name).where(APIToken.id == token_uuid)
     )
-    token_hash = token_result.scalar_one_or_none()
+    token_row = token_result.one_or_none()
 
     service = TeamService(db)
     await service.remove_member(team_uuid, token_uuid, current_user.id)
 
-    if token_hash:
-        await _invalidate_token_cache(token_hash)
+    if token_row and token_row.token_hash:
+        await _invalidate_token_cache(token_row.token_hash)
+
+    await audit_service.log(
+        action=AuditAction.TEAM_MEMBER_REMOVED,
+        user=current_user,
+        resource_type="team",
+        resource_id=team_id,
+        details={"token_name": token_row.name if token_row else ""},
+    )
 
     return None
 
@@ -523,6 +544,7 @@ async def adjust_member(
     request: AdjustMemberRequest,
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
     check_resource_scope(current_user, "manage_teams", team_id)
     try:
@@ -545,6 +567,17 @@ async def adjust_member(
     token_row = token_result.one_or_none()
     if token_row and token_row.token_hash:
         await _invalidate_token_cache(token_row.token_hash)
+
+    await audit_service.log(
+        action=AuditAction.TEAM_MEMBER_UPDATED,
+        user=current_user,
+        resource_type="team",
+        resource_id=team_id,
+        details={
+            "token_name": token_row.name if token_row else "",
+            "allocated_usd": str(request.allocated_usd),
+        },
+    )
 
     return TeamMemberSimpleResponse(
         token_id=str(member.token_id),
@@ -606,6 +639,7 @@ async def batch_create_members(
     request: BatchCreateMembersRequest,
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
     check_resource_scope(current_user, "manage_teams", team_id)
     try:
@@ -644,5 +678,16 @@ async def batch_create_members(
                 "allocated_usd": str(request.per_member_allocation),
             }
         )
+
+    await audit_service.log(
+        action=AuditAction.TEAM_MEMBER_ADDED,
+        user=current_user,
+        resource_type="team",
+        resource_id=team_id,
+        details={
+            "names": [t.name for t, _ in results],
+            "count": len(results),
+        },
+    )
 
     return BatchCreateMembersResponse(created=created, total=len(created))

@@ -86,8 +86,8 @@ function formatAction(action: string): string {
 }
 
 function actionColor(action: string): string {
-  if (action.includes('created')) return 'positive';
-  if (action.includes('deleted')) return 'negative';
+  if (action.includes('created') || action.includes('added')) return 'positive';
+  if (action.includes('deleted') || action.includes('removed')) return 'negative';
   if (action.includes('updated')) return 'info';
   if (action.includes('login')) return 'primary';
   return 'grey';

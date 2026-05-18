@@ -57,6 +57,11 @@ class AuditAction(enum.Enum):
     TEAM_DELETED = "team_deleted"
     MODEL_UPDATED = "model_updated"
 
+    # Team Members
+    TEAM_MEMBER_ADDED = "team_member_added"
+    TEAM_MEMBER_REMOVED = "team_member_removed"
+    TEAM_MEMBER_UPDATED = "team_member_updated"
+
     # Alert Rules
     ALERT_RULE_CREATED = "alert_rule_created"
     ALERT_RULE_UPDATED = "alert_rule_updated"
