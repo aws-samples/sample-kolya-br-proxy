@@ -514,7 +514,7 @@ async def remove_member(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
-    # Get token info before removal for cache invalidation and audit log
+    # Fetch before deletion — data needed for cache key + audit
     token_result = await db.execute(
         select(APIToken.token_hash, APIToken.name).where(APIToken.id == token_uuid)
     )
@@ -685,8 +685,8 @@ async def batch_create_members(
         resource_type="team",
         resource_id=team_id,
         details={
-            "names": [t.name for t, _ in results],
-            "count": len(results),
+            "names": [c["token_name"] for c in created],
+            "count": len(created),
         },
     )
 
