@@ -46,9 +46,13 @@ class UserResponse(BaseModel):
     permissions: dict | None
     email_verified: bool
     current_balance: str
+    group_sync_enabled: bool = False
 
     @classmethod
     def from_user(cls, user: User) -> "UserResponse":
+        from app.core.config import get_settings
+
+        settings = get_settings()
         return cls(
             id=str(user.id),
             email=user.email,
@@ -60,6 +64,7 @@ class UserResponse(BaseModel):
             permissions=user.permissions,
             email_verified=user.email_verified,
             current_balance=str(user.current_balance),
+            group_sync_enabled=settings.MICROSOFT_ENABLE_GROUP_SYNC,
         )
 
     class Config:

@@ -3,7 +3,7 @@
     <div class="row items-center q-mb-lg">
       <div class="text-h5">Admin Users</div>
       <q-space />
-      <q-btn color="primary" icon="person_add" label="Invite Admin" @click="showInviteDialog = true" />
+      <q-btn v-if="!authStore.groupSyncEnabled" color="primary" icon="person_add" label="Invite Admin" @click="showInviteDialog = true" />
     </div>
 
     <q-table
@@ -123,6 +123,9 @@ import { Notify } from 'quasar';
 import { extractErrorMessage } from 'src/utils/error';
 import PermissionEditor from 'src/components/PermissionEditor.vue';
 import type { Resources } from 'src/types/permissions';
+import { useAuthStore } from 'src/stores/auth';
+
+const authStore = useAuthStore();
 
 interface AdminUser {
   id: string;
