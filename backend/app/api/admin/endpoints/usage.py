@@ -32,7 +32,7 @@ def _clamp_date_range(
     Raises HTTPException if the requested range exceeds the limit.
     """
     now = datetime.utcnow()
-    earliest_allowed = now - timedelta(days=MAX_QUERY_DAYS)
+    earliest_allowed = now - timedelta(days=MAX_QUERY_DAYS + 1)
 
     if end_date is None:
         end_date = now
