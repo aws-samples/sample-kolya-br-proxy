@@ -53,6 +53,7 @@ fi
 # Default configuration
 SKIP_CONFIRMATION=false
 SPECIFIC_STEP=""
+UPDATE_SECRETS=false
 # Prefer region from terraform.tfvars (single source of truth) over aws configure default
 _TFVARS_REGION=$(awk '$1=="region" && $2=="=" { gsub(/"/, "", $3); print $3; exit }' "$SCRIPT_DIR/iac/terraform.tfvars" 2>/dev/null || echo "")
 AWS_REGION="${AWS_REGION:-${_TFVARS_REGION:-$(aws configure get region 2>/dev/null || echo "")}}"
@@ -650,6 +651,164 @@ push_secrets_to_sm() {
     print_success "Secrets pushed to AWS Secrets Manager: $secret_name"
 }
 
+# Interactive secrets update
+update_secrets_interactive() {
+    print_header "Update Secrets (AWS Secrets Manager)"
+
+    cd "$IAC_DIR"
+
+    local secret_name
+    secret_name=$(_tf_output backend_secrets_manager_name || echo "")
+    local cfg_region
+    cfg_region=$(_tf_output region || echo "$AWS_REGION")
+
+    if [[ -z "$secret_name" ]]; then
+        print_error "Secrets Manager name not found in Terraform outputs. Run Step 1 first."
+        exit 1
+    fi
+
+    print_info "Secret: $secret_name"
+    echo ""
+
+    # Read current values
+    local current_secret
+    current_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --region "$cfg_region" --query SecretString --output text 2>/dev/null || echo "{}")
+
+    echo "Which secrets do you want to update?"
+    echo ""
+    echo "  1) Microsoft OAuth (Client ID, Client Secret, Tenant ID)"
+    echo "  2) Cognito OAuth (User Pool ID, Client ID, Client Secret)"
+    echo "  3) ACM Certificates (Frontend ARN, API ARN)"
+    echo "  4) View current secret values (masked)"
+    echo ""
+    read -p "Select (1-4): " secret_choice
+
+    case $secret_choice in
+        1)
+            print_substep "Microsoft OAuth Configuration"
+            echo ""
+            print_info "Get these values from Azure Portal → App registrations → Your app"
+            echo ""
+
+            local current_ms_id
+            current_ms_id=$(echo "$current_secret" | jq -r '."microsoft-client-id" // empty')
+            local current_ms_tenant
+            current_ms_tenant=$(echo "$current_secret" | jq -r '."microsoft-tenant-id" // empty')
+
+            if [[ -n "$current_ms_id" ]]; then
+                print_info "Current Client ID: ${current_ms_id:0:8}..."
+            fi
+            if [[ -n "$current_ms_tenant" ]]; then
+                print_info "Current Tenant ID: ${current_ms_tenant:0:8}..."
+            fi
+            echo ""
+
+            read -p "Microsoft Client ID (Application ID): " ms_client_id
+            read -s -p "Microsoft Client Secret: " ms_client_secret
+            echo ""
+            read -p "Microsoft Tenant ID (Directory ID): " ms_tenant_id
+
+            if [[ -z "$ms_client_id" || -z "$ms_client_secret" || -z "$ms_tenant_id" ]]; then
+                print_error "All three values are required"
+                exit 1
+            fi
+
+            # Update secret
+            local updated_secret
+            updated_secret=$(echo "$current_secret" | jq \
+                --arg id "$ms_client_id" \
+                --arg secret "$ms_client_secret" \
+                --arg tenant "$ms_tenant_id" \
+                '."microsoft-client-id" = $id | ."microsoft-client-secret" = $secret | ."microsoft-tenant-id" = $tenant')
+
+            aws secretsmanager put-secret-value \
+                --secret-id "$secret_name" \
+                --secret-string "$updated_secret" \
+                --region "$cfg_region" \
+                --no-cli-pager
+
+            print_success "Microsoft OAuth secrets updated!"
+            ;;
+        2)
+            print_substep "Cognito OAuth Configuration"
+            echo ""
+
+            read -p "Cognito User Pool ID: " cognito_pool_id
+            read -p "Cognito Client ID: " cognito_client_id
+            read -s -p "Cognito Client Secret: " cognito_client_secret
+            echo ""
+            read -p "Cognito Region [$cfg_region]: " cognito_region
+            cognito_region="${cognito_region:-$cfg_region}"
+
+            local updated_secret
+            updated_secret=$(echo "$current_secret" | jq \
+                --arg pool "$cognito_pool_id" \
+                --arg client "$cognito_client_id" \
+                --arg secret "$cognito_client_secret" \
+                --arg region "$cognito_region" \
+                '."cognito-user-pool-id" = $pool | ."cognito-client-id" = $client | ."cognito-client-secret" = $secret | ."cognito-region" = $region')
+
+            aws secretsmanager put-secret-value \
+                --secret-id "$secret_name" \
+                --secret-string "$updated_secret" \
+                --region "$cfg_region" \
+                --no-cli-pager
+
+            print_success "Cognito OAuth secrets updated!"
+            ;;
+        3)
+            print_substep "ACM Certificate ARNs"
+            echo ""
+            aws acm list-certificates --region "$cfg_region" --output table --no-cli-pager 2>/dev/null || true
+            echo ""
+
+            read -p "Frontend ACM Certificate ARN: " frontend_cert
+            read -p "API ACM Certificate ARN: " api_cert
+
+            local updated_secret
+            updated_secret=$(echo "$current_secret" | jq \
+                --arg fc "$frontend_cert" \
+                --arg ac "$api_cert" \
+                '."acm-certificate-frontend-arn" = $fc | ."acm-certificate-api-arn" = $ac')
+
+            aws secretsmanager put-secret-value \
+                --secret-id "$secret_name" \
+                --secret-string "$updated_secret" \
+                --region "$cfg_region" \
+                --no-cli-pager
+
+            print_success "ACM certificate ARNs updated!"
+            ;;
+        4)
+            print_substep "Current secret values (sensitive values masked)"
+            echo ""
+            echo "$current_secret" | jq 'to_entries | map(
+                if (.value | length) > 0 then
+                    .value = (.value | tostring | .[0:8] + "..." + "(" + (. | length | tostring) + " chars)")
+                else
+                    .value = "(empty)"
+                end
+            ) | from_entries'
+            exit 0
+            ;;
+        *)
+            print_error "Invalid choice"
+            exit 1
+            ;;
+    esac
+
+    echo ""
+    read -p "Restart backend to apply changes? (y/N): " restart
+    if [[ "$restart" =~ ^[Yy]$ ]]; then
+        print_info "Restarting backend..."
+        kubectl rollout restart deployment/backend -n kbp
+        kubectl rollout status deployment/backend -n kbp --timeout=120s
+        print_success "Backend restarted with new secrets"
+    else
+        print_info "Run 'kubectl rollout restart deployment/backend -n kbp' to apply changes"
+    fi
+}
+
 # Print functions
 print_banner() {
     echo ""
@@ -710,6 +869,8 @@ Options:
                       4: Deploy application to EKS
                       5: Toggle Global Accelerator (enable/disable)
 
+  --update-secrets    Update secrets in AWS Secrets Manager (interactive)
+                      Supports: Microsoft OAuth, Cognito, ACM certificates
   --yes               Skip all confirmation prompts (dangerous!)
   --region <region>   Specify AWS region (default: us-west-2)
   --help              Show this help message
@@ -774,6 +935,10 @@ parse_args() {
             --region)
                 AWS_REGION="$2"
                 shift 2
+                ;;
+            --update-secrets)
+                UPDATE_SECRETS=true
+                shift
                 ;;
             --help|-h)
                 show_help
@@ -1838,6 +2003,14 @@ main() {
 
     # Parse arguments
     parse_args "$@"
+
+    # Handle --update-secrets
+    if [[ "$UPDATE_SECRETS" == "true" ]]; then
+        check_dependencies
+        check_aws_credentials
+        update_secrets_interactive
+        exit 0
+    fi
 
     # If a specific step is specified
     if [[ -n "$SPECIFIC_STEP" ]]; then
