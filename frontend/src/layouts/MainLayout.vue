@@ -214,6 +214,13 @@ const allMenuLinks = [
     requiresSuperAdmin: true,
   },
   {
+    title: 'Entra Groups',
+    caption: 'Group-to-role mappings',
+    icon: 'group_work',
+    to: '/entra-groups',
+    requiresSuperAdmin: true,
+  },
+  {
     title: 'Settings',
     caption: 'Account settings',
     icon: 'settings',
