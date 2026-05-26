@@ -268,7 +268,7 @@ async def deactivate_admin(
     audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deactivate an admin user."""
+    """Deactivate an admin user and remove from Cognito."""
     if user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
 
@@ -276,6 +276,36 @@ async def deactivate_admin(
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    settings = get_settings()
+    if settings.COGNITO_USER_POOL_ID:
+        cognito_client = _get_cognito_client()
+        # Look up actual Cognito username by email (may differ from email prefix)
+        cognito_username = None
+        try:
+            list_resp = await asyncio.to_thread(
+                cognito_client.list_users,
+                UserPoolId=settings.COGNITO_USER_POOL_ID,
+                Filter=f'email = "{user.email}"',
+                Limit=1,
+            )
+            if list_resp.get("Users"):
+                cognito_username = list_resp["Users"][0]["Username"]
+        except ClientError as e:
+            logger.error(f"Failed to look up Cognito user by email {user.email}: {e}")
+
+        if cognito_username:
+            try:
+                await asyncio.to_thread(
+                    cognito_client.admin_delete_user,
+                    UserPoolId=settings.COGNITO_USER_POOL_ID,
+                    Username=cognito_username,
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "UserNotFoundException":
+                    logger.error(
+                        f"Failed to delete Cognito user {cognito_username}: {e}"
+                    )
 
     user.is_active = False
     await db.commit()
