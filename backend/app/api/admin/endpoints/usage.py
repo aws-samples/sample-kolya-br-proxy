@@ -133,16 +133,21 @@ async def get_usage_stats(
     current_month_end = end_date if end_date else now
     last_30_days_start = now - timedelta(days=30)
 
+    accessible = await _get_accessible_token_ids(current_user, db)
+
+    base_conditions = [UsageRecord.record_type == "usage"]
+    if accessible is not None:
+        base_conditions.append(UsageRecord.token_id.in_(accessible))
+
     # Current month stats (or custom range)
     current_month_query = select(
         func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")).label("cost"),
         func.count(UsageRecord.id).label("requests"),
         func.coalesce(func.sum(UsageRecord.total_tokens), 0).label("tokens"),
     ).where(
-        UsageRecord.user_id == current_user.id,
+        *base_conditions,
         UsageRecord.created_at >= current_month_start,
         UsageRecord.created_at <= current_month_end,
-        UsageRecord.record_type == "usage",
     )
     current_month_result = await db.execute(current_month_query)
     current_month = current_month_result.first()
@@ -152,9 +157,8 @@ async def get_usage_stats(
         func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")).label("cost"),
         func.count(UsageRecord.id).label("requests"),
     ).where(
-        UsageRecord.user_id == current_user.id,
+        *base_conditions,
         UsageRecord.created_at >= last_30_days_start,
-        UsageRecord.record_type == "usage",
     )
     last_30_days_result = await db.execute(last_30_days_query)
     last_30_days = last_30_days_result.first()
@@ -164,8 +168,7 @@ async def get_usage_stats(
         func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")).label("cost"),
         func.count(UsageRecord.id).label("requests"),
     ).where(
-        UsageRecord.user_id == current_user.id,
-        UsageRecord.record_type == "usage",
+        *base_conditions,
     )
     all_time_result = await db.execute(all_time_query)
     all_time = all_time_result.first()
@@ -198,6 +201,15 @@ async def get_usage_by_token(
         end_date: Optional end date for date range
     """
     start_date, end_date = _clamp_date_range(start_date, end_date)
+    accessible = await _get_accessible_token_ids(current_user, db)
+
+    conditions = [
+        UsageRecord.created_at >= start_date,
+        UsageRecord.created_at <= end_date,
+        UsageRecord.record_type == "usage",
+    ]
+    if accessible is not None:
+        conditions.append(UsageRecord.token_id.in_(accessible))
 
     query = (
         select(
@@ -212,12 +224,7 @@ async def get_usage_by_token(
             func.coalesce(func.sum(UsageRecord.total_tokens), 0).label("total_tokens"),
         )
         .join(APIToken, UsageRecord.token_id == APIToken.id)
-        .where(
-            UsageRecord.user_id == current_user.id,
-            UsageRecord.created_at >= start_date,
-            UsageRecord.created_at <= end_date,
-            UsageRecord.record_type == "usage",
-        )
+        .where(*conditions)
         .group_by(
             UsageRecord.token_id,
             APIToken.name,
@@ -269,6 +276,15 @@ async def get_usage_by_model(
         end_date: Optional end date for date range
     """
     start_date, end_date = _clamp_date_range(start_date, end_date)
+    accessible = await _get_accessible_token_ids(current_user, db)
+
+    conditions = [
+        UsageRecord.created_at >= start_date,
+        UsageRecord.created_at <= end_date,
+        UsageRecord.record_type == "usage",
+    ]
+    if accessible is not None:
+        conditions.append(UsageRecord.token_id.in_(accessible))
 
     query = (
         select(
@@ -279,12 +295,7 @@ async def get_usage_by_model(
             func.count(UsageRecord.id).label("total_requests"),
             func.coalesce(func.sum(UsageRecord.total_tokens), 0).label("total_tokens"),
         )
-        .where(
-            UsageRecord.user_id == current_user.id,
-            UsageRecord.created_at >= start_date,
-            UsageRecord.created_at <= end_date,
-            UsageRecord.record_type == "usage",
-        )
+        .where(*conditions)
         .group_by(UsageRecord.model)
         .order_by(func.sum(UsageRecord.cost_usd).desc())
     )
