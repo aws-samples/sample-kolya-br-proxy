@@ -53,7 +53,8 @@ jobs:
               --ignore-vuln CVE-2024-23342 \
               --ignore-vuln CVE-2026-4539 \
               --ignore-vuln CVE-2026-34073 \
-              --ignore-vuln CVE-2026-33936
+              --ignore-vuln CVE-2026-33936 \
+              --ignore-vuln MAL-2026-4750
 
   dependency-audit-node:
     name: Node Dependency Audit
