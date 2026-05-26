@@ -54,6 +54,7 @@ fi
 SKIP_CONFIRMATION=false
 SPECIFIC_STEP=""
 UPDATE_SECRETS=false
+CONFIGURE_CMD=""
 # Prefer region from terraform.tfvars (single source of truth) over aws configure default
 _TFVARS_REGION=$(awk '$1=="region" && $2=="=" { gsub(/"/, "", $3); print $3; exit }' "$SCRIPT_DIR/iac/terraform.tfvars" 2>/dev/null || echo "")
 AWS_REGION="${AWS_REGION:-${_TFVARS_REGION:-$(aws configure get region 2>/dev/null || echo "")}}"
@@ -809,6 +810,284 @@ update_secrets_interactive() {
     fi
 }
 
+# Configure authentication providers
+configure_auth() {
+    print_header "Configure Authentication Providers"
+
+    cd "$IAC_DIR"
+
+    local secret_name
+    secret_name=$(_tf_output backend_secrets_manager_name || echo "")
+    local cfg_region
+    cfg_region=$(_tf_output region || echo "$AWS_REGION")
+
+    if [[ -z "$secret_name" ]]; then
+        print_error "Secrets Manager name not found in Terraform outputs. Run Step 1 first."
+        exit 1
+    fi
+
+    # Read current config
+    local current_secret
+    current_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --region "$cfg_region" --query SecretString --output text 2>/dev/null || echo "{}")
+
+    local has_cognito=false
+    local has_microsoft=false
+    local cognito_id
+    cognito_id=$(echo "$current_secret" | jq -r '."cognito-client-id" // empty')
+    local ms_id
+    ms_id=$(echo "$current_secret" | jq -r '."microsoft-client-id" // empty')
+
+    [[ -n "$cognito_id" ]] && has_cognito=true
+    [[ -n "$ms_id" ]] && has_microsoft=true
+
+    echo "Current authentication status:"
+    if [[ "$has_cognito" == "true" ]]; then
+        print_success "Cognito: Configured (Client ID: ${cognito_id:0:8}...)"
+    else
+        print_warning "Cognito: Not configured"
+    fi
+    if [[ "$has_microsoft" == "true" ]]; then
+        print_success "Microsoft Entra ID: Configured (Client ID: ${ms_id:0:8}...)"
+    else
+        print_warning "Microsoft Entra ID: Not configured"
+    fi
+    echo ""
+
+    echo "What would you like to do?"
+    echo ""
+    echo "  1) Add/Update Microsoft Entra ID (SSO)"
+    echo "  2) Add/Update AWS Cognito"
+    echo "  3) Enable both (Cognito + Microsoft)"
+    echo "  4) Cancel"
+    echo ""
+    read -p "Select (1-4): " auth_choice
+
+    case $auth_choice in
+        1)
+            _configure_microsoft "$current_secret" "$secret_name" "$cfg_region"
+            ;;
+        2)
+            _configure_cognito "$current_secret" "$secret_name" "$cfg_region"
+            ;;
+        3)
+            _configure_microsoft "$current_secret" "$secret_name" "$cfg_region"
+            # Re-read after Microsoft update
+            current_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --region "$cfg_region" --query SecretString --output text 2>/dev/null || echo "{}")
+            _configure_cognito "$current_secret" "$secret_name" "$cfg_region"
+            ;;
+        4)
+            print_info "Cancelled"
+            exit 0
+            ;;
+        *)
+            print_error "Invalid choice"
+            exit 1
+            ;;
+    esac
+
+    echo ""
+    print_success "Authentication configuration complete!"
+    echo ""
+    read -p "Restart backend to apply changes? (y/N): " restart
+    if [[ "$restart" =~ ^[Yy]$ ]]; then
+        print_info "Restarting backend..."
+        kubectl rollout restart deployment/backend -n kbp
+        kubectl rollout status deployment/backend -n kbp --timeout=120s
+        print_success "Backend restarted with new configuration"
+    else
+        print_info "Run 'kubectl rollout restart deployment/backend -n kbp' to apply changes"
+    fi
+}
+
+_configure_microsoft() {
+    local current_secret="$1"
+    local secret_name="$2"
+    local cfg_region="$3"
+
+    print_substep "Microsoft Entra ID Configuration"
+    echo ""
+    echo "  You need the following from Azure Portal → App registrations → Your app:"
+    echo "    • Application (client) ID    → Overview page"
+    echo "    • Client secret              → Certificates & secrets → New client secret"
+    echo "    • Directory (tenant) ID      → Overview page"
+    echo ""
+    echo "  Also ensure:"
+    echo "    • API permissions → Add 'GroupMember.Read.All' (Delegated) → Grant admin consent"
+    echo "    • Redirect URI → https://<your-domain>/auth/microsoft/callback"
+    echo ""
+
+    read -p "Microsoft Client ID (Application ID): " ms_client_id
+    read -s -p "Microsoft Client Secret: " ms_client_secret
+    echo ""
+    read -p "Microsoft Tenant ID (Directory ID): " ms_tenant_id
+
+    if [[ -z "$ms_client_id" || -z "$ms_client_secret" || -z "$ms_tenant_id" ]]; then
+        print_error "All three values are required"
+        exit 1
+    fi
+
+    local updated_secret
+    updated_secret=$(echo "$current_secret" | jq \
+        --arg id "$ms_client_id" \
+        --arg secret "$ms_client_secret" \
+        --arg tenant "$ms_tenant_id" \
+        '."microsoft-client-id" = $id | ."microsoft-client-secret" = $secret | ."microsoft-tenant-id" = $tenant')
+
+    aws secretsmanager put-secret-value \
+        --secret-id "$secret_name" \
+        --secret-string "$updated_secret" \
+        --region "$cfg_region" \
+        --no-cli-pager
+
+    print_success "Microsoft Entra ID configured!"
+    echo ""
+    print_info "Next steps:"
+    echo "  1. In Azure Portal → App registrations → API permissions:"
+    echo "     Add 'GroupMember.Read.All' (Delegated) and grant admin consent"
+    echo "  2. Create a Security Group in Entra ID and add members"
+    echo "  3. After deployment, go to your app → Entra Groups page"
+    echo "     Map the group Object ID to a role (super_admin/admin)"
+}
+
+_configure_cognito() {
+    local current_secret="$1"
+    local secret_name="$2"
+    local cfg_region="$3"
+
+    print_substep "AWS Cognito Configuration"
+    echo ""
+
+    # Try to read from terraform outputs
+    local tf_cognito_enabled
+    tf_cognito_enabled=$(_tf_output cognito_enabled || echo "false")
+
+    if [[ "$tf_cognito_enabled" == "true" ]]; then
+        local tf_pool_id tf_client_id tf_client_secret
+        tf_pool_id=$(_tf_output cognito_user_pool_id || echo "")
+        tf_client_id=$(_tf_output cognito_app_client_id || echo "")
+        tf_client_secret=$(_tf_output cognito_app_client_secret || echo "")
+
+        if [[ -n "$tf_pool_id" && -n "$tf_client_id" ]]; then
+            print_info "Found Cognito configuration in Terraform outputs"
+            echo "  User Pool ID: $tf_pool_id"
+            echo "  Client ID: ${tf_client_id:0:8}..."
+            echo ""
+            read -p "Use these values? (Y/n): " use_tf
+            if [[ ! "$use_tf" =~ ^[Nn]$ ]]; then
+                local updated_secret
+                updated_secret=$(echo "$current_secret" | jq \
+                    --arg pool "$tf_pool_id" \
+                    --arg client "$tf_client_id" \
+                    --arg secret "$tf_client_secret" \
+                    --arg region "$cfg_region" \
+                    '."cognito-user-pool-id" = $pool | ."cognito-client-id" = $client | ."cognito-client-secret" = $secret | ."cognito-region" = $region')
+
+                aws secretsmanager put-secret-value \
+                    --secret-id "$secret_name" \
+                    --secret-string "$updated_secret" \
+                    --region "$cfg_region" \
+                    --no-cli-pager
+
+                print_success "Cognito configured from Terraform outputs!"
+                return
+            fi
+        fi
+    fi
+
+    echo "  You need the following from AWS Console → Cognito → User Pools:"
+    echo "    • User Pool ID"
+    echo "    • App client ID"
+    echo "    • App client secret"
+    echo ""
+
+    read -p "Cognito User Pool ID: " cognito_pool_id
+    read -p "Cognito Client ID: " cognito_client_id
+    read -s -p "Cognito Client Secret: " cognito_client_secret
+    echo ""
+    read -p "Cognito Region [$cfg_region]: " cognito_region
+    cognito_region="${cognito_region:-$cfg_region}"
+
+    if [[ -z "$cognito_pool_id" || -z "$cognito_client_id" ]]; then
+        print_error "User Pool ID and Client ID are required"
+        exit 1
+    fi
+
+    local updated_secret
+    updated_secret=$(echo "$current_secret" | jq \
+        --arg pool "$cognito_pool_id" \
+        --arg client "$cognito_client_id" \
+        --arg secret "$cognito_client_secret" \
+        --arg region "$cognito_region" \
+        '."cognito-user-pool-id" = $pool | ."cognito-client-id" = $client | ."cognito-client-secret" = $secret | ."cognito-region" = $region')
+
+    aws secretsmanager put-secret-value \
+        --secret-id "$secret_name" \
+        --secret-string "$updated_secret" \
+        --region "$cfg_region" \
+        --no-cli-pager
+
+    print_success "Cognito configured!"
+}
+
+# Configure view - show current configuration status
+configure_view() {
+    print_header "Current Configuration"
+
+    cd "$IAC_DIR"
+
+    local secret_name
+    secret_name=$(_tf_output backend_secrets_manager_name || echo "")
+    local cfg_region
+    cfg_region=$(_tf_output region || echo "$AWS_REGION")
+
+    if [[ -z "$secret_name" ]]; then
+        print_error "Secrets Manager name not found. Run Step 1 first."
+        exit 1
+    fi
+
+    local current_secret
+    current_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --region "$cfg_region" --query SecretString --output text 2>/dev/null || echo "{}")
+
+    echo ""
+    print_substep "Authentication Providers"
+    echo ""
+
+    local cognito_id ms_id ms_tenant
+    cognito_id=$(echo "$current_secret" | jq -r '."cognito-client-id" // empty')
+    ms_id=$(echo "$current_secret" | jq -r '."microsoft-client-id" // empty')
+    ms_tenant=$(echo "$current_secret" | jq -r '."microsoft-tenant-id" // empty')
+
+    if [[ -n "$cognito_id" ]]; then
+        print_success "AWS Cognito"
+        echo "    User Pool ID: $(echo "$current_secret" | jq -r '."cognito-user-pool-id" // "N/A"')"
+        echo "    Client ID:    ${cognito_id:0:12}..."
+        echo "    Region:       $(echo "$current_secret" | jq -r '."cognito-region" // "N/A"')"
+    else
+        print_warning "AWS Cognito: Not configured"
+    fi
+    echo ""
+
+    if [[ -n "$ms_id" ]]; then
+        print_success "Microsoft Entra ID"
+        echo "    Client ID:    ${ms_id:0:12}..."
+        echo "    Tenant ID:    ${ms_tenant:0:12}..."
+    else
+        print_warning "Microsoft Entra ID: Not configured"
+    fi
+    echo ""
+
+    print_substep "Infrastructure"
+    echo ""
+    echo "    Database:     $(echo "$current_secret" | jq -r '."database-url" // "N/A"' | sed 's/:[^:@]*@/:***@/')"
+    echo "    JWT Secret:   $(echo "$current_secret" | jq -r '."jwt-secret-key" // "N/A"' | cut -c1-8)..."
+    echo ""
+
+    print_substep "Certificates"
+    echo ""
+    echo "    Frontend ACM: $(echo "$current_secret" | jq -r '."acm-certificate-frontend-arn" // "N/A"')"
+    echo "    API ACM:      $(echo "$current_secret" | jq -r '."acm-certificate-api-arn" // "N/A"')"
+}
+
 # Print functions
 print_banner() {
     echo ""
@@ -869,8 +1148,12 @@ Options:
                       4: Deploy application to EKS
                       5: Toggle Global Accelerator (enable/disable)
 
-  --update-secrets    Update secrets in AWS Secrets Manager (interactive)
-                      Supports: Microsoft OAuth, Cognito, ACM certificates
+  --configure <cmd>   Configure the deployment interactively
+                      auth:    Add/update authentication providers (Microsoft/Cognito)
+                      secrets: Update individual secrets in Secrets Manager
+                      view:    View current configuration status
+
+  --update-secrets    (Alias for --configure secrets)
   --yes               Skip all confirmation prompts (dangerous!)
   --region <region>   Specify AWS region (default: us-west-2)
   --help              Show this help message
@@ -887,6 +1170,12 @@ Examples:
 
   # Full deployment (skip confirmations)
   ./deploy-all.sh --yes
+
+  # Add Microsoft Entra ID authentication
+  ./deploy-all.sh --configure auth
+
+  # View current secret/auth configuration
+  ./deploy-all.sh --configure view
 
 Deployment flow:
   1️⃣  Terraform - Deploy AWS infrastructure
@@ -939,6 +1228,14 @@ parse_args() {
             --update-secrets)
                 UPDATE_SECRETS=true
                 shift
+                ;;
+            --configure)
+                CONFIGURE_CMD="$2"
+                if [[ -z "$CONFIGURE_CMD" ]]; then
+                    print_error "--configure requires a subcommand: auth, secrets, or view"
+                    exit 1
+                fi
+                shift 2
                 ;;
             --help|-h)
                 show_help
@@ -2004,7 +2301,30 @@ main() {
     # Parse arguments
     parse_args "$@"
 
-    # Handle --update-secrets
+    # Handle --configure
+    if [[ -n "$CONFIGURE_CMD" ]]; then
+        check_dependencies
+        check_aws_credentials
+        case $CONFIGURE_CMD in
+            auth)
+                configure_auth
+                ;;
+            secrets)
+                update_secrets_interactive
+                ;;
+            view)
+                configure_view
+                ;;
+            *)
+                print_error "Unknown configure subcommand: $CONFIGURE_CMD"
+                echo "  Available: auth, secrets, view"
+                exit 1
+                ;;
+        esac
+        exit 0
+    fi
+
+    # Handle --update-secrets (legacy, redirects to --configure secrets)
     if [[ "$UPDATE_SECRETS" == "true" ]]; then
         check_dependencies
         check_aws_credentials
