@@ -10,16 +10,33 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_permission
+from app.api.deps import get_allowed_resource_ids, require_permission
 from app.core.database import get_db
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.usage_stats import UsageStatsService
 
 router = APIRouter()
 
 MAX_QUERY_DAYS = 90
+
+
+async def _get_accessible_token_ids(
+    user: User, db: AsyncSession
+) -> Optional[List[UUID]]:
+    """Return token IDs the user can view usage for.
+
+    - super_admin: None (no filter, sees all)
+    - admin with manage_api_keys=list: only those token IDs
+    - admin with manage_api_keys="all"/True: None (sees all)
+    """
+    if user.role == UserRole.SUPER_ADMIN:
+        return None
+    allowed_ids = get_allowed_resource_ids(user, "manage_api_keys")
+    if allowed_ids is None:
+        return None
+    return [UUID(tid) for tid in allowed_ids]
 
 
 def _clamp_date_range(
@@ -395,9 +412,12 @@ async def get_usage_breakdown(
     """
     start_date, end_date = _clamp_date_range(start_date, end_date)
 
+    accessible = await _get_accessible_token_ids(current_user, db)
+
     service = UsageStatsService(db)
     data = await service.get_usage_breakdown(
-        user_id=current_user.id,
+        user_id=None,
+        accessible_token_ids=accessible,
         start_date=start_date,
         end_date=end_date,
         granularity=granularity,
@@ -446,9 +466,18 @@ async def get_aggregated_stats(
         else None
     )
 
+    # Scope by accessible tokens instead of user_id
+    accessible = await _get_accessible_token_ids(current_user, db)
+    # Merge explicit token_ids with access control
+    if accessible is not None:
+        if parsed_token_ids:
+            parsed_token_ids = [t for t in parsed_token_ids if t in accessible]
+        else:
+            parsed_token_ids = accessible
+
     service = UsageStatsService(db)
     data = await service.get_aggregated_stats(
-        user_id=current_user.id,
+        user_id=None,
         start_date=start_date,
         end_date=end_date,
         granularity=granularity,
@@ -480,11 +509,14 @@ async def get_token_summary(
     """
     start_date, end_date = _clamp_date_range(start_date, end_date)
 
+    accessible = await _get_accessible_token_ids(current_user, db)
+
     service = UsageStatsService(db)
     data = await service.get_usage_by_token(
-        user_id=current_user.id,
+        user_id=None,
         start_date=start_date,
         end_date=end_date,
+        token_ids=accessible,
     )
 
     return [TokenUsageSummary(**d) for d in data]
@@ -517,9 +549,14 @@ async def get_tokens_timeseries(
 
     parsed_ids = [UUID(tid.strip()) for tid in token_ids.split(",") if tid.strip()]
 
+    # Scope by accessible tokens
+    accessible = await _get_accessible_token_ids(current_user, db)
+    if accessible is not None:
+        parsed_ids = [t for t in parsed_ids if t in accessible]
+
     service = UsageStatsService(db)
     series_dict = await service.get_tokens_timeseries(
-        user_id=current_user.id,
+        user_id=None,
         token_ids=parsed_ids,
         start_date=start_date,
         end_date=end_date,

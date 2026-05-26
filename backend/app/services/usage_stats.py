@@ -20,7 +20,7 @@ class UsageStatsService:
 
     async def get_aggregated_stats(
         self,
-        user_id: UUID,
+        user_id: Optional[UUID],
         start_date: datetime,
         end_date: datetime,
         granularity: str = "daily",
@@ -32,7 +32,7 @@ class UsageStatsService:
         Get aggregated usage statistics as time-series data.
 
         Args:
-            user_id: Owner user ID
+            user_id: Owner user ID (None = no user filter, use token_ids for access control)
             start_date: Start of time range
             end_date: End of time range
             granularity: One of 'hourly', 'daily', 'weekly', 'monthly'
@@ -47,6 +47,14 @@ class UsageStatsService:
 
         time_expr = self._localized_time(UsageRecord.created_at, tz)
         time_bucket = func.date_trunc(trunc_field, time_expr).label("time_bucket")
+
+        conditions = [
+            UsageRecord.created_at >= start_date,
+            UsageRecord.created_at <= end_date,
+            UsageRecord.record_type == "usage",
+        ]
+        if user_id is not None:
+            conditions.append(UsageRecord.user_id == user_id)
 
         query = (
             select(
@@ -65,12 +73,7 @@ class UsageStatsService:
                     "total_cost"
                 ),
             )
-            .where(
-                UsageRecord.user_id == user_id,
-                UsageRecord.created_at >= start_date,
-                UsageRecord.created_at <= end_date,
-                UsageRecord.record_type == "usage",
-            )
+            .where(*conditions)
             .group_by(time_bucket)
             .order_by(time_bucket)
         )
@@ -97,13 +100,14 @@ class UsageStatsService:
 
     async def get_usage_breakdown(
         self,
-        user_id: UUID,
+        user_id: Optional[UUID],
         start_date: datetime,
         end_date: datetime,
         granularity: str = "daily",
         token_id: Optional[UUID] = None,
         model: Optional[str] = None,
         tz: str = "UTC",
+        accessible_token_ids: Optional[List[UUID]] = None,
     ) -> List[dict]:
         """
         Get usage breakdown by token × model × time bucket.
@@ -114,6 +118,16 @@ class UsageStatsService:
         trunc_field = self._granularity_to_trunc(granularity)
         time_expr = self._localized_time(UsageRecord.created_at, tz)
         time_bucket = func.date_trunc(trunc_field, time_expr).label("time_bucket")
+
+        conditions = [
+            UsageRecord.created_at >= start_date,
+            UsageRecord.created_at <= end_date,
+            UsageRecord.record_type == "usage",
+        ]
+        if user_id is not None:
+            conditions.append(UsageRecord.user_id == user_id)
+        if accessible_token_ids is not None:
+            conditions.append(UsageRecord.token_id.in_(accessible_token_ids))
 
         query = (
             select(
@@ -136,12 +150,7 @@ class UsageStatsService:
                 func.count(UsageRecord.id).label("request_count"),
             )
             .join(APIToken, UsageRecord.token_id == APIToken.id)
-            .where(
-                UsageRecord.user_id == user_id,
-                UsageRecord.created_at >= start_date,
-                UsageRecord.created_at <= end_date,
-                UsageRecord.record_type == "usage",
-            )
+            .where(*conditions)
             .group_by(
                 time_bucket, UsageRecord.token_id, APIToken.name, UsageRecord.model
             )
@@ -173,21 +182,32 @@ class UsageStatsService:
 
     async def get_usage_by_token(
         self,
-        user_id: UUID,
+        user_id: Optional[UUID],
         start_date: datetime,
         end_date: datetime,
+        token_ids: Optional[List[UUID]] = None,
     ) -> List[dict]:
         """
         Get per-token usage summary for a time period.
 
         Args:
-            user_id: Owner user ID
+            user_id: Owner user ID (None = no user filter)
             start_date: Start of time range
             end_date: End of time range
+            token_ids: Optional list of token IDs to scope results
 
         Returns:
             List of per-token summary dicts.
         """
+        conditions = [
+            UsageRecord.created_at >= start_date,
+            UsageRecord.created_at <= end_date,
+        ]
+        if user_id is not None:
+            conditions.append(UsageRecord.user_id == user_id)
+        if token_ids is not None:
+            conditions.append(UsageRecord.token_id.in_(token_ids))
+
         query = (
             select(
                 UsageRecord.token_id,
@@ -201,11 +221,7 @@ class UsageStatsService:
                 ),
             )
             .join(APIToken, UsageRecord.token_id == APIToken.id)
-            .where(
-                UsageRecord.user_id == user_id,
-                UsageRecord.created_at >= start_date,
-                UsageRecord.created_at <= end_date,
-            )
+            .where(*conditions)
             .group_by(UsageRecord.token_id, APIToken.name)
             .order_by(func.sum(UsageRecord.cost_usd).desc())
         )
@@ -226,7 +242,7 @@ class UsageStatsService:
 
     async def get_tokens_timeseries(
         self,
-        user_id: UUID,
+        user_id: Optional[UUID],
         token_ids: List[UUID],
         start_date: datetime,
         end_date: datetime,
@@ -238,7 +254,7 @@ class UsageStatsService:
         Get time-series data for multiple tokens (for chart overlay).
 
         Args:
-            user_id: Owner user ID
+            user_id: Owner user ID (None = no user filter)
             token_ids: List of token UUIDs to include
             start_date: Start of time range
             end_date: End of time range
@@ -256,6 +272,14 @@ class UsageStatsService:
 
         metric_col = self._metric_to_column(metric)
 
+        conditions = [
+            UsageRecord.token_id.in_(token_ids),
+            UsageRecord.created_at >= start_date,
+            UsageRecord.created_at <= end_date,
+        ]
+        if user_id is not None:
+            conditions.append(UsageRecord.user_id == user_id)
+
         query = (
             select(
                 UsageRecord.token_id,
@@ -264,12 +288,7 @@ class UsageStatsService:
                 metric_col,
             )
             .join(APIToken, UsageRecord.token_id == APIToken.id)
-            .where(
-                UsageRecord.user_id == user_id,
-                UsageRecord.token_id.in_(token_ids),
-                UsageRecord.created_at >= start_date,
-                UsageRecord.created_at <= end_date,
-            )
+            .where(*conditions)
             .group_by(UsageRecord.token_id, APIToken.name, time_bucket)
             .order_by(time_bucket)
         )
