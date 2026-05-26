@@ -39,9 +39,7 @@ class EntraGroupSyncService:
         )
         return (mapping.role, mapping.permissions)
 
-    async def sync_user_permissions(
-        self, user: User, group_ids: list[str]
-    ) -> bool:
+    async def sync_user_permissions(self, user: User, group_ids: list[str]) -> bool:
         resolved = await self.resolve_permissions(group_ids)
         if resolved is None:
             return False

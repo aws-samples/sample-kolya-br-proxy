@@ -436,9 +436,7 @@ async def microsoft_callback(
     if settings.MICROSOFT_ENABLE_GROUP_SYNC:
         user_groups = await oauth_service.get_user_groups(access_token)
         if not user_groups:
-            logger.warning(
-                f"MICROSOFT_GROUP_SYNC: No groups found for {email}"
-            )
+            logger.warning(f"MICROSOFT_GROUP_SYNC: No groups found for {email}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Your account is not authorized. Contact admin.",

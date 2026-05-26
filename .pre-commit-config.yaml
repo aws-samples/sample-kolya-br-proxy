@@ -43,7 +43,7 @@ repos:
 
 # Python 代码格式化和检查
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.8.4
+  rev: v0.15.6
   hooks:
   - id: ruff
     args: [--fix]
