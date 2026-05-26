@@ -66,6 +66,12 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresSuperAdmin: true },
       },
       {
+        path: 'entra-groups',
+        name: 'entra-groups',
+        component: () => import('pages/EntraGroupsPage.vue'),
+        meta: { requiresSuperAdmin: true },
+      },
+      {
         path: 'settings',
         name: 'settings',
         component: () => import('pages/SettingsPage.vue'),

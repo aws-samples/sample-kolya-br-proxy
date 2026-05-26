@@ -170,6 +170,33 @@ class MicrosoftOAuthService:
                     detail="Failed to get user information",
                 )
 
+    async def get_user_groups(self, access_token: str) -> list[str]:
+        """
+        Get user's security group memberships from Microsoft Graph API.
+
+        Returns list of group object IDs the user belongs to.
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    "https://graph.microsoft.com/v1.0/me/memberOf"
+                    "?$select=id,displayName,@odata.type",
+                    headers=headers,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Failed to get user groups: {e}")
+                return []
+
+        return [
+            item["id"]
+            for item in data.get("value", [])
+            if item.get("@odata.type") == "#microsoft.graph.group"
+        ]
+
 
 def get_microsoft_oauth_service() -> MicrosoftOAuthService:
     """Get Microsoft OAuth service instance."""

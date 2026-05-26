@@ -266,9 +266,7 @@ async def get_team_dashboard(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid team ID")
 
-    team_result = await db.execute(
-        select(Team).where(Team.id == team_uuid, Team.user_id == current_user.id)
-    )
+    team_result = await db.execute(select(Team).where(Team.id == team_uuid))
     team = team_result.scalar_one_or_none()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -392,7 +390,6 @@ async def update_team(
     service = TeamService(db)
     team = await service.update_team(
         team_id=team_uuid,
-        user_id=current_user.id,
         name=request.name,
         monthly_budget_usd=request.monthly_budget_usd,
         monthly_reset_policy=request.monthly_reset_policy,
@@ -427,10 +424,10 @@ async def delete_team(
         raise HTTPException(status_code=400, detail="Invalid team ID")
 
     service = TeamService(db)
-    team = await service.get_team(team_uuid, current_user.id)
+    team = await service.get_team(team_uuid)
     team_name = team.name
 
-    token_hashes = await service.delete_team(team_uuid, current_user.id)
+    token_hashes = await service.delete_team(team_uuid)
 
     if token_hashes:
         await asyncio.gather(*[_invalidate_token_cache(th) for th in token_hashes])
@@ -471,7 +468,6 @@ async def add_member(
         team_id=team_uuid,
         token_id=token_uuid,
         allocated_usd=request.allocated_usd,
-        user_id=current_user.id,
     )
 
     token_result = await db.execute(
@@ -521,7 +517,7 @@ async def remove_member(
     token_row = token_result.one_or_none()
 
     service = TeamService(db)
-    await service.remove_member(team_uuid, token_uuid, current_user.id)
+    await service.remove_member(team_uuid, token_uuid)
 
     if token_row and token_row.token_hash:
         await _invalidate_token_cache(token_row.token_hash)
@@ -558,7 +554,6 @@ async def adjust_member(
         team_id=team_uuid,
         token_id=token_uuid,
         new_allocated_usd=request.allocated_usd,
-        user_id=current_user.id,
     )
 
     token_result = await db.execute(
@@ -607,7 +602,6 @@ async def transfer_allocation(
         from_token_id=from_uuid,
         to_token_id=to_uuid,
         amount=request.amount,
-        user_id=current_user.id,
     )
 
     # Invalidate caches for both tokens
@@ -666,6 +660,7 @@ async def batch_create_members(
         allowed_ips=request.allowed_ips,
         token_metadata=request.token_metadata,
         model_names=request.model_names,
+        skip_owner_check=True,
     )
 
     created = []

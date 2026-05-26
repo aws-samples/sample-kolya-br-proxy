@@ -426,6 +426,39 @@ async def microsoft_callback(
             detail="Failed to get user information from Microsoft",
         )
 
+    # Resolve Entra ID group permissions if enabled
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    resolved_role = None
+    resolved_permissions = None
+
+    if settings.MICROSOFT_ENABLE_GROUP_SYNC:
+        user_groups = await oauth_service.get_user_groups(access_token)
+        if not user_groups:
+            logger.warning(
+                f"MICROSOFT_GROUP_SYNC: No groups found for {email}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is not authorized. Contact admin.",
+            )
+
+        from app.services.entra_group_sync import EntraGroupSyncService
+
+        group_sync = EntraGroupSyncService(db)
+        resolved = await group_sync.resolve_permissions(user_groups)
+        if resolved is None:
+            logger.warning(
+                f"MICROSOFT_GROUP_SYNC: User {email} not in any mapped group. "
+                f"Groups: {user_groups}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is not authorized. Contact admin.",
+            )
+        resolved_role, resolved_permissions = resolved
+
     # Check if user exists with this Microsoft ID
     from sqlalchemy import select
 
@@ -433,6 +466,18 @@ async def microsoft_callback(
     user = result.scalar_one_or_none()
 
     if user:
+        # Block deactivated users
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account deactivated. Contact admin.",
+            )
+
+        # Sync permissions on every login if group sync enabled
+        if settings.MICROSOFT_ENABLE_GROUP_SYNC and resolved_role is not None:
+            user.role = resolved_role
+            user.permissions = resolved_permissions
+
         # Existing Microsoft user - log successful login
         client_ip = http_request.client.host if http_request.client else "unknown"
         logger.info(
@@ -453,6 +498,12 @@ async def microsoft_callback(
         user = result.scalar_one_or_none()
 
         if user:
+            if not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account deactivated. Contact admin.",
+                )
+
             # Link Microsoft account to existing user
             from app.models.user import AuthMethod
 
@@ -480,7 +531,10 @@ async def microsoft_callback(
                 user.first_name = first_name
             if not user.last_name:
                 user.last_name = last_name
-            user.email_verified = True  # Microsoft accounts are pre-verified
+            user.email_verified = True
+            if settings.MICROSOFT_ENABLE_GROUP_SYNC and resolved_role is not None:
+                user.role = resolved_role
+                user.permissions = resolved_permissions
             await db.commit()
             await db.refresh(user)
 
@@ -491,14 +545,11 @@ async def microsoft_callback(
             # Create new user
             from decimal import Decimal
 
-            from app.core.config import get_settings
             from app.models.user import AuthMethod
-
-            settings = get_settings()
 
             user = User(
                 email=email,
-                password_hash=None,  # No password for OAuth users
+                password_hash=None,
                 auth_method=AuthMethod.MICROSOFT,
                 microsoft_id=microsoft_id,
                 first_name=first_name,
@@ -506,8 +557,9 @@ async def microsoft_callback(
                 current_balance=Decimal(str(settings.INITIAL_USER_BALANCE_USD)),
                 is_active=True,
                 is_admin=True,
-                role=UserRole.ADMIN,
-                email_verified=True,  # Microsoft accounts are pre-verified
+                role=resolved_role if resolved_role else UserRole.ADMIN,
+                permissions=resolved_permissions,
+                email_verified=True,
             )
             db.add(user)
             await db.commit()

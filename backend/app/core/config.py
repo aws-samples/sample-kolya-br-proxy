@@ -131,6 +131,10 @@ class Settings(BaseSettings):
         default="http://localhost:3000/auth/microsoft/callback",
         description="Allowed redirect URIs for Microsoft OAuth (comma-separated)",
     )
+    MICROSOFT_ENABLE_GROUP_SYNC: bool = Field(
+        default=False,
+        description="Enable Entra ID group-to-permission mapping for Microsoft OAuth users",
+    )
 
     # AWS Cognito OAuth settings
     COGNITO_USER_POOL_ID: Optional[str] = Field(
