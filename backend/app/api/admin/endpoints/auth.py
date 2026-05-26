@@ -434,28 +434,37 @@ async def microsoft_callback(
     resolved_permissions = None
 
     if settings.MICROSOFT_ENABLE_GROUP_SYNC:
-        user_groups = await oauth_service.get_user_groups(access_token)
-        if not user_groups:
-            logger.warning(f"MICROSOFT_GROUP_SYNC: No groups found for {email}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account is not authorized. Contact admin.",
-            )
-
         from app.services.entra_group_sync import EntraGroupSyncService
 
         group_sync = EntraGroupSyncService(db)
-        resolved = await group_sync.resolve_permissions(user_groups)
-        if resolved is None:
-            logger.warning(
-                f"MICROSOFT_GROUP_SYNC: User {email} not in any mapped group. "
-                f"Groups: {user_groups}"
+
+        # Bootstrap: no mappings yet → first user becomes super_admin
+        if not await group_sync.has_any_mappings():
+            logger.info(
+                f"MICROSOFT_GROUP_SYNC: No mappings configured, granting super_admin to {email}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Your account is not authorized. Contact admin.",
-            )
-        resolved_role, resolved_permissions = resolved
+            resolved_role = UserRole.super_admin
+            resolved_permissions = None
+        else:
+            user_groups = await oauth_service.get_user_groups(access_token)
+            if not user_groups:
+                logger.warning(f"MICROSOFT_GROUP_SYNC: No groups found for {email}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account is not authorized. Contact admin.",
+                )
+
+            resolved = await group_sync.resolve_permissions(user_groups)
+            if resolved is None:
+                logger.warning(
+                    f"MICROSOFT_GROUP_SYNC: User {email} not in any mapped group. "
+                    f"Groups: {user_groups}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account is not authorized. Contact admin.",
+                )
+            resolved_role, resolved_permissions = resolved
 
     # Check if user exists with this Microsoft ID
     from sqlalchemy import select

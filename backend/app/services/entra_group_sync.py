@@ -16,11 +16,22 @@ class EntraGroupSyncService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def has_any_mappings(self) -> bool:
+        result = await self.db.execute(select(EntraGroupMapping.id).limit(1))
+        return result.scalar_one_or_none() is not None
+
     async def resolve_permissions(
         self, group_ids: list[str]
     ) -> Optional[tuple[UserRole, dict | None]]:
         if not group_ids:
             return None
+
+        # Bootstrap: no mappings configured yet → first user gets super_admin
+        if not await self.has_any_mappings():
+            logger.info(
+                "No entra_group_mappings configured — granting super_admin to first user"
+            )
+            return (UserRole.super_admin, None)
 
         result = await self.db.execute(
             select(EntraGroupMapping)
