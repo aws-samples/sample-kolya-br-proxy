@@ -668,7 +668,7 @@ async def get_token(
         )
 
     # Verify token belongs to current user
-    if token.user_id != current_user.id:
+    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
@@ -720,7 +720,7 @@ async def update_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id:
+    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
@@ -806,7 +806,7 @@ async def delete_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id:
+    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
@@ -860,7 +860,7 @@ async def revoke_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id:
+    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
@@ -902,7 +902,7 @@ async def get_plain_token(
             detail="Invalid token ID format",
         )
 
-    # Verify token exists and belongs to user
+    # Verify token exists and belongs to user (super_admin can access all)
     token = await token_service.get_token_by_id(token_uuid)
     if not token:
         raise HTTPException(
@@ -910,7 +910,7 @@ async def get_plain_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id:
+    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
@@ -987,7 +987,7 @@ async def adjust_token_balance(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id:
+    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied",
