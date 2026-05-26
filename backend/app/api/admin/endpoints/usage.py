@@ -67,7 +67,7 @@ def _clamp_date_range(
             detail=f"start_date cannot be more than {MAX_QUERY_DAYS} days ago",
         )
 
-    if (end_date - start_date).days > MAX_QUERY_DAYS:
+    if (end_date - start_date).days > MAX_QUERY_DAYS + 1:
         raise HTTPException(
             status_code=400,
             detail=f"Date range cannot exceed {MAX_QUERY_DAYS} days",

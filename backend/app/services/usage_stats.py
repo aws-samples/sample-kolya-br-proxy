@@ -78,7 +78,7 @@ class UsageStatsService:
             .order_by(time_bucket)
         )
 
-        if token_ids:
+        if token_ids is not None:
             query = query.where(UsageRecord.token_id.in_(token_ids))
         elif token_id is not None:
             query = query.where(UsageRecord.token_id == token_id)
@@ -202,6 +202,7 @@ class UsageStatsService:
         conditions = [
             UsageRecord.created_at >= start_date,
             UsageRecord.created_at <= end_date,
+            UsageRecord.record_type == "usage",
         ]
         if user_id is not None:
             conditions.append(UsageRecord.user_id == user_id)

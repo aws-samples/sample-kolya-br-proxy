@@ -668,11 +668,13 @@ async def get_token(
         )
 
     # Verify token belongs to current user
-    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+    if token.user_id != current_user.id:
+        allowed = get_allowed_resource_ids(current_user, "manage_api_keys")
+        if allowed is not None and str(token.id) not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
     usage = await calculate_token_usage(token, db)
     return build_token_response(
@@ -720,11 +722,13 @@ async def update_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+    if token.user_id != current_user.id:
+        allowed = get_allowed_resource_ids(current_user, "manage_api_keys")
+        if allowed is not None and str(token.id) not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
     # Validate token_metadata if provided
     if request.token_metadata is not None:
@@ -806,11 +810,13 @@ async def delete_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+    if token.user_id != current_user.id:
+        allowed = get_allowed_resource_ids(current_user, "manage_api_keys")
+        if allowed is not None and str(token.id) not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
     await _invalidate_token_cache(token.token_hash)
 
@@ -860,11 +866,13 @@ async def revoke_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+    if token.user_id != current_user.id:
+        allowed = get_allowed_resource_ids(current_user, "manage_api_keys")
+        if allowed is not None and str(token.id) not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
     await _invalidate_token_cache(token.token_hash)
 
@@ -910,11 +918,13 @@ async def get_plain_token(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+    if token.user_id != current_user.id:
+        allowed = get_allowed_resource_ids(current_user, "manage_api_keys")
+        if allowed is not None and str(token.id) not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
     # Get plain token
     plain_token = await token_service.get_plain_token(token_uuid)
@@ -987,11 +997,13 @@ async def adjust_token_balance(
             detail="Token not found",
         )
 
-    if token.user_id != current_user.id and current_user.role != UserRole.SUPER_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied",
-        )
+    if token.user_id != current_user.id:
+        allowed = get_allowed_resource_ids(current_user, "manage_api_keys")
+        if allowed is not None and str(token.id) not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
 
     adjustment = UsageRecord(
         id=uuid_mod.uuid4(),

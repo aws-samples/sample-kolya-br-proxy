@@ -280,16 +280,30 @@ async def deactivate_admin(
     settings = get_settings()
     if settings.COGNITO_USER_POOL_ID:
         cognito_client = _get_cognito_client()
-        cognito_username = user.email.split("@")[0]
+        # Look up actual Cognito username by email (may differ from email prefix)
+        cognito_username = None
         try:
-            await asyncio.to_thread(
-                cognito_client.admin_delete_user,
+            list_resp = await asyncio.to_thread(
+                cognito_client.list_users,
                 UserPoolId=settings.COGNITO_USER_POOL_ID,
-                Username=cognito_username,
+                Filter=f'email = "{user.email}"',
+                Limit=1,
             )
+            if list_resp.get("Users"):
+                cognito_username = list_resp["Users"][0]["Username"]
         except ClientError as e:
-            if e.response["Error"]["Code"] != "UserNotFoundException":
-                logger.error(f"Failed to delete Cognito user {cognito_username}: {e}")
+            logger.error(f"Failed to look up Cognito user by email {user.email}: {e}")
+
+        if cognito_username:
+            try:
+                await asyncio.to_thread(
+                    cognito_client.admin_delete_user,
+                    UserPoolId=settings.COGNITO_USER_POOL_ID,
+                    Username=cognito_username,
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "UserNotFoundException":
+                    logger.error(f"Failed to delete Cognito user {cognito_username}: {e}")
 
     user.is_active = False
     await db.commit()
