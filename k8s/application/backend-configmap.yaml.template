@@ -18,6 +18,7 @@ data:
   KBR_OTEL_EXPORTER: "xray"
   KBR_ALLOWED_ORIGINS: "https://${FRONTEND_DOMAIN},https://${API_DOMAIN}${API_PORT_SUFFIX}"
   KBR_MICROSOFT_REDIRECT_URIS: "https://${FRONTEND_DOMAIN}/auth/microsoft/callback"
+  KBR_MICROSOFT_ENABLE_GROUP_SYNC: "true"
   KBR_COGNITO_REDIRECT_URIS: "https://${FRONTEND_DOMAIN}/auth/cognito/callback"
   # AWS Cognito OAuth configuration (domain derived from FRONTEND_DOMAIN)
   KBR_COGNITO_DOMAIN: "${COGNITO_DOMAIN}"
