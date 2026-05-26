@@ -89,7 +89,7 @@ class MicrosoftOAuthService:
             "response_type": "code",
             "redirect_uri": redirect_uri,
             "response_mode": "query",
-            "scope": "openid profile email User.Read",
+            "scope": "openid profile email User.Read GroupMember.Read.All",
             "state": state,
         }
 
