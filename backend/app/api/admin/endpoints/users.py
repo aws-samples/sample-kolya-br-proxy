@@ -303,7 +303,9 @@ async def deactivate_admin(
                 )
             except ClientError as e:
                 if e.response["Error"]["Code"] != "UserNotFoundException":
-                    logger.error(f"Failed to delete Cognito user {cognito_username}: {e}")
+                    logger.error(
+                        f"Failed to delete Cognito user {cognito_username}: {e}"
+                    )
 
     user.is_active = False
     await db.commit()
