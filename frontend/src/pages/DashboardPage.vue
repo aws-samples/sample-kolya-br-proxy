@@ -448,6 +448,11 @@ function exportKeys() {
 }
 
 onMounted(async () => {
+  // Wait for auth to be initialized (user info loaded) before checking permissions
+  if (!authStore.user) {
+    await authStore.initializeAuth();
+  }
+
   const tasks: Promise<unknown>[] = [];
   if (authStore.hasPermission('manage_api_keys')) {
     tasks.push(tokensStore.fetchTokens());
