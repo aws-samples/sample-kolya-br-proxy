@@ -82,7 +82,7 @@
         </q-card-section>
         <q-card-section>
           <p>Share this link with the invited admin:</p>
-          <q-input :model-value="inviteLink" readonly outlined dense>
+          <q-input :model-value="inviteLink" readonly outlined dense dark>
             <template v-slot:append>
               <q-btn flat dense icon="content_copy" @click="copyInviteLink" />
             </template>
