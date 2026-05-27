@@ -431,6 +431,19 @@ async def microsoft_callback(
             detail="Failed to get user information from Microsoft",
         )
 
+    # Look up existing user by Microsoft ID (used by both group-sync and login logic)
+    from sqlalchemy import select
+
+    result = await db.execute(select(User).where(User.microsoft_id == microsoft_id))
+    user = result.scalar_one_or_none()
+
+    # Block deactivated users early
+    if user and not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account deactivated. Contact admin.",
+        )
+
     # Resolve Entra ID group permissions if enabled
     from app.core.config import get_settings
 
@@ -445,14 +458,10 @@ async def microsoft_callback(
 
         # Bootstrap: no mappings AND no Microsoft users yet → first user gets super_admin
         if not await group_sync.has_any_mappings():
-            from sqlalchemy import select as sa_select
-
             from app.models.user import AuthMethod
 
             ms_user_count = await db.execute(
-                sa_select(User.id)
-                .where(User.auth_method == AuthMethod.MICROSOFT)
-                .limit(1)
+                select(User.id).where(User.auth_method == AuthMethod.MICROSOFT).limit(1)
             )
             if ms_user_count.scalar_one_or_none() is None:
                 logger.info(
@@ -460,24 +469,16 @@ async def microsoft_callback(
                 )
                 resolved_role = UserRole.SUPER_ADMIN
                 resolved_permissions = None
-            else:
-                # No group mappings configured but users exist — allow existing users
-                # to login with their current role (skip group sync), block new users.
-                from sqlalchemy import select as sa_select_existing
-
-                existing_user = await db.execute(
-                    sa_select_existing(User).where(User.microsoft_id == microsoft_id)
+            elif user is not None:
+                logger.info(
+                    f"MICROSOFT_GROUP_SYNC: No mappings configured, "
+                    f"allowing existing user {email} with current role"
                 )
-                if existing_user.scalar_one_or_none() is not None:
-                    logger.info(
-                        f"MICROSOFT_GROUP_SYNC: No mappings configured, "
-                        f"allowing existing user {email} with current role"
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Group mappings not configured. Contact super admin.",
-                    )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Group mappings not configured. Contact super admin.",
+                )
         else:
             user_groups = await oauth_service.get_user_groups(access_token)
             if user_groups is None:
@@ -491,13 +492,7 @@ async def microsoft_callback(
                 )
             resolved = await group_sync.resolve_permissions(user_groups)
             if resolved is None:
-                # Check if user already exists — allow existing users to keep their role
-                from sqlalchemy import select as sa_select_check
-
-                existing_check = await db.execute(
-                    sa_select_check(User).where(User.microsoft_id == microsoft_id)
-                )
-                if existing_check.scalar_one_or_none() is not None:
+                if user is not None:
                     logger.info(
                         f"MICROSOFT_GROUP_SYNC: User {email} not in any mapped group "
                         f"but is existing user, allowing login with current role. "
@@ -515,20 +510,7 @@ async def microsoft_callback(
             else:
                 resolved_role, resolved_permissions = resolved
 
-    # Check if user exists with this Microsoft ID
-    from sqlalchemy import select
-
-    result = await db.execute(select(User).where(User.microsoft_id == microsoft_id))
-    user = result.scalar_one_or_none()
-
     if user:
-        # Block deactivated users
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account deactivated. Contact admin.",
-            )
-
         # Sync permissions on every login if group sync enabled
         if settings.MICROSOFT_ENABLE_GROUP_SYNC and resolved_role is not None:
             user.role = resolved_role

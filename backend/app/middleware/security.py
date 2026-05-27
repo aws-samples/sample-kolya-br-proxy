@@ -172,11 +172,25 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         method = request.method
         path = request.url.path
 
-        # Skip security checks for health endpoints and OAuth callbacks
+        # Skip security checks for health endpoints
+        if path.startswith("/health"):
+            return await call_next(request)
+
         # OAuth callbacks come as POST from identity providers (e.g. login.microsoftonline.com)
         # with a foreign origin, so they must bypass CSRF origin checks.
-        if path.startswith("/health") or ("/auth/" in path and "callback" in path):
-            return await call_next(request)
+        # Use exact path whitelist to avoid inadvertent bypasses on unrelated endpoints.
+        _OAUTH_CALLBACK_PATHS = {
+            "/admin/auth/microsoft/callback",
+            "/admin/auth/cognito/callback",
+        }
+        if path in _OAUTH_CALLBACK_PATHS:
+            response = await call_next(request)
+            # Still add security response headers
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-XSS-Protection"] = "1; mode=block"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            return response
 
         # Handle OPTIONS (CORS preflight) directly — BaseHTTPMiddleware can
         # lose headers set by inner CORSMiddleware, causing intermittent failures.
