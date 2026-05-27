@@ -9,6 +9,7 @@ from app.api.admin.endpoints import (
     alerts,
     audit,
     auth,
+    entra_groups,
     models,
     teams,
     tokens,
@@ -55,6 +56,11 @@ admin_router.include_router(
 
 # Admin user management (super_admin only)
 admin_router.include_router(users.router, prefix="/users", tags=["admin-users"])
+
+# Entra ID group mapping (super_admin only)
+admin_router.include_router(
+    entra_groups.router, prefix="/entra-groups", tags=["admin-entra-groups"]
+)
 
 
 @admin_router.get("/")

@@ -74,10 +74,11 @@ class TeamService:
         await self.db.refresh(team)
         return team
 
-    async def get_team(self, team_id: UUID, user_id: UUID) -> Team:
-        result = await self.db.execute(
-            select(Team).where(Team.id == team_id, Team.user_id == user_id)
-        )
+    async def get_team(self, team_id: UUID, user_id: UUID | None = None) -> Team:
+        query = select(Team).where(Team.id == team_id)
+        if user_id is not None:
+            query = query.where(Team.user_id == user_id)
+        result = await self.db.execute(query)
         team = result.scalar_one_or_none()
         if not team:
             raise HTTPException(status_code=404, detail="Team not found")
@@ -94,7 +95,7 @@ class TeamService:
     async def update_team(
         self,
         team_id: UUID,
-        user_id: UUID,
+        user_id: UUID | None = None,
         name: Optional[str] = None,
         monthly_budget_usd: Optional[Decimal] = None,
         monthly_reset_policy: Optional[str] = None,
@@ -102,7 +103,7 @@ class TeamService:
     ) -> Team:
         team, members, total_allocated = await self._lock_team_and_members(team_id)
 
-        if team.user_id != user_id:
+        if user_id is not None and team.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         if monthly_budget_usd is not None:
@@ -127,7 +128,9 @@ class TeamService:
         await self.db.refresh(team)
         return team
 
-    async def delete_team(self, team_id: UUID, user_id: UUID) -> List[str]:
+    async def delete_team(
+        self, team_id: UUID, user_id: UUID | None = None
+    ) -> List[str]:
         """Delete team and soft-delete all member tokens.
 
         Returns list of token_hashes for cache invalidation.
@@ -162,11 +165,11 @@ class TeamService:
         team_id: UUID,
         token_id: UUID,
         allocated_usd: Decimal,
-        user_id: UUID,
+        user_id: UUID | None = None,
     ) -> TeamMember:
         team, members, total_allocated = await self._lock_team_and_members(team_id)
 
-        if team.user_id != user_id:
+        if user_id is not None and team.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         if allocated_usd < 0:
@@ -182,15 +185,13 @@ class TeamService:
                 ),
             )
 
-        # Verify token exists, belongs to same user, not already in a team
+        # Verify token exists and not already in a team
         token_result = await self.db.execute(
             select(APIToken).where(APIToken.id == token_id)
         )
         token = token_result.scalar_one_or_none()
         if not token:
             raise HTTPException(status_code=404, detail="Token not found")
-        if token.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Token does not belong to you")
 
         existing = await self.db.execute(
             select(TeamMember).where(TeamMember.token_id == token_id)
@@ -215,7 +216,9 @@ class TeamService:
         await self.db.refresh(member)
         return member
 
-    async def remove_member(self, team_id: UUID, token_id: UUID, user_id: UUID) -> None:
+    async def remove_member(
+        self, team_id: UUID, token_id: UUID, user_id: UUID | None = None
+    ) -> None:
         team = await self.get_team(team_id, user_id)
 
         result = await self.db.execute(
@@ -245,11 +248,11 @@ class TeamService:
         team_id: UUID,
         token_id: UUID,
         new_allocated_usd: Decimal,
-        user_id: UUID,
+        user_id: UUID | None = None,
     ) -> TeamMember:
         team, members, total_allocated = await self._lock_team_and_members(team_id)
 
-        if team.user_id != user_id:
+        if user_id is not None and team.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         if new_allocated_usd < 0:
@@ -283,11 +286,11 @@ class TeamService:
         from_token_id: UUID,
         to_token_id: UUID,
         amount: Decimal,
-        user_id: UUID,
+        user_id: UUID | None = None,
     ) -> None:
         team, members, _ = await self._lock_team_and_members(team_id)
 
-        if team.user_id != user_id:
+        if user_id is not None and team.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         if amount <= 0:
@@ -328,20 +331,21 @@ class TeamService:
         self,
         team_id: UUID,
         user_id: UUID,
-        names: List[str],
-        per_member_allocation: Decimal,
+        names: List[str] | None = None,
+        per_member_allocation: Decimal = Decimal("0"),
         expires_at=None,
         quota_usd=None,
         allowed_ips=None,
         token_metadata=None,
         model_names=None,
+        skip_owner_check: bool = False,
     ) -> list[tuple[APIToken, str]]:
         """Create new tokens and add them as team members atomically."""
         from app.services.token import TokenService
 
         team, members, total_allocated = await self._lock_team_and_members(team_id)
 
-        if team.user_id != user_id:
+        if not skip_owner_check and team.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied")
 
         if per_member_allocation < 0:

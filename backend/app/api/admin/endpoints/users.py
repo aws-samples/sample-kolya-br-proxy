@@ -46,6 +46,7 @@ class AdminUserResponse(BaseModel):
     role: str
     permissions: dict | None
     is_active: bool
+    auth_method: str | None
     created_at: str
     last_login_at: str | None
 
@@ -59,6 +60,7 @@ class AdminUserResponse(BaseModel):
             role=u.role.value,
             permissions=u.permissions,
             is_active=u.is_active,
+            auth_method=u.auth_method.value if u.auth_method else None,
             created_at=u.created_at.isoformat(),
             last_login_at=u.last_login_at.isoformat() if u.last_login_at else None,
         )

@@ -32,9 +32,6 @@
               <q-item>
                 <q-item-section>
                   <q-item-label>{{ user?.email }}</q-item-label>
-                  <q-item-label caption>
-                    Balance: ${{ user?.current_balance }}
-                  </q-item-label>
                 </q-item-section>
               </q-item>
               <q-separator />
@@ -214,6 +211,14 @@ const allMenuLinks = [
     requiresSuperAdmin: true,
   },
   {
+    title: 'Entra Groups',
+    caption: 'Group-to-role mappings',
+    icon: 'group_work',
+    to: '/entra-groups',
+    requiresSuperAdmin: true,
+    requiresGroupSync: true,
+  },
+  {
     title: 'Settings',
     caption: 'Account settings',
     icon: 'settings',
@@ -223,6 +228,8 @@ const allMenuLinks = [
 
 const menuLinks = computed(() =>
   allMenuLinks.filter((link) => {
+    if ('requiresGroupSync' in link && link.requiresGroupSync && !authStore.groupSyncEnabled)
+      return false;
     if ('requiresSuperAdmin' in link && link.requiresSuperAdmin) return authStore.isSuperAdmin;
     if ('permission' in link && link.permission) return authStore.hasPermission(link.permission);
     return true;

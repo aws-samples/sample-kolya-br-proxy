@@ -13,6 +13,7 @@ export interface User {
   permissions?: Record<string, boolean | string | string[]> | null;
   email_verified: boolean;
   current_balance: string;
+  group_sync_enabled?: boolean;
 }
 
 export interface LoginResponse {
@@ -33,6 +34,7 @@ export const useAuthStore = defineStore('auth', {
     currentUser: (state) => state.user,
     isAdmin: (state) => state.user?.is_admin || false,
     isSuperAdmin: (state) => state.user?.role === 'super_admin',
+    groupSyncEnabled: (state) => state.user?.group_sync_enabled || false,
     hasPermission: (state) => (permission: string) => {
       if (!state.user) return false;
       if (state.user.role === 'super_admin') return true;

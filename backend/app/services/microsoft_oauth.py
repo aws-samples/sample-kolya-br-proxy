@@ -89,7 +89,7 @@ class MicrosoftOAuthService:
             "response_type": "code",
             "redirect_uri": redirect_uri,
             "response_mode": "query",
-            "scope": "openid profile email User.Read",
+            "scope": "openid profile email User.Read GroupMember.Read.All",
             "state": state,
         }
 
@@ -169,6 +169,35 @@ class MicrosoftOAuthService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Failed to get user information",
                 )
+
+    async def get_user_groups(self, access_token: str) -> list[str] | None:
+        """
+        Get user's security group memberships from Microsoft Graph API.
+
+        Returns list of group object IDs on success, or None on API error.
+        """
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    "https://graph.microsoft.com/v1.0/me/memberOf",
+                    headers=headers,
+                    params={"$select": "id,displayName"},
+                )
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    f"Failed to get user groups: {e} — response body: {e.response.text}"
+                )
+                return None
+
+        return [
+            item["id"]
+            for item in data.get("value", [])
+            if item.get("@odata.type") == "#microsoft.graph.group"
+        ]
 
 
 def get_microsoft_oauth_service() -> MicrosoftOAuthService:

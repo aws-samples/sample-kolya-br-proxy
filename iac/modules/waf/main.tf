@@ -162,6 +162,7 @@ resource "aws_wafv2_web_acl" "main" {
   # Rule 3: AWS Managed - Common Rule Set (SQLi, XSS, etc.)
   # Certain rules are excluded because LLM agent request bodies contain:
   # - SizeRestrictions_BODY: Agent requests with tools + conversation history exceed 8KB
+  # - SizeRestrictions_QUERYSTRING: Microsoft OAuth callback codes exceed default query string limit
   # - CrossSiteScripting_BODY: Code snippets in messages trigger XSS false positives
   # - GenericLFI_BODY: System prompts with file path examples (../../) trigger LFI false positives
   # - NoUserAgent_HEADER: Some SDK clients don't send User-Agent
@@ -181,6 +182,13 @@ resource "aws_wafv2_web_acl" "main" {
 
         rule_action_override {
           name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "SizeRestrictions_QUERYSTRING"
           action_to_use {
             count {}
           }

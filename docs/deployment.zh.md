@@ -210,6 +210,11 @@ rm iac/providers.tf
 ./deploy-all.sh --step 4       # 仅应用部署
 ./deploy-all.sh --step 5       # Global Accelerator 开关
 
+# 交互式配置认证提供商
+./deploy-all.sh --configure auth       # 添加/更新 Microsoft 或 Cognito OAuth
+./deploy-all.sh --configure secrets    # 更新 Secrets Manager 中的单个密钥
+./deploy-all.sh --configure view       # 查看当前配置状态
+
 # 跳过确认提示（CI/CD 场景）
 ./deploy-all.sh --yes
 
@@ -217,6 +222,23 @@ rm iac/providers.tf
 cd k8s && ./deploy.sh status   # 查看应用状态
 cd k8s && ./deploy.sh logs     # 查看日志
 cd k8s && ./deploy.sh update   # 更新应用配置
+```
+
+### 部署后添加认证提供商
+
+如果初始部署时使用 Cognito，后续需要添加 Microsoft Entra ID：
+
+```bash
+./deploy-all.sh --configure auth
+# 选择 "Microsoft (Entra ID)"
+# 输入 Client ID、Client Secret、Tenant ID
+# 脚本自动更新 AWS Secrets Manager 并触发 ESO 同步
+```
+
+配置密钥后，重启后端以加载新值：
+
+```bash
+kubectl rollout restart deploy/backend -n kbp
 ```
 
 ---

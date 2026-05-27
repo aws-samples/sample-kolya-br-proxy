@@ -7,6 +7,10 @@ Kolya BR Proxy 仅使用 OAuth 进行认证（不支持本地用户名/密码）
 
 Cognito 是通过 `deploy-all.sh` 部署时默认选择的认证提供商。两种提供商均采用基于 state 参数的 CSRF 防护的授权码流程。OAuth state 持久化存储在数据库中，并在回调时验证。
 
+> **相关文档：**
+> - [安全设计](security.zh.md) — CORS、CSRF、Token 安全、RBAC 及详细登录流程分析
+> - [部署指南](deployment.zh.md) — 基础设施配置，包括 OAuth 环境变量
+
 ---
 
 ## AWS Cognito OAuth（默认）
@@ -149,9 +153,11 @@ aws cognito-idp admin-set-user-password \
 ### 步骤三：配置 API 权限
 
 1. 进入 **API 权限** > **添加权限** > **Microsoft Graph** > **委托的权限**。
-2. 添加：`openid`、`profile`、`email`、`User.Read`。
+2. 添加：`openid`、`profile`、`email`、`User.Read`、`GroupMember.Read.All`。
 3. 点击 **添加权限**。
-4. 对于企业租户，可点击 **授予管理员同意**（可选）。
+4. 点击 **授予管理员同意 [你的租户]** — 这是 `GroupMember.Read.All`（Entra ID 组同步所需）的**必需**步骤。
+
+> **重要：** 如果未授予 `GroupMember.Read.All` 管理员同意，在启用组同步时 Microsoft 会在 OAuth 登录流程中返回 403 错误。
 
 ### 步骤四：设置环境变量
 
@@ -206,6 +212,73 @@ KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 
 ---
 
+## Entra ID 组同步
+
+> **另见：** [安全设计 — Entra ID 基于组的访问控制](security.zh.md#entra-id-基于组的访问控制) 了解详细的登录流程图、fail-closed 设计原理和 bootstrap 安全分析。
+
+Entra ID 组同步将 Azure AD 安全组映射到系统中的角色和权限。启用后，用户访问权限由组成员身份控制，而非手动邀请。
+
+### 工作原理
+
+1. 用户通过 Microsoft OAuth 登录
+2. 后端调用 Microsoft Graph API `/me/memberOf` 获取用户的安全组成员身份
+3. 将组与 `entra_group_mappings` 表进行匹配（最高优先级优先）
+4. 匹配组决定用户的角色和权限（**每次登录覆盖写入**）
+5. 无匹配组 → 403 拒绝
+6. Graph API 调用失败（网络错误、401、429、500） → 503 拒绝（安全关闭）
+
+### 引导（首次登录）
+
+当 `KBR_MICROSOFT_ENABLE_GROUP_SYNC=true`、数据库中**无组映射且无 Microsoft 用户**时，第一个 Microsoft 登录自动获得 `super_admin`。这解决了鸡生蛋问题。
+
+**引导窗口立即关闭** — 一旦第一个 Microsoft 用户写入数据库，后续登录会被 "组映射未配置" 拒绝，直到 super_admin 在 **Entra Groups** 页面创建映射。
+
+> **重要：** 启用组同步后不要分享登录链接，直到你准备好成为第一个登录者。首次登录会占用 bootstrap super_admin 名额。
+
+### 配置步骤
+
+1. **启用组同步**（环境变量或 configmap）：
+   ```bash
+   KBR_MICROSOFT_ENABLE_GROUP_SYNC=true
+   ```
+
+2. **在 Azure 门户中创建安全组**：
+   - 进入 Azure 门户 > 组 > 新建组
+   - 类型：安全
+   - 添加应有访问权限的成员
+
+3. **在管理面板中配置组映射**：
+   - 在侧边栏点击 **Entra Groups**
+   - 点击 **Add Mapping**
+   - 填写：
+     - **Entra Group ID**：Azure 组的 Object ID（在 Azure 门户 > 组 > [组名] > 概览中查找）
+     - **Group Name**：显示名称
+     - **Role**：`super_admin` 或 `admin`
+     - **Permissions**：（admin 角色）该组可管理的资源
+     - **Priority**：用户属于多个组时，数字大的优先
+
+### 行为汇总
+
+| 场景 | 结果 |
+|------|------|
+| 组同步关闭（`false`） | 所有 Microsoft 用户获得 `admin` 角色（旧行为） |
+| 组同步开启，无映射，无 MS 用户 | 首位用户获得 `super_admin`（bootstrap） |
+| 组同步开启，无映射，已有 MS 用户 | 拒绝登录 — 403 "组映射未配置" |
+| 组同步开启，已配置映射 | 用户必须在已映射的组中才能登录 |
+| 用户在多个已映射组中 | 最高 `priority` 组的角色/权限生效 |
+| 用户不在任何已映射组中 | 拒绝登录 — 403 "未授权" |
+| Graph API 不可达 / 返回错误 | 拒绝登录 — 503 "无法验证组成员身份" |
+| 用户在 KBP 中已停用 | 无论组成员身份如何均拒绝登录（403） |
+| 在 UI 中编辑 Microsoft 用户角色 | 不允许 — 组同步启用时编辑按钮禁用 |
+
+### 环境变量
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `KBR_MICROSOFT_ENABLE_GROUP_SYNC` | 否 | `false` | 启用 Entra ID 组到权限的映射 |
+
+---
+
 ## 所有 OAuth 环境变量
 
 | 变量 | 必填 | 默认值 | 说明 |
@@ -219,6 +292,7 @@ KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 | `KBR_MICROSOFT_CLIENT_SECRET` | MS OAuth 时必填 | -- | Microsoft 应用客户端密钥 |
 | `KBR_MICROSOFT_TENANT_ID` | 否 | `common` | Azure AD 租户 ID |
 | `KBR_MICROSOFT_REDIRECT_URIS` | 否 | `http://localhost:3000/auth/microsoft/callback` | 允许的重定向 URI（逗号分隔） |
+| `KBR_MICROSOFT_ENABLE_GROUP_SYNC` | 否 | `false` | 启用 Entra ID 基于组的访问控制 |
 
 ---
 
@@ -236,7 +310,12 @@ KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 |------|----------|
 | 重定向 URI 不匹配 | 确保在 Azure/Cognito 注册的 URI 完全一致（包括尾部斜杠、协议、端口） |
 | 客户端密钥无效 | 密钥可能已过期 -- 在 Azure 门户 / Cognito 控制台重新生成 |
-| 权限不足 | 确认 `openid`、`profile`、`email` 范围已授权 |
+| 权限不足 | 确认 `openid`、`profile`、`email`、`GroupMember.Read.All` 范围已授权并已授予管理员同意 |
+| Microsoft 登录返回 403（回调前） | `GroupMember.Read.All` 需要管理员同意 — 前往应用注册 > API 权限 > 授予管理员同意 |
+| Microsoft 回调返回 403 "not authorized" | 用户不在任何已映射的 Entra 组中（组同步启用时） |
+| Microsoft 回调返回 403 "组映射未配置" | 组同步已开启但尚未创建映射，且 bootstrap 名额已被占用 |
+| Microsoft 回调返回 503 "无法验证组成员身份" | Graph API `/me/memberOf` 调用失败 — 检查网络、token scope、管理员同意 |
+| Microsoft 用户角色手动修改后恢复原样 | 正常行为 — 组同步每次登录都覆盖角色；应修改组映射而非手动编辑 |
 | Cognito authorize 请求被取消 | 检查 `KBR_COGNITO_DOMAIN` 是否与实际 Cognito 域名一致（通过 `aws cognito-idp describe-user-pool --query UserPool.Domain` 验证） |
 | Cognito 回调 URL 不匹配 | 确保 `https://<your-domain>/auth/cognito/callback` 已添加到 Cognito 应用客户端的允许回调 URL 中 |
 | Cognito OAuth 未配置（501） | 检查 `KBR_COGNITO_USER_POOL_ID`、`KBR_COGNITO_CLIENT_ID` 和 `KBR_COGNITO_CLIENT_SECRET` 是否均已设置 |
