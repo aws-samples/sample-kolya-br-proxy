@@ -155,29 +155,25 @@ aws cognito-idp admin-set-user-password \
 
 ### API Flow
 
-```
-Frontend                     Backend                      Cognito
-   |                            |                            |
-   |-- GET /admin/auth/         |                            |
-   |   cognito/login            |                            |
-   |   ?redirect_uri=...  ---->|                            |
-   |                            |-- generate state --------->|
-   |<-- {authorization_url} ----|                            |
-   |                            |                            |
-   |-- redirect to Cognito ---------------------------------->|
-   |                            |                            |
-   |<-- redirect with code, state ----------------------------|
-   |                            |                            |
-   |-- POST /admin/auth/        |                            |
-   |   cognito/callback         |                            |
-   |   ?code=...&state=... --->|-- exchange code ----------->|
-   |                            |<-- access_token -----------|
-   |                            |-- get user info ---------->|
-   |                            |<-- user profile -----------|
-   |                            |                            |
-   |<-- {access_token,          |                            |
-   |     refresh_token,         |                            |
-   |     user}              ----|                            |
+```mermaid
+sequenceDiagram
+    participant F as Frontend
+    participant B as Backend
+    participant C as Cognito
+
+    F->>B: GET /admin/auth/cognito/login?redirect_uri=...
+    B->>B: Generate & persist state
+    B-->>F: {authorization_url}
+    F->>C: Redirect to Cognito hosted UI
+    C-->>F: Redirect with code & state
+    F->>B: POST /admin/auth/cognito/callback?code=...&state=...
+    B->>B: Validate state
+    B->>C: Exchange code for tokens
+    C-->>B: access_token
+    B->>C: GET /oauth2/userInfo
+    C-->>B: User profile
+    B->>B: Find/create user, issue JWT
+    B-->>F: {access_token, refresh_token, user}
 ```
 
 ---
@@ -264,29 +260,30 @@ KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 
 ### API Flow
 
-```
-Frontend                     Backend                      Microsoft
-   |                            |                            |
-   |-- GET /admin/auth/         |                            |
-   |   microsoft/login          |                            |
-   |   ?redirect_uri=...  ---->|                            |
-   |                            |-- generate state --------->|
-   |<-- {authorization_url} ----|                            |
-   |                            |                            |
-   |-- redirect to Microsoft -------------------------------->|
-   |                            |                            |
-   |<-- redirect with code, state ----------------------------|
-   |                            |                            |
-   |-- POST /admin/auth/        |                            |
-   |   microsoft/callback       |                            |
-   |   ?code=...&state=... --->|-- exchange code ----------->|
-   |                            |<-- access_token -----------|
-   |                            |-- get user info ---------->|
-   |                            |<-- user profile -----------|
-   |                            |                            |
-   |<-- {access_token,          |                            |
-   |     refresh_token,         |                            |
-   |     user}              ----|                            |
+```mermaid
+sequenceDiagram
+    participant F as Frontend
+    participant B as Backend
+    participant M as Microsoft
+
+    F->>B: GET /admin/auth/microsoft/login?redirect_uri=...
+    B->>B: Generate & persist state
+    B-->>F: {authorization_url}
+    F->>M: Redirect to Microsoft login
+    M-->>F: Redirect with code & state
+    F->>B: POST /admin/auth/microsoft/callback?code=...&state=...
+    B->>B: Validate state
+    B->>M: Exchange code for tokens
+    M-->>B: access_token
+    B->>M: GET /me (user profile)
+    M-->>B: User profile
+    opt Group Sync Enabled
+        B->>M: GET /me/memberOf
+        M-->>B: Security group IDs
+        B->>B: Resolve role/permissions from group mappings
+    end
+    B->>B: Find/create user, issue JWT
+    B-->>F: {access_token, refresh_token, user}
 ```
 
 ---

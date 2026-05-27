@@ -155,29 +155,25 @@ aws cognito-idp admin-set-user-password \
 
 ### API 流程
 
-```
-前端                         后端                          Cognito
-   |                            |                            |
-   |-- GET /admin/auth/         |                            |
-   |   cognito/login            |                            |
-   |   ?redirect_uri=...  ---->|                            |
-   |                            |-- 生成 state -------------->|
-   |<-- {authorization_url} ----|                            |
-   |                            |                            |
-   |-- 重定向到 Cognito ---------------------------------->  |
-   |                            |                            |
-   |<-- 携带 code, state 重定向 ------------------------------|
-   |                            |                            |
-   |-- POST /admin/auth/        |                            |
-   |   cognito/callback         |                            |
-   |   ?code=...&state=... --->|-- 交换 code --------------->|
-   |                            |<-- access_token -----------|
-   |                            |-- 获取用户信息 ------------>|
-   |                            |<-- 用户资料 ---------------|
-   |                            |                            |
-   |<-- {access_token,          |                            |
-   |     refresh_token,         |                            |
-   |     user}              ----|                            |
+```mermaid
+sequenceDiagram
+    participant F as 前端
+    participant B as 后端
+    participant C as Cognito
+
+    F->>B: GET /admin/auth/cognito/login?redirect_uri=...
+    B->>B: 生成并持久化 state
+    B-->>F: {authorization_url}
+    F->>C: 重定向到 Cognito 托管 UI
+    C-->>F: 携带 code 和 state 重定向回来
+    F->>B: POST /admin/auth/cognito/callback?code=...&state=...
+    B->>B: 验证 state
+    B->>C: 用 code 换取 token
+    C-->>B: access_token
+    B->>C: GET /oauth2/userInfo
+    C-->>B: 用户资料
+    B->>B: 查找/创建用户，签发 JWT
+    B-->>F: {access_token, refresh_token, user}
 ```
 
 ---
@@ -264,29 +260,30 @@ KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 
 ### API 流程
 
-```
-前端                         后端                          Microsoft
-   |                            |                            |
-   |-- GET /admin/auth/         |                            |
-   |   microsoft/login          |                            |
-   |   ?redirect_uri=...  ---->|                            |
-   |                            |-- 生成 state -------------->|
-   |<-- {authorization_url} ----|                            |
-   |                            |                            |
-   |-- 重定向到 Microsoft ---------------------------------->|
-   |                            |                            |
-   |<-- 携带 code, state 重定向 ------------------------------|
-   |                            |                            |
-   |-- POST /admin/auth/        |                            |
-   |   microsoft/callback       |                            |
-   |   ?code=...&state=... --->|-- 交换 code --------------->|
-   |                            |<-- access_token -----------|
-   |                            |-- 获取用户信息 ------------>|
-   |                            |<-- 用户资料 ---------------|
-   |                            |                            |
-   |<-- {access_token,          |                            |
-   |     refresh_token,         |                            |
-   |     user}              ----|                            |
+```mermaid
+sequenceDiagram
+    participant F as 前端
+    participant B as 后端
+    participant M as Microsoft
+
+    F->>B: GET /admin/auth/microsoft/login?redirect_uri=...
+    B->>B: 生成并持久化 state
+    B-->>F: {authorization_url}
+    F->>M: 重定向到 Microsoft 登录
+    M-->>F: 携带 code 和 state 重定向回来
+    F->>B: POST /admin/auth/microsoft/callback?code=...&state=...
+    B->>B: 验证 state
+    B->>M: 用 code 换取 token
+    M-->>B: access_token
+    B->>M: GET /me（用户资料）
+    M-->>B: 用户资料
+    opt 组同步启用时
+        B->>M: GET /me/memberOf
+        M-->>B: 安全组 ID 列表
+        B->>B: 从组映射解析角色/权限
+    end
+    B->>B: 查找/创建用户，签发 JWT
+    B-->>F: {access_token, refresh_token, user}
 ```
 
 ---
