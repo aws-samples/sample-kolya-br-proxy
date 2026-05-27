@@ -96,6 +96,19 @@ KBR_COGNITO_REDIRECT_URIS=http://localhost:3000/auth/cognito/callback
 
 自助注册已禁用，所有用户必须由管理员创建。
 
+**通过管理面板创建（推荐）**
+
+1. 以 super_admin 或 admin 登录
+2. 进入 **Admin Users** 页面
+3. 点击 **Invite Admin**
+4. 填写邮箱、用户名、临时密码、角色和权限
+5. 被邀请的用户收到登录信息，通过 Cognito 托管 UI 首次登录时设置永久密码
+
+推荐此方式——一步完成 Cognito 用户创建和角色/权限分配。
+
+<details>
+<summary>备选方式：通过 AWS CLI 或控制台</summary>
+
 **通过 AWS CLI 创建用户**
 
 > **注意：** 用户池使用邮箱作为别名，因此 `--username` **不能**是邮箱格式。请使用普通用户名（如邮箱 `@` 前面的部分），邮箱通过 `--user-attributes` 传入。
@@ -130,12 +143,9 @@ aws cognito-idp admin-set-user-password \
 4. 填写邮箱和临时密码
 5. 用户首次登录时会被要求设置永久密码
 
-**通过管理面板创建用户**
+> **注意：** 通过 CLI 或控制台创建的用户，首次登录后仍需在管理面板中分配角色/权限。
 
-1. 以 super_admin 或有 `manage_api_keys` 权限的 admin 登录
-2. 进入 **Admin Users** 页面
-3. 点击 **Invite Admin** — 输入邮箱、用户名、临时密码、角色和权限
-4. 被邀请的用户通过 Cognito 托管 UI 使用临时密码登录
+</details>
 
 ### 测试
 

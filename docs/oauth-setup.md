@@ -96,6 +96,19 @@ KBR_COGNITO_REDIRECT_URIS=http://localhost:3000/auth/cognito/callback
 
 Self-registration is disabled. All users must be created by an administrator.
 
+**Via Admin Dashboard (Recommended)**
+
+1. Log in as a super_admin or admin
+2. Go to **Admin Users** page
+3. Click **Invite Admin**
+4. Fill in email, username, temporary password, role, and permissions
+5. The invited user receives login instructions and sets a permanent password on first login via the Cognito hosted UI
+
+This is the recommended approach — it creates the Cognito user and sets up role/permissions in a single step.
+
+<details>
+<summary>Alternative: via AWS CLI or Console</summary>
+
 **Create user via AWS CLI**
 
 > **Important:** The user pool uses email as an alias, so `--username` must **not** be an email address. Use a plain username (e.g. the part before `@`), and pass the email via `--user-attributes`.
@@ -130,12 +143,9 @@ aws cognito-idp admin-set-user-password \
 4. Fill in email and temporary password
 5. The user logs in and sets a permanent password on first login
 
-**Create user via Admin Dashboard**
+> **Note:** Users created via CLI or Console still need to be assigned a role/permissions in the Admin Dashboard after their first login.
 
-1. Log in as a super_admin or admin with `manage_api_keys` permission
-2. Go to **Admin Users** page
-3. Click **Invite Admin** — enter email, username, temporary password, role, and permissions
-4. The invited user logs in via the Cognito hosted UI with the temporary password
+</details>
 
 ### Test
 
