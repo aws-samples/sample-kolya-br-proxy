@@ -149,9 +149,11 @@ Frontend                     Backend                      Cognito
 ### Step 3: Configure API Permissions
 
 1. Go to **API permissions** > **Add a permission** > **Microsoft Graph** > **Delegated permissions**.
-2. Add: `openid`, `profile`, `email`, `User.Read`.
+2. Add: `openid`, `profile`, `email`, `User.Read`, `GroupMember.Read.All`.
 3. Click **Add permissions**.
-4. For enterprise tenants, click **Grant admin consent** (optional).
+4. Click **Grant admin consent for [your tenant]** — this is **required** for `GroupMember.Read.All` (used by Entra ID group sync).
+
+> **Important:** Without admin consent for `GroupMember.Read.All`, Microsoft will return a 403 error during the OAuth login flow when group sync is enabled.
 
 ### Step 4: Set Environment Variables
 
@@ -206,6 +208,65 @@ Frontend                     Backend                      Microsoft
 
 ---
 
+## Entra ID Group Sync
+
+Entra ID Group Sync maps Azure AD security groups to roles and permissions in the system. When enabled, user access is controlled by group membership rather than manual invitations.
+
+### How It Works
+
+1. User logs in via Microsoft OAuth
+2. Backend calls Microsoft Graph API `/me/memberOf` to get the user's group memberships
+3. Groups are matched against the `entra_group_mappings` table
+4. The highest-priority matching group determines the user's role and permissions
+5. If no group matches, login is denied (403)
+
+### Bootstrap (First Login)
+
+When `KBR_MICROSOFT_ENABLE_GROUP_SYNC=true` but no group mappings exist in the database yet, the **first user to login automatically becomes super_admin**. This solves the chicken-and-egg problem of needing a logged-in admin to configure group mappings.
+
+After the first login, configure group mappings via the **Entra Groups** page in the admin dashboard (visible to super_admin only).
+
+### Configuration
+
+1. **Enable group sync** (environment variable or configmap):
+   ```bash
+   KBR_MICROSOFT_ENABLE_GROUP_SYNC=true
+   ```
+
+2. **Create security groups in Azure Portal**:
+   - Go to Azure Portal > Groups > New group
+   - Type: Security
+   - Add members who should have access
+
+3. **Configure group mappings** in the admin dashboard:
+   - Navigate to **Entra Groups** in the sidebar
+   - Click **Add Mapping**
+   - Fill in:
+     - **Entra Group ID**: The Azure group's Object ID (found in Azure Portal > Groups > [group] > Overview)
+     - **Group Name**: Display name
+     - **Role**: `super_admin` or `admin`
+     - **Permissions**: (for admin role) which resources the group can manage
+     - **Priority**: Higher number wins when a user belongs to multiple groups
+
+### Behavior Summary
+
+| Scenario | Result |
+|----------|--------|
+| Group sync disabled (`false`) | All Microsoft users get admin access (legacy behavior) |
+| Group sync enabled, no mappings configured | First user gets super_admin; subsequent users also get super_admin until mappings are added |
+| Group sync enabled, mappings configured | User must be in a mapped group to login |
+| User in multiple mapped groups | Highest priority group's role/permissions apply |
+| User not in any mapped group | Login denied (403) |
+| User deactivated | Login denied (403) regardless of group membership |
+
+### Environment Variable
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `KBR_MICROSOFT_ENABLE_GROUP_SYNC` | No | `false` | Enable Entra ID group-to-permission mapping |
+
+---
+
 ## All OAuth Environment Variables
 
 | Variable | Required | Default | Description |
@@ -219,6 +280,7 @@ Frontend                     Backend                      Microsoft
 | `KBR_MICROSOFT_CLIENT_SECRET` | For MS OAuth | -- | Microsoft app client secret |
 | `KBR_MICROSOFT_TENANT_ID` | No | `common` | Azure AD tenant ID |
 | `KBR_MICROSOFT_REDIRECT_URIS` | No | `http://localhost:3000/auth/microsoft/callback` | Allowed redirect URIs (comma-separated) |
+| `KBR_MICROSOFT_ENABLE_GROUP_SYNC` | No | `false` | Enable Entra ID group-based access control |
 
 ---
 
@@ -236,7 +298,9 @@ Frontend                     Backend                      Microsoft
 |---------|----------|
 | Redirect URI mismatch | Ensure the URI registered in Azure/Cognito matches exactly (including trailing slashes, protocol, port) |
 | Invalid client secret | Secret may be expired -- regenerate in Azure Portal / Cognito console |
-| Insufficient permissions | Verify `openid`, `profile`, `email` scopes are granted |
+| Insufficient permissions | Verify `openid`, `profile`, `email`, `GroupMember.Read.All` scopes are granted with admin consent |
+| Microsoft login returns 403 (before callback) | `GroupMember.Read.All` needs admin consent — go to App Registration > API permissions > Grant admin consent |
+| Microsoft callback returns 403 "not authorized" | User is not in any mapped Entra group (when group sync is enabled) |
 | Cognito authorize request canceled | Check that `KBR_COGNITO_DOMAIN` matches the actual Cognito domain (verify with `aws cognito-idp describe-user-pool --query UserPool.Domain`) |
 | Cognito callback URL mismatch | Ensure `https://<your-domain>/auth/cognito/callback` is added to the Cognito app client's allowed callback URLs |
 | Cognito OAuth not configured (501) | Check that `KBR_COGNITO_USER_POOL_ID`, `KBR_COGNITO_CLIENT_ID`, and `KBR_COGNITO_CLIENT_SECRET` are all set |

@@ -210,6 +210,11 @@ Then follow [Section A](#a-first-time-deployment-new-account-or-new-region) from
 ./deploy-all.sh --step 4       # K8s app deploy only
 ./deploy-all.sh --step 5       # Toggle Global Accelerator
 
+# Configure authentication providers interactively
+./deploy-all.sh --configure auth       # Add/update Microsoft or Cognito OAuth
+./deploy-all.sh --configure secrets    # Update individual secrets in Secrets Manager
+./deploy-all.sh --configure view       # View current configuration status
+
 # Skip confirmations (CI/CD)
 ./deploy-all.sh --yes
 
@@ -217,6 +222,23 @@ Then follow [Section A](#a-first-time-deployment-new-account-or-new-region) from
 cd k8s && ./deploy.sh status   # View app status
 cd k8s && ./deploy.sh logs     # View logs
 cd k8s && ./deploy.sh update   # Update app config
+```
+
+### Adding an Auth Provider Post-Deployment
+
+If you initially deployed with Cognito and later want to add Microsoft Entra ID:
+
+```bash
+./deploy-all.sh --configure auth
+# Select "Microsoft (Entra ID)"
+# Enter Client ID, Client Secret, Tenant ID
+# The script updates AWS Secrets Manager and triggers ESO sync
+```
+
+After configuring secrets, restart the backend to pick up new values:
+
+```bash
+kubectl rollout restart deploy/backend -n kbp
 ```
 
 ---

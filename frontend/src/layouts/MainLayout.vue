@@ -219,6 +219,7 @@ const allMenuLinks = [
     icon: 'group_work',
     to: '/entra-groups',
     requiresSuperAdmin: true,
+    requiresGroupSync: true,
   },
   {
     title: 'Settings',
@@ -230,6 +231,8 @@ const allMenuLinks = [
 
 const menuLinks = computed(() =>
   allMenuLinks.filter((link) => {
+    if ('requiresGroupSync' in link && link.requiresGroupSync && !authStore.groupSyncEnabled)
+      return false;
     if ('requiresSuperAdmin' in link && link.requiresSuperAdmin) return authStore.isSuperAdmin;
     if ('permission' in link && link.permission) return authStore.hasPermission(link.permission);
     return true;
