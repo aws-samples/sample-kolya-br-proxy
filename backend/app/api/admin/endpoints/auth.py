@@ -461,10 +461,23 @@ async def microsoft_callback(
                 resolved_role = UserRole.SUPER_ADMIN
                 resolved_permissions = None
             else:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Group mappings not configured. Contact super admin.",
+                # No group mappings configured but users exist — allow existing users
+                # to login with their current role (skip group sync), block new users.
+                from sqlalchemy import select as sa_select_existing
+
+                existing_user = await db.execute(
+                    sa_select_existing(User).where(User.microsoft_id == microsoft_id)
                 )
+                if existing_user.scalar_one_or_none() is not None:
+                    logger.info(
+                        f"MICROSOFT_GROUP_SYNC: No mappings configured, "
+                        f"allowing existing user {email} with current role"
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Group mappings not configured. Contact super admin.",
+                    )
         else:
             user_groups = await oauth_service.get_user_groups(access_token)
             if user_groups is None:
