@@ -15,12 +15,48 @@ Cognito is the default provider selected during deployment via `deploy-all.sh`. 
 
 ## AWS Cognito OAuth (Default)
 
-### Step 1: Create a User Pool
+### Automated Setup via `deploy-all.sh` (Recommended)
+
+When you deploy with `deploy-all.sh`, Cognito is fully configured automatically — no manual AWS Console steps needed:
+
+```
+deploy-all.sh Step 1 (Terraform)              Step 1 Post-apply               Step 2-4
+────────────────────────────────              ─────────────────────           ─────────
+Creates:                                      Reads Terraform outputs:        ExternalSecret syncs
+  • Cognito User Pool                           • user_pool_id                SM → k8s Secret
+  • App Client (confidential)                   • app_client_id                 → Pod env vars:
+  • Hosted UI domain                            • app_client_secret               KBR_COGNITO_*
+  • Callback URLs (from tfvars)               Pushes to Secrets Manager
+  • Password policy                           Creates first admin user
+  • Pre-signup Lambda (email filter)            (prompts for email)
+```
+
+**What happens during deployment:**
+
+1. **Terraform creates all resources** — User Pool, App Client (authorization code grant, `openid`+`profile`+`email` scopes), hosted UI domain, callback URLs (derived from `frontend_domain` in `terraform.tfvars`), password policy, and a pre-signup Lambda that validates email domains.
+2. **Credentials are pushed to Secrets Manager** — `deploy-all.sh` reads `cognito_user_pool_id`, `cognito_app_client_id`, and `cognito_app_client_secret` from Terraform outputs and writes them to the project's Secrets Manager secret.
+3. **First admin user is created** — The script detects an empty user pool and prompts you for an admin email. It calls `admin-create-user`, and Cognito emails the temporary password.
+4. **ExternalSecret Operator syncs to pods** — In k8s, the `ExternalSecret` resource pulls credentials from Secrets Manager every hour and mounts them as `KBR_COGNITO_USER_POOL_ID`, `KBR_COGNITO_CLIENT_ID`, `KBR_COGNITO_CLIENT_SECRET` environment variables.
+
+**After deployment, you only need to:**
+- Check your email for the temporary password
+- Log in and set a permanent password (min 8 chars, uppercase + lowercase + number + symbol)
+
+No manual Cognito configuration is needed.
+
+### Manual Setup (Without `deploy-all.sh`)
+
+If you are setting up Cognito manually (e.g. using an existing User Pool or a non-Terraform deployment):
+
+<details>
+<summary>Click to expand manual setup steps</summary>
+
+#### Step 1: Create a User Pool
 
 1. In the [AWS Console > Cognito](https://console.aws.amazon.com/cognito/), create a new User Pool (or use an existing one).
 2. Note the **User Pool ID** (format: `us-west-2_AbCdEfGhI`).
 
-### Step 2: Create an App Client
+#### Step 2: Create an App Client
 
 1. Under your User Pool, go to **App integration** > **App client** > **Create app client**.
 2. Select **Confidential client** (server-side).
@@ -34,7 +70,7 @@ Cognito is the default provider selected during deployment via `deploy-all.sh`. 
    - **OpenID Connect scopes**: `openid`, `profile`, `email`
 4. Note the **Client ID** and **Client Secret**.
 
-### Step 3: Configure Hosted UI Domain
+#### Step 3: Configure Hosted UI Domain
 
 1. Under **App integration** > **Domain**, set a Cognito domain prefix or custom domain.
 2. The OAuth endpoints derive from the User Pool ID:
@@ -42,7 +78,7 @@ Cognito is the default provider selected during deployment via `deploy-all.sh`. 
    - Token: `https://<pool-id-suffix>.auth.<region>.amazoncognito.com/oauth2/token`
    - UserInfo: `https://<pool-id-suffix>.auth.<region>.amazoncognito.com/oauth2/userInfo`
 
-### Step 4: Set Environment Variables
+#### Step 4: Set Environment Variables
 
 ```bash
 KBR_COGNITO_USER_POOL_ID=us-west-2_EXAMPLE
@@ -54,11 +90,11 @@ KBR_COGNITO_REDIRECT_URIS=http://localhost:3000/auth/cognito/callback
 
 > `KBR_COGNITO_REGION` defaults to `KBR_AWS_REGION` if not set.
 
-### Step 5: Create Users
+</details>
+
+### Creating Additional Users
 
 Self-registration is disabled. All users must be created by an administrator.
-
-If you deployed via `deploy-all.sh`, the first admin user is created automatically at the end of Step 1 (Terraform), and a temporary password is emailed to the specified address.
 
 **Create user via AWS CLI**
 
@@ -94,7 +130,14 @@ aws cognito-idp admin-set-user-password \
 4. Fill in email and temporary password
 5. The user logs in and sets a permanent password on first login
 
-### Step 6: Test
+**Create user via Admin Dashboard**
+
+1. Log in as a super_admin or admin with `manage_api_keys` permission
+2. Go to **Admin Users** page
+3. Click **Invite Admin** — enter email, username, temporary password, role, and permissions
+4. The invited user logs in via the Cognito hosted UI with the temporary password
+
+### Test
 
 1. Start the backend and frontend.
 2. Visit the login page and click the Cognito login option (this is the default provider).
@@ -131,14 +174,27 @@ Frontend                     Backend                      Cognito
 
 ## Microsoft OAuth
 
+### Overview: How Credentials Flow
+
+Microsoft OAuth requires manual registration in Azure Portal (unlike Cognito which Terraform creates automatically). However, `deploy-all.sh` handles injecting the credentials into your cluster:
+
+```
+Azure Portal (manual)         deploy-all.sh              Kubernetes
+─────────────────────         ──────────────             ──────────
+App Registration         →    --configure auth      →    AWS Secrets Manager
+  • Client ID                   (interactive prompt)       → ExternalSecret
+  • Client Secret                                            → backend-secrets
+  • Tenant ID                                                  → Pod env vars
+```
+
 ### Step 1: Register Application in Azure AD
 
 1. Go to [Azure Portal > App registrations](https://portal.azure.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/RegisteredApps) and click **New registration**.
 2. Fill in:
    - **Name**: `Kolya BR Proxy`
    - **Supported account types**: "Accounts in any organizational directory and personal Microsoft accounts" (multi-tenant)
-   - **Redirect URI**: Platform `Web`, URI `http://localhost:3000/auth/microsoft/callback`
-     - For production, add `https://<your-domain>/auth/microsoft/callback`
+   - **Redirect URI**: Platform `Web`, URI `https://<your-frontend-domain>/auth/microsoft/callback`
+     - For local dev, also add `http://localhost:3000/auth/microsoft/callback`
 3. Click **Register**.
 4. On the Overview page, note:
    - **Application (client) ID**
@@ -159,7 +215,20 @@ Frontend                     Backend                      Cognito
 
 > **Important:** Without admin consent for `GroupMember.Read.All`, Microsoft will return a 403 error during the OAuth login flow when group sync is enabled.
 
-### Step 4: Set Environment Variables
+### Step 4: Inject Credentials into Your Cluster
+
+**Option A: Via `deploy-all.sh` (Recommended for production)**
+
+```bash
+./deploy-all.sh --configure auth
+# Select "1) Add/Update Microsoft Entra ID (SSO)"
+# Enter: Client ID, Client Secret, Tenant ID
+# Script writes to Secrets Manager → ExternalSecret syncs to pod
+```
+
+The script will also offer to restart the backend pod to pick up the new secrets.
+
+**Option B: Local development (environment variables)**
 
 ```bash
 KBR_MICROSOFT_CLIENT_ID=<your-microsoft-client-id>
@@ -179,7 +248,7 @@ KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 
 ### Step 5: Test
 
-1. Start the backend and frontend.
+1. Start the backend and frontend (or verify the deployed cluster).
 2. Visit the login page and click "Sign in with Microsoft".
 3. Complete the Microsoft login flow. The account is created (or linked) automatically.
 
