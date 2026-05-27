@@ -811,8 +811,47 @@ When `KBR_MICROSOFT_ENABLE_GROUP_SYNC=true`, user roles and permissions are reso
 |--------|-------------|--------------------------|
 | User provisioning | Manual invite by super_admin | Automatic via group membership |
 | Permission assignment | Per-user in Admin Users page | Per-group in Entra Groups page |
-| Permission updates | Manual edit | Automatic on next login |
-| Deprovisioning | Manual deactivation | Remove from Azure group (denied on next login) |
+| Permission updates | Manual edit | Automatic on next login (overwrites) |
+| Role upgrade/downgrade | Manual edit | Automatic — determined by highest-priority group mapping |
+| Deprovisioning | Manual deactivation | Remove from all mapped Azure groups (denied on next login) |
+| UI role editing | Allowed | Disabled for Microsoft users (tooltip explains) |
+
+#### Login Flow (Group Sync Enabled)
+
+```
+Microsoft OAuth callback
+  │
+  ├─ No group mappings exist AND no Microsoft users in DB?
+  │    → Bootstrap: grant super_admin to this first user
+  │
+  ├─ No group mappings exist BUT Microsoft users already exist?
+  │    → Reject with 403 "Group mappings not configured"
+  │
+  ├─ Group mappings exist → call Graph API /me/memberOf
+  │    │
+  │    ├─ Graph API error (network, 401, 429, 500)?
+  │    │    → Fail closed: reject with 503 "Unable to verify group membership"
+  │    │
+  │    ├─ User groups match a mapping?
+  │    │    → Use the highest-priority mapping's role + permissions
+  │    │
+  │    └─ User groups don't match any mapping?
+  │         → Reject with 403 "Not authorized"
+  │
+  └─ Apply resolved role/permissions to user record (overwrite on every login)
+```
+
+#### Key Design Decisions
+
+1. **Fail closed on Graph API errors** — If the Graph API call to `/me/memberOf` fails for any reason, login is rejected with HTTP 503. This prevents stale elevated permissions from persisting when group membership cannot be verified.
+
+2. **Bootstrap is single-use** — Only the very first Microsoft user (when no Microsoft users exist in the DB AND no group mappings are configured) receives automatic `super_admin`. All subsequent users are rejected until the first admin creates group mappings via the Entra Groups page.
+
+3. **Every login syncs permissions** — The role and permissions are overwritten on every successful login based on the current group mapping. If a user is moved between Entra groups, their KBP permissions update on next login. There is no way to manually override a Microsoft user's role when group sync is active.
+
+4. **Cognito users are unaffected** — Group sync only applies to Microsoft OAuth users. Cognito users continue to be managed manually via the Admin Users page. The two auth methods coexist independently.
+
+5. **Priority-based resolution** — When a user belongs to multiple mapped groups, the mapping with the highest `priority` value wins. This allows fine-grained control (e.g., "Engineering" group = admin with limited permissions at priority 5, "Platform Team" = super_admin at priority 10).
 
 ### Frontend Menu Visibility
 
