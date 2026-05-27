@@ -7,6 +7,10 @@ Kolya BR Proxy 仅使用 OAuth 进行认证（不支持本地用户名/密码）
 
 Cognito 是通过 `deploy-all.sh` 部署时默认选择的认证提供商。两种提供商均采用基于 state 参数的 CSRF 防护的授权码流程。OAuth state 持久化存储在数据库中，并在回调时验证。
 
+> **相关文档：**
+> - [安全设计](security.zh.md) — CORS、CSRF、Token 安全、RBAC 及详细登录流程分析
+> - [部署指南](deployment.zh.md) — 基础设施配置，包括 OAuth 环境变量
+
 ---
 
 ## AWS Cognito OAuth（默认）
@@ -209,6 +213,8 @@ KBR_MICROSOFT_REDIRECT_URIS=http://localhost:3000/auth/microsoft/callback
 ---
 
 ## Entra ID 组同步
+
+> **另见：** [安全设计 — Entra ID 基于组的访问控制](security.zh.md#entra-id-基于组的访问控制) 了解详细的登录流程图、fail-closed 设计原理和 bootstrap 安全分析。
 
 Entra ID 组同步将 Azure AD 安全组映射到系统中的角色和权限。启用后，用户访问权限由组成员身份控制，而非手动邀请。
 

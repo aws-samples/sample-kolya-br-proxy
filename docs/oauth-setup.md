@@ -7,6 +7,10 @@ Kolya BR Proxy uses OAuth exclusively for authentication (no local username/pass
 
 Cognito is the default provider selected during deployment via `deploy-all.sh`. Both providers follow the Authorization Code flow with state-based CSRF protection. OAuth state is persisted in the database and validated on callback.
 
+> **Related docs:**
+> - [Security Design](security.md) — CORS, CSRF, token security, RBAC, and detailed login flow analysis
+> - [Deployment Guide](deployment.md) — Infrastructure setup including OAuth environment variables
+
 ---
 
 ## AWS Cognito OAuth (Default)
@@ -209,6 +213,8 @@ Frontend                     Backend                      Microsoft
 ---
 
 ## Entra ID Group Sync
+
+> **See also:** [Security Design — Entra ID Group-Based Access Control](security.md#entra-id-group-based-access-control) for the detailed login flow diagram, fail-closed design rationale, and bootstrap security analysis.
 
 Entra ID Group Sync maps Azure AD security groups to roles and permissions in the system. When enabled, user access is controlled by group membership rather than manual invitations.
 
