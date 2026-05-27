@@ -443,22 +443,37 @@ async def microsoft_callback(
 
         group_sync = EntraGroupSyncService(db)
 
-        # Bootstrap: no mappings yet → first user becomes super_admin
+        # Bootstrap: no mappings AND no Microsoft users yet → first user gets super_admin
         if not await group_sync.has_any_mappings():
-            logger.info(
-                f"MICROSOFT_GROUP_SYNC: No mappings configured, granting super_admin to {email}"
+            from sqlalchemy import select as sa_select
+
+            from app.models.user import AuthMethod
+
+            ms_user_count = await db.execute(
+                sa_select(User.id).where(User.auth_method == AuthMethod.MICROSOFT).limit(1)
             )
-            resolved_role = UserRole.super_admin
-            resolved_permissions = None
-        else:
-            user_groups = await oauth_service.get_user_groups(access_token)
-            if not user_groups:
-                logger.warning(f"MICROSOFT_GROUP_SYNC: No groups found for {email}")
+            if ms_user_count.scalar_one_or_none() is None:
+                logger.info(
+                    f"MICROSOFT_GROUP_SYNC: Bootstrap — first user, granting super_admin to {email}"
+                )
+                resolved_role = UserRole.SUPER_ADMIN
+                resolved_permissions = None
+            else:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Your account is not authorized. Contact admin.",
+                    detail="Group mappings not configured. Contact super admin.",
                 )
-
+        else:
+            user_groups = await oauth_service.get_user_groups(access_token)
+            if user_groups is None:
+                # Graph API error — fail closed
+                logger.error(
+                    f"MICROSOFT_GROUP_SYNC: Graph API failed for {email}, rejecting login"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Unable to verify group membership. Please try again later.",
+                )
             resolved = await group_sync.resolve_permissions(user_groups)
             if resolved is None:
                 logger.warning(

@@ -55,57 +55,6 @@
         </q-card>
       </div>
 
-      <!-- Change Password -->
-      <div class="col-12 col-md-6">
-        <q-card>
-          <q-card-section>
-            <div class="text-h6 q-mb-md">Change Password</div>
-            <q-form @submit="changePassword">
-              <q-input
-                v-model="passwordForm.oldPassword"
-                type="password"
-                label="Current Password"
-                outlined
-                :rules="[(val) => !!val || 'Please enter current password']"
-                class="q-mb-md"
-              />
-
-              <q-input
-                v-model="passwordForm.newPassword"
-                type="password"
-                label="New Password"
-                outlined
-                :rules="[
-                  (val) => !!val || 'Please enter new password',
-                  (val) => val.length >= 8 || 'Password must be at least 8 characters',
-                ]"
-                class="q-mb-md"
-              />
-
-              <q-input
-                v-model="passwordForm.confirmPassword"
-                type="password"
-                label="Confirm New Password"
-                outlined
-                :rules="[
-                  (val) => !!val || 'Please confirm new password',
-                  (val) =>
-                    val === passwordForm.newPassword || 'Passwords do not match',
-                ]"
-                class="q-mb-md"
-              />
-
-              <q-btn
-                label="Change Password"
-                type="submit"
-                color="grey-8"
-                :loading="changingPassword"
-                unelevated
-              />
-            </q-form>
-          </q-card-section>
-        </q-card>
-      </div>
 
 
       <!-- Observability -->
@@ -176,7 +125,6 @@ import { api } from 'src/boot/axios';
 const authStore = useAuthStore();
 
 const saving = ref(false);
-const changingPassword = ref(false);
 
 const user = computed(() => authStore.currentUser || {
   id: '',
@@ -186,12 +134,6 @@ const user = computed(() => authStore.currentUser || {
   email_verified: false,
   current_balance: '0.00',
   is_active: false,
-});
-
-const passwordForm = ref({
-  oldPassword: '',
-  newPassword: '',
-  confirmPassword: '',
 });
 
 async function saveProfile() {
@@ -219,38 +161,6 @@ async function saveProfile() {
     });
   } finally {
     saving.value = false;
-  }
-}
-
-async function changePassword() {
-  changingPassword.value = true;
-  try {
-    await api.post('/admin/auth/change-password', {
-      old_password: passwordForm.value.oldPassword,
-      new_password: passwordForm.value.newPassword,
-    });
-
-    Notify.create({
-      type: 'positive',
-      message: 'Password changed',
-      position: 'top',
-    });
-
-    // Reset form
-    passwordForm.value = {
-      oldPassword: '',
-      newPassword: '',
-      confirmPassword: '',
-    };
-  } catch (error: unknown) {
-    const err = error as { response?: { data?: { detail?: string } } };
-    Notify.create({
-      type: 'negative',
-      message: err.response?.data?.detail || 'Failed to change password',
-      position: 'top',
-    });
-  } finally {
-    changingPassword.value = false;
   }
 }
 
