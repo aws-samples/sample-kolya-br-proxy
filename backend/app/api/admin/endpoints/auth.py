@@ -450,7 +450,9 @@ async def microsoft_callback(
             from app.models.user import AuthMethod
 
             ms_user_count = await db.execute(
-                sa_select(User.id).where(User.auth_method == AuthMethod.MICROSOFT).limit(1)
+                sa_select(User.id)
+                .where(User.auth_method == AuthMethod.MICROSOFT)
+                .limit(1)
             )
             if ms_user_count.scalar_one_or_none() is None:
                 logger.info(
