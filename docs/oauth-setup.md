@@ -215,16 +215,19 @@ Entra ID Group Sync maps Azure AD security groups to roles and permissions in th
 ### How It Works
 
 1. User logs in via Microsoft OAuth
-2. Backend calls Microsoft Graph API `/me/memberOf` to get the user's group memberships
-3. Groups are matched against the `entra_group_mappings` table
-4. The highest-priority matching group determines the user's role and permissions
-5. If no group matches, login is denied (403)
+2. Backend calls Microsoft Graph API `/me/memberOf` to get the user's security group memberships
+3. Groups are matched against the `entra_group_mappings` table (highest priority wins)
+4. The matching group determines the user's role and permissions (**overwritten on every login**)
+5. If no group matches → 403 denied
+6. If Graph API fails (network error, 401, 429, 500) → 503 denied (fail closed)
 
 ### Bootstrap (First Login)
 
-When `KBR_MICROSOFT_ENABLE_GROUP_SYNC=true` but no group mappings exist in the database yet, the **first user to login automatically becomes super_admin**. This solves the chicken-and-egg problem of needing a logged-in admin to configure group mappings.
+When `KBR_MICROSOFT_ENABLE_GROUP_SYNC=true` but no group mappings exist in the database **and** no Microsoft users exist yet, the very first Microsoft login automatically receives `super_admin`. This solves the chicken-and-egg problem.
 
-After the first login, configure group mappings via the **Entra Groups** page in the admin dashboard (visible to super_admin only).
+**The bootstrap window closes immediately** — once the first Microsoft user exists in the DB, subsequent logins are rejected with "Group mappings not configured" until the super_admin creates mappings via the **Entra Groups** page.
+
+> **Important:** Do NOT enable group sync and share the login URL until you're ready to be the first person to log in. The first login claims the bootstrap super_admin slot.
 
 ### Configuration
 
@@ -252,12 +255,15 @@ After the first login, configure group mappings via the **Entra Groups** page in
 
 | Scenario | Result |
 |----------|--------|
-| Group sync disabled (`false`) | All Microsoft users get admin access (legacy behavior) |
-| Group sync enabled, no mappings configured | First user gets super_admin; subsequent users also get super_admin until mappings are added |
+| Group sync disabled (`false`) | All Microsoft users get `admin` role (legacy behavior) |
+| Group sync enabled, no mappings, no MS users | First user gets `super_admin` (bootstrap) |
+| Group sync enabled, no mappings, MS users exist | Login denied — 403 "Group mappings not configured" |
 | Group sync enabled, mappings configured | User must be in a mapped group to login |
-| User in multiple mapped groups | Highest priority group's role/permissions apply |
-| User not in any mapped group | Login denied (403) |
-| User deactivated | Login denied (403) regardless of group membership |
+| User in multiple mapped groups | Highest `priority` group's role/permissions apply |
+| User not in any mapped group | Login denied — 403 "Not authorized" |
+| Graph API unreachable / returns error | Login denied — 503 "Unable to verify group membership" |
+| User deactivated in KBP | Login denied — 403 regardless of group membership |
+| Microsoft user's role edited in UI | Not possible — edit button disabled when group sync active |
 
 ### Environment Variable
 
@@ -301,6 +307,9 @@ After the first login, configure group mappings via the **Entra Groups** page in
 | Insufficient permissions | Verify `openid`, `profile`, `email`, `GroupMember.Read.All` scopes are granted with admin consent |
 | Microsoft login returns 403 (before callback) | `GroupMember.Read.All` needs admin consent — go to App Registration > API permissions > Grant admin consent |
 | Microsoft callback returns 403 "not authorized" | User is not in any mapped Entra group (when group sync is enabled) |
+| Microsoft callback returns 403 "Group mappings not configured" | Group sync enabled but no mappings created yet, and bootstrap slot already taken |
+| Microsoft callback returns 503 "Unable to verify group membership" | Graph API call to `/me/memberOf` failed — check network, token scopes, admin consent |
+| Microsoft user's role reverts after manual edit | Expected — group sync overwrites role on every login; edit the group mapping instead |
 | Cognito authorize request canceled | Check that `KBR_COGNITO_DOMAIN` matches the actual Cognito domain (verify with `aws cognito-idp describe-user-pool --query UserPool.Domain`) |
 | Cognito callback URL mismatch | Ensure `https://<your-domain>/auth/cognito/callback` is added to the Cognito app client's allowed callback URLs |
 | Cognito OAuth not configured (501) | Check that `KBR_COGNITO_USER_POOL_ID`, `KBR_COGNITO_CLIENT_ID`, and `KBR_COGNITO_CLIENT_SECRET` are all set |
