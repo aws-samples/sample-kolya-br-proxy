@@ -14,6 +14,14 @@
       flat
       :pagination="{ rowsPerPage: 20 }"
     >
+      <template v-slot:body-cell-auth_method="props">
+        <q-td :props="props">
+          <q-badge
+            :color="props.row.auth_method === 'microsoft' ? 'teal' : 'orange'"
+            :label="props.row.auth_method === 'microsoft' ? 'Entra ID' : 'Cognito'"
+          />
+        </q-td>
+      </template>
       <template v-slot:body-cell-role="props">
         <q-td :props="props">
           <q-badge :color="props.row.role === 'super_admin' ? 'purple' : 'blue'" :label="props.row.role" />
@@ -45,7 +53,15 @@
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense round size="xs" icon="edit" class="action-btn" @click="editUser(props.row)" />
+          <q-btn
+            flat dense round size="xs" icon="edit" class="action-btn"
+            @click="editUser(props.row)"
+            :disable="authStore.groupSyncEnabled && props.row.auth_method === 'microsoft'"
+          >
+            <q-tooltip v-if="authStore.groupSyncEnabled && props.row.auth_method === 'microsoft'">
+              Role managed by Entra ID group mapping
+            </q-tooltip>
+          </q-btn>
           <q-btn flat dense round size="xs" icon="block" color="negative" class="action-btn" @click="deactivateUser(props.row)" v-if="props.row.role !== 'super_admin'" />
         </q-td>
       </template>
@@ -135,6 +151,7 @@ interface AdminUser {
   role: string;
   permissions: Record<string, unknown> | null;
   is_active: boolean;
+  auth_method: string | null;
   created_at: string;
   last_login_at: string | null;
 }
@@ -152,6 +169,7 @@ const roleOptions = ['super_admin', 'admin'];
 
 const columns = [
   { name: 'email', label: 'Email', field: 'email', align: 'left' as const },
+  { name: 'auth_method', label: 'Source', field: 'auth_method', align: 'left' as const },
   { name: 'role', label: 'Role', field: 'role', align: 'left' as const },
   { name: 'permissions', label: 'Permissions', field: 'permissions', align: 'left' as const },
   { name: 'last_login_at', label: 'Last Login', field: 'last_login_at', align: 'left' as const },
