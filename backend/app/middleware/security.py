@@ -172,8 +172,10 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         method = request.method
         path = request.url.path
 
-        # Skip security checks for health endpoints
-        if path.startswith("/health"):
+        # Skip security checks for health endpoints and OAuth callbacks
+        # OAuth callbacks come as POST from identity providers (e.g. login.microsoftonline.com)
+        # with a foreign origin, so they must bypass CSRF origin checks.
+        if path.startswith("/health") or ("/auth/" in path and "callback" in path):
             return await call_next(request)
 
         # Handle OPTIONS (CORS preflight) directly — BaseHTTPMiddleware can
