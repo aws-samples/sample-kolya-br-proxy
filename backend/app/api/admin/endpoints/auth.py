@@ -491,15 +491,29 @@ async def microsoft_callback(
                 )
             resolved = await group_sync.resolve_permissions(user_groups)
             if resolved is None:
-                logger.warning(
-                    f"MICROSOFT_GROUP_SYNC: User {email} not in any mapped group. "
-                    f"Groups: {user_groups}"
+                # Check if user already exists — allow existing users to keep their role
+                from sqlalchemy import select as sa_select_check
+
+                existing_check = await db.execute(
+                    sa_select_check(User).where(User.microsoft_id == microsoft_id)
                 )
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Your account is not authorized. Contact admin.",
-                )
-            resolved_role, resolved_permissions = resolved
+                if existing_check.scalar_one_or_none() is not None:
+                    logger.info(
+                        f"MICROSOFT_GROUP_SYNC: User {email} not in any mapped group "
+                        f"but is existing user, allowing login with current role. "
+                        f"Groups: {user_groups}"
+                    )
+                else:
+                    logger.warning(
+                        f"MICROSOFT_GROUP_SYNC: User {email} not in any mapped group. "
+                        f"Groups: {user_groups}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Your account is not authorized. Contact admin.",
+                    )
+            else:
+                resolved_role, resolved_permissions = resolved
 
     # Check if user exists with this Microsoft ID
     from sqlalchemy import select
