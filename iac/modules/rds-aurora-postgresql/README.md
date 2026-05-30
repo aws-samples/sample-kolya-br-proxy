@@ -43,6 +43,7 @@ No modules.
 |------|-------------|------|---------|:--------:|
 | <a name="input_account"></a> [account](#input\_account) | AWS account | `string` | n/a | yes |
 | <a name="input_apply_immediately"></a> [apply\_immediately](#input\_apply\_immediately) | Whether to apply changes immediately | `bool` | `false` | no |
+| <a name="input_aurora_mode"></a> [aurora\_mode](#input\_aurora\_mode) | Aurora deployment mode: 'provisioned' (fixed instance) or 'serverless' (auto-scaling ACU) | `string` | `"provisioned"` | no |
 | <a name="input_auto_minor_version_upgrade"></a> [auto\_minor\_version\_upgrade](#input\_auto\_minor\_version\_upgrade) | Whether to enable auto minor version upgrade | `bool` | `true` | no |
 | <a name="input_backup_retention_period"></a> [backup\_retention\_period](#input\_backup\_retention\_period) | Backup retention period in days | `number` | `7` | no |
 | <a name="input_copy_tags_to_snapshot"></a> [copy\_tags\_to\_snapshot](#input\_copy\_tags\_to\_snapshot) | Whether to copy tags to snapshots | `bool` | `true` | no |
@@ -60,6 +61,8 @@ No modules.
 | <a name="input_project_name_alias"></a> [project\_name\_alias](#input\_project\_name\_alias) | The short name of the project | `string` | n/a | yes |
 | <a name="input_region"></a> [region](#input\_region) | AWS region | `string` | n/a | yes |
 | <a name="input_security_group_ids"></a> [security\_group\_ids](#input\_security\_group\_ids) | List of security group IDs to associate with the RDS cluster | `list(string)` | `[]` | no |
+| <a name="input_serverless_max_capacity"></a> [serverless\_max\_capacity](#input\_serverless\_max\_capacity) | Maximum ACU for Aurora Serverless v2 (0.5 to 256, in 0.5 increments) | `number` | `4` | no |
+| <a name="input_serverless_min_capacity"></a> [serverless\_min\_capacity](#input\_serverless\_min\_capacity) | Minimum ACU for Aurora Serverless v2 (0.5 to 256, in 0.5 increments) | `number` | `0.5` | no |
 | <a name="input_skip_final_snapshot"></a> [skip\_final\_snapshot](#input\_skip\_final\_snapshot) | Whether to skip final snapshot | `bool` | `false` | no |
 | <a name="input_storage_encrypted"></a> [storage\_encrypted](#input\_storage\_encrypted) | Whether to encrypt the Aurora PostgreSQL cluster storage | `bool` | n/a | yes |
 | <a name="input_subnet_ids"></a> [subnet\_ids](#input\_subnet\_ids) | List of subnet IDs | `list(string)` | n/a | yes |
@@ -70,6 +73,7 @@ No modules.
 
 | Name | Description |
 |------|-------------|
+| <a name="output_aurora_mode"></a> [aurora\_mode](#output\_aurora\_mode) | Aurora deployment mode (provisioned or serverless) |
 | <a name="output_cluster_arn"></a> [cluster\_arn](#output\_cluster\_arn) | RDS Aurora cluster ARN |
 | <a name="output_cluster_database_name"></a> [cluster\_database\_name](#output\_cluster\_database\_name) | RDS Aurora cluster database name |
 | <a name="output_cluster_endpoint"></a> [cluster\_endpoint](#output\_cluster\_endpoint) | RDS Aurora cluster endpoint |

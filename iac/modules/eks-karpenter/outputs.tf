@@ -36,23 +36,28 @@ output "cluster_certificate_authority_data" {
 # Note: cluster_token is not available in EKS module v21.0
 # Use data.aws_eks_cluster_auth.cluster.token in the root module instead
 
-# Karpenter outputs
+# Karpenter outputs (only available in standard mode)
 output "karpenter_queue_name" {
   description = "Name of the SQS queue used by Karpenter"
-  value       = module.karpenter.queue_name
+  value       = var.eks_mode == "standard" ? module.karpenter[0].queue_name : ""
 }
 
 output "karpenter_node_iam_role_name" {
   description = "Name of the Karpenter node IAM role"
-  value       = aws_iam_role.karpenter_node.name
+  value       = var.eks_mode == "standard" ? aws_iam_role.karpenter_node[0].name : ""
 }
 
 output "karpenter_node_iam_role_arn" {
   description = "ARN of the Karpenter node IAM role"
-  value       = aws_iam_role.karpenter_node.arn
+  value       = var.eks_mode == "standard" ? aws_iam_role.karpenter_node[0].arn : ""
 }
 
 output "karpenter_service_account" {
   description = "Name of the Karpenter service account"
   value       = "karpenter"
+}
+
+output "eks_mode" {
+  description = "EKS deployment mode (standard or auto)"
+  value       = var.eks_mode
 }

@@ -8,6 +8,11 @@
 crash.log
 crash.*.log
 
+# Helm values (generated per-environment, contain cluster-specific info)
+k8s/infrastructure/helm-installations/aws-load-balancer-controller-values.yaml
+k8s/infrastructure/helm-installations/karpenter-values.yaml
+
+
 # IDE
 .vscode/
 .idea/

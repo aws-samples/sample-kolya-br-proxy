@@ -528,10 +528,17 @@ class BedrockClient:
                 break
         return base.startswith(cls.ANTHROPIC_BASE_PREFIX)
 
-    @staticmethod
-    def _is_no_sampling_model(model_id: str) -> bool:
-        """Models that don't support temperature/top_p/top_k (e.g. Opus 4.7+)."""
-        return "opus-4-7" in model_id
+    _OPUS_SAMPLING_SUPPORTED = ("opus-4-5", "opus-4-6")
+
+    @classmethod
+    def _is_no_sampling_model(cls, model_id: str) -> bool:
+        """Models that don't support temperature/top_p/top_k.
+
+        All Opus models except those in _OPUS_SAMPLING_SUPPORTED.
+        """
+        if "opus" not in model_id:
+            return False
+        return not any(pat in model_id for pat in cls._OPUS_SAMPLING_SUPPORTED)
 
     # Map AWS region prefix to geographic inference profile prefix
     REGION_TO_GEO_PREFIX = {
@@ -1102,7 +1109,7 @@ class BedrockClient:
                 )
                 body["max_tokens"] = new_max
 
-        # --- Opus 4.7+ compatibility: remove deprecated sampling params ---
+        # --- Opus >4.6 compatibility: remove deprecated sampling params ---
         if model_id and BedrockClient._is_no_sampling_model(model_id):
             removed = []
             for param in ("temperature", "top_p", "top_k"):
@@ -1110,11 +1117,11 @@ class BedrockClient:
                     body.pop(param)
                     removed.append(param)
             if removed:
-                logger.info(f"Opus 4.7: stripped deprecated params {removed}")
+                logger.info(f"No-sampling model: stripped deprecated params {removed}")
             thinking_cfg = body.get("thinking")
             if isinstance(thinking_cfg, dict) and "budget_tokens" in thinking_cfg:
                 logger.info(
-                    "Opus 4.7: converting thinking.budget_tokens to type=adaptive"
+                    "No-sampling model: converting thinking.budget_tokens to type=adaptive"
                 )
                 body["thinking"] = {"type": "adaptive"}
 

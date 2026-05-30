@@ -31,7 +31,8 @@ spec:
       terminationGracePeriodSeconds: 65
       serviceAccountName: backend
       nodeSelector:
-        karpenter.sh/nodepool: common-nodepool
+        karpenter.sh/nodepool: ${KARPENTER_NODEPOOL}
+        kubernetes.io/arch: arm64
       initContainers:
       - name: db-migrate
         image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/kolya-br-proxy-backend:latest

@@ -8,6 +8,10 @@ locals {
   eks_version     = var.eks_version
   cluster_name    = "${var.project_name_alias}-eks-${local.region}-${local.workspace}"
 
+  # Derived from ops_low toggle
+  eks_mode    = var.ops_low ? "auto" : "standard"
+  aurora_mode = var.ops_low ? "serverless" : "provisioned"
+
   default_tags = {
     "DeploymentName" = local.deployment_name
     "Workspace"      = local.workspace
@@ -19,14 +23,108 @@ locals {
 
 
 
-# VPC Module
+# VPC Module — only when creating new VPC (egress_mode = "nat_gateway")
 module "vpc" {
+  count  = var.egress_mode == "nat_gateway" ? 1 : 0
   source = "./modules/vpc"
 
   name_prefix  = local.deployment_name
   vpc_cidr     = var.vpc_cidr
   tags         = local.default_tags
   cluster_name = local.cluster_name
+}
+
+# Unified network values (regardless of egress_mode)
+locals {
+  vpc_id             = var.egress_mode == "byovpc" ? var.vpc_id : module.vpc[0].vpc_id
+  private_subnet_ids = var.egress_mode == "byovpc" ? var.private_subnet_ids : module.vpc[0].private_subnet_ids
+  public_subnet_ids  = var.egress_mode == "byovpc" ? var.public_subnet_ids : module.vpc[0].public_subnet_ids
+  eks_nodes_sg_id    = var.egress_mode == "byovpc" ? aws_security_group.eks_nodes_byovpc[0].id : module.vpc[0].eks_nodes_security_group_id
+  rds_sg_id          = var.egress_mode == "byovpc" ? aws_security_group.rds_byovpc[0].id : module.vpc[0].rds_security_group_id
+}
+
+# Security groups for BYOVPC mode (EKS nodes)
+resource "aws_security_group" "eks_nodes_byovpc" {
+  count       = var.egress_mode == "byovpc" ? 1 : 0
+  name_prefix = "${local.deployment_name}-eks-nodes-"
+  vpc_id      = local.vpc_id
+
+  ingress {
+    description = "Node to node communication"
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "tcp"
+    self        = true
+  }
+
+  egress {
+    description = "All outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.default_tags, {
+    Name = "${local.deployment_name}-eks-nodes-sg"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Security groups for BYOVPC mode (RDS)
+resource "aws_security_group" "rds_byovpc" {
+  count       = var.egress_mode == "byovpc" ? 1 : 0
+  name_prefix = "${local.deployment_name}-rds-"
+  vpc_id      = local.vpc_id
+
+  ingress {
+    description     = "PostgreSQL from EKS nodes"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [local.eks_nodes_sg_id]
+  }
+
+  egress {
+    description = "All outbound traffic"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.default_tags, {
+    Name = "${local.deployment_name}-rds-sg"
+  })
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Subnet tags for BYOVPC mode (Karpenter / ALB discovery)
+resource "aws_ec2_tag" "private_subnet_karpenter" {
+  count       = var.egress_mode == "byovpc" ? length(var.private_subnet_ids) : 0
+  resource_id = var.private_subnet_ids[count.index]
+  key         = "karpenter.sh/discovery"
+  value       = local.cluster_name
+}
+
+resource "aws_ec2_tag" "private_subnet_internal_elb" {
+  count       = var.egress_mode == "byovpc" ? length(var.private_subnet_ids) : 0
+  resource_id = var.private_subnet_ids[count.index]
+  key         = "kubernetes.io/role/internal-elb"
+  value       = "1"
+}
+
+resource "aws_ec2_tag" "public_subnet_elb" {
+  count       = var.egress_mode == "byovpc" ? length(var.public_subnet_ids) : 0
+  resource_id = var.public_subnet_ids[count.index]
+  key         = "kubernetes.io/role/elb"
+  value       = "1"
 }
 
 # RDS Aurora PostgreSQL Module
@@ -40,12 +138,17 @@ module "rds_aurora_postgresql" {
   region             = local.region
 
   # Network configuration - using private subnets for security
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
-  security_group_ids = [module.vpc.rds_security_group_id]
+  vpc_id             = local.vpc_id
+  subnet_ids         = local.private_subnet_ids
+  security_group_ids = [local.rds_sg_id]
 
   # Instance configuration
+  aurora_mode    = local.aurora_mode
   instance_count = 1
+
+  # Serverless v2 scaling (only applies when aurora_mode = "serverless")
+  serverless_min_capacity = 0.5
+  serverless_max_capacity = local.workspace == "prod" ? 8 : 4
 
   # Security settings (configurable for different environments)
   storage_encrypted                   = true
@@ -90,11 +193,12 @@ module "eks_karpenter" {
   # EKS configuration
   cluster_name       = local.cluster_name
   kubernetes_version = local.eks_version
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
+  vpc_id             = local.vpc_id
+  subnet_ids         = local.private_subnet_ids
+  eks_mode           = local.eks_mode
 
-  # Additional security groups for EKS nodes
-  additional_security_group_ids = [module.vpc.eks_nodes_security_group_id]
+  # Additional security groups for EKS nodes (standard mode only)
+  additional_security_group_ids = [local.eks_nodes_sg_id]
 
   # Observability: CloudWatch log collection + Container Insights
   enable_cloudwatch_observability = true
@@ -120,7 +224,7 @@ module "eks_addons" {
   # Tags
   default_tags = local.default_tags
 
-  depends_on = [module.eks_karpenter, module.vpc]
+  depends_on = [module.eks_karpenter]
 }
 
 # NOTE: Previously used data sources for K8s/Helm providers have been removed

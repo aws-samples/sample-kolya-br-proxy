@@ -22,7 +22,8 @@ spec:
     spec:
       terminationGracePeriodSeconds: 30
       nodeSelector:
-        karpenter.sh/nodepool: common-nodepool
+        karpenter.sh/nodepool: ${KARPENTER_NODEPOOL}
+        kubernetes.io/arch: arm64
       containers:
       - name: frontend
         image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/kolya-br-proxy-frontend:latest

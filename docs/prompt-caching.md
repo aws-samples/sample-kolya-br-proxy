@@ -2,7 +2,190 @@
 
 Kolya BR Proxy supports automatic prompt cache injection for Anthropic models on AWS Bedrock. This feature reduces costs and latency by caching stable prefixes (system prompts, tool definitions, conversation history) across requests.
 
+## Live Example: 2 Users × Multi-Turn Conversations
+
+This example demonstrates how the 3-breakpoint strategy achieves both cross-user cache sharing and same-user sequential cache hits.
+
+### Scenario
+
+- tools = 5000 tokens (same for both users)
+- system = 1000 tokens (same for both users)
+- Each user message = 100 tokens
+- Each assistant reply = 500 tokens
+- TTL = 1h
+
+### Timeline
+
+#### T=0: User A Turn 1 (no history, only 2 breakpoints)
+
+```
+Request: [tools(5k)☆ | system(1k)☆ | userA1(100)]
+
+Cache state: empty
+Longest match: none
+─────────────────────────────────────────
+READ:   0
+WRITE:  tools + system = 6000 tok × 1.25x (first write)
+NORMAL: userA1 = 100 tok × 1x
+─────────────────────────────────────────
+Effective cost: 7600
+```
+
+**Cache pool:**
+
+| # | Cached prefix | Tokens | TTL |
+|---|---------------|--------|-----|
+| 1 | `[tools]` | 5000 | 1h |
+| 2 | `[tools + system]` | 6000 | 1h |
+
+---
+
+#### T=1: User B Turn 1 (tools + system identical to A)
+
+```
+Request: [tools(5k)☆ | system(1k)☆ | userB1(100)]
+
+Longest match: [tools + system] = 6000 tok ✅ Cross-user hit!
+─────────────────────────────────────────
+READ:   6000 tok × 0.1x = 600
+WRITE:  0 (no new breakpoint beyond match)
+NORMAL: userB1 = 100 tok × 1x
+─────────────────────────────────────────
+Effective cost: 700
+```
+
+**Cache pool:** No new entries (READ refreshes TTL of existing entries)
+
+| # | Cached prefix | Tokens | TTL |
+|---|---------------|--------|-----|
+| 1 | `[tools]` | 5000 | 1h (refreshed) |
+| 2 | `[tools + system]` | 6000 | 1h (refreshed) |
+
+---
+
+#### T=2: User A Turn 2 (with history → 3 breakpoints)
+
+```
+Request: [tools(5k)☆ | system(1k)☆ | userA1(100) asstA1(500)☆ | userA2(100)]
+
+Longest match: [tools + system] = 6000 tok ✅
+─────────────────────────────────────────
+READ:   6000 tok × 0.1x = 600       ← tools + system hit
+WRITE:  userA1 + asstA1 = 600 tok × 1.25x = 750  ← new conversation cached
+NORMAL: userA2 = 100 tok × 1x
+─────────────────────────────────────────
+Effective cost: 1450
+```
+
+**Cache pool:**
+
+| # | Cached prefix | Tokens | TTL |
+|---|---------------|--------|-----|
+| 1 | `[tools]` | 5000 | 1h |
+| 2 | `[tools + system]` | 6000 | 1h |
+| 3 | `[tools + system + userA1 + asstA1]` | 6600 | 1h |
+
+---
+
+#### T=3: User B Turn 2 (different history from A)
+
+```
+Request: [tools(5k)☆ | system(1k)☆ | userB1(100) asstB1(500)☆ | userB2(100)]
+
+Longest match: [tools + system] = 6000 tok ✅
+              (A's #3 doesn't match — B has different conversation)
+─────────────────────────────────────────
+READ:   6000 tok × 0.1x = 600
+WRITE:  userB1 + asstB1 = 600 tok × 1.25x = 750
+NORMAL: userB2 = 100 tok × 1x
+─────────────────────────────────────────
+Effective cost: 1450
+```
+
+**Cache pool:**
+
+| # | Cached prefix | Tokens | TTL |
+|---|---------------|--------|-----|
+| 1 | `[tools]` | 5000 | 1h |
+| 2 | `[tools + system]` | 6000 | 1h |
+| 3 | `[tools + system + userA1 + asstA1]` | 6600 | 1h |
+| 4 | `[tools + system + userB1 + asstB1]` | 6600 | 1h |
+
+---
+
+#### T=4: User A Turn 3 (hits own history cache)
+
+```
+Request: [tools(5k)☆ | system(1k)☆ | userA1 asstA1 userA2 asstA2☆ | userA3(100)]
+
+Longest match: [tools + system + userA1 + asstA1] = 6600 tok ✅ Same-user hit!
+─────────────────────────────────────────
+READ:   6600 tok × 0.1x = 660       ← same-user history hit
+WRITE:  userA2 + asstA2 = 600 tok × 1.25x = 750
+NORMAL: userA3 = 100 tok × 1x
+─────────────────────────────────────────
+Effective cost: 1510
+```
+
+**Cache pool:**
+
+| # | Cached prefix | Tokens | TTL |
+|---|---------------|--------|-----|
+| 1 | `[tools]` | 5000 | 1h |
+| 2 | `[tools + system]` | 6000 | 1h |
+| 3 | `[tools + system + userA1 + asstA1]` | 6600 | 1h |
+| 4 | `[tools + system + userB1 + asstB1]` | 6600 | 1h |
+| 5 | `[tools + system + userA1 + asstA1 + userA2 + asstA2]` | 7200 | 1h |
+
+---
+
+### Match Process Detail (T=4)
+
+Each breakpoint independently performs a 20-block lookback search:
+
+```
+Breakpoint 1 (tools[-1]):
+  Prefix hash at current position → matches #1 written at T=0 → READ ✅
+
+Breakpoint 2 (system[-1]):
+  Prefix hash at current position → matches #2 written at T=0 → READ ✅
+
+Breakpoint 3 (asstA2):
+  Current position block P → look back:
+    P-0: [tools+system+userA1+asstA1+userA2+asstA2] → no cache
+    P-2: [tools+system+userA1+asstA1] → matches #3 written at T=2 ✅ (only 2 blocks back)
+
+Result: READ up to #3 (6600 tok), WRITE from #3 to current breakpoint (600 tok)
+```
+
+Each conversation turn only adds 2 blocks, so the next turn's breakpoint only needs to look back 2 positions to hit the previous turn's cache — well within the 20-block window.
+
+### Cost Summary
+
+| Request | No cache (all 1x) | With cache (3 breakpoints) | Savings |
+|---------|-------------------|---------------------------|---------|
+| A-Turn1 | 6,100 | 7,600 | -25% (initial investment) |
+| B-Turn1 | 6,100 | **700** | **89%** |
+| A-Turn2 | 6,700 | **1,450** | **78%** |
+| B-Turn2 | 6,700 | **1,450** | **78%** |
+| A-Turn3 | 7,300 | **1,510** | **79%** |
+| **Total** | **32,900** | **12,710** | **61%** |
+
+### Key Takeaways
+
+| Pattern | Explanation |
+|---------|-------------|
+| **tools + system are "shared infrastructure"** | All users share them; written once, every hit refreshes TTL |
+| **Conversation cache is per-user** | Same user's next turn hits their own history prefix; no cross-user sharing |
+| **First request has 25% write premium** | But subsequent requests immediately recoup the cost |
+| **Longer conversations = higher READ ratio** | By Turn 10, READ can reach ~95%; WRITE is always just the latest 1 turn |
+| **Expired TTL = cache eviction** | Entries not accessed within TTL are automatically removed |
+
+> **Important**: Cache hits require byte-identical prefixes. If the gateway injects per-user/per-request dynamic content into the system prompt (usernames, timestamps, etc.), cross-user sharing breaks. Keep user-specific context in messages, not in the system prompt.
+
 ## How It Works
+
+### Breakpoint Injection Strategy
 
 When enabled, the proxy automatically injects `cache_control` breakpoints into the Anthropic Messages API request body before sending it to Bedrock. Up to 4 breakpoints are injected (Anthropic API limit), using the following priority:
 
@@ -12,11 +195,73 @@ When enabled, the proxy automatically injects `cache_control` breakpoints into t
 | 2 | System prompt (last block) | System prompt rarely changes |
 | 3 | Last assistant message (last non-thinking block) | Caches conversation history prefix |
 
-Thinking and redacted_thinking blocks in assistant messages are skipped — only text and tool_use blocks receive breakpoints.
+As shown in T=2 of the example above, the three breakpoints cover tools, system, and the latest assistant message respectively — forming a layered caching structure.
+
+### Cache Matching Mechanism
+
+Each breakpoint marks a cache write position. On read, the system looks **backward from the breakpoint position block-by-block** within a **20-block lookback window** to find previously written cache entries:
+
+1. **Write**: Compute a prefix hash at the breakpoint position, write a cache entry
+2. **Read**: From the current breakpoint position, look back up to 20 blocks to find a matching existing cache entry
+3. **Normal conversation**: Each turn adds 2 blocks (user + assistant), so the next turn's breakpoint only needs to look back 2 positions to hit the previous turn's cache — well within the 20-block window
+
+As shown in the T=4 match process above, breakpoint 3 only needs to look back 2 blocks to hit the cache written at T=2.
+
+> **Note**: If more than 20 blocks of new messages are inserted at once (e.g., importing chat history), the breakpoint lookback may exceed the window and cause a cache miss. Normal sequential conversation does not trigger this issue.
+
+### Thinking Block Handling
+
+Thinking and redacted_thinking blocks are skipped — the Anthropic API does not allow `cache_control` markers on thinking blocks; only text and tool_use blocks can receive breakpoints. However, thinking blocks positioned before a breakpoint are still cached as part of the prefix.
+
+**Example**: An assistant message containing thinking + text blocks:
+
+```
+assistant.content: [
+  {"type": "thinking", "thinking": "Let me think..."},   ← skipped, cannot place breakpoint
+  {"type": "thinking", "thinking": "Analysis done"},     ← skipped
+  {"type": "text", "text": "The answer is 42"}           ← ☆ breakpoint placed here
+]
+```
+
+The proxy searches backward from the end of content for the first non-thinking block and places `cache_control` on it. Although the breakpoint is on the text block, both thinking blocks are still cached as part of the prefix.
+
+### Pre-existing Breakpoints & Budget
 
 If the request already contains `cache_control` markers (e.g., set by the client), those count against the budget of 4. Pre-existing markers also have their TTL upgraded to match the server configuration.
 
-## Control Priority
+**Example**: Client pre-set 2 breakpoints, server TTL configured as `1h`:
+
+```
+On arrival:
+  tools[-1]:  {"cache_control": {"type": "ephemeral"}}          ← client pre-set (5m)
+  system[-1]: {"cache_control": {"type": "ephemeral"}}          ← client pre-set (5m)
+
+After proxy processing:
+  tools[-1]:  {"cache_control": {"type": "ephemeral", "ttl": "1h"}}  ← TTL upgraded
+  system[-1]: {"cache_control": {"type": "ephemeral", "ttl": "1h"}}  ← TTL upgraded
+  assistant:  {"cache_control": {"type": "ephemeral", "ttl": "1h"}}  ← newly injected (budget: 4-2=2)
+```
+
+Log: `Prompt cache: 1bp(msgs,1h,pre=2,upg=2)` — 1 new breakpoint injected, 2 pre-existing upgraded.
+
+## Cost Model
+
+Cache write pricing depends on the TTL (as demonstrated by the ×1.25 writes at T=0 and ×0.1 reads at T=1 in the example):
+
+| Token type | TTL | Pricing |
+|-----------|-----|---------|
+| `cache_creation_input_tokens` | `5m` | 1.25x base input price (25% write premium) |
+| `cache_creation_input_tokens` | `1h` | 2.0x base input price (100% write premium) |
+| `cache_read_input_tokens` | any | 0.1x base input price (90% discount) |
+| `input_tokens` | — | 1x base input price (uncached) |
+
+With `5m` TTL, caching breaks even at ~2 requests. With `1h` TTL, the higher write cost means ~3 requests to break even, but significantly reduces cache misses in longer sessions.
+
+> **Note**: The cache pricing multipliers (1.25x for 5m, 2.0x for 1h, 0.1x for reads) are hardcoded in the proxy and based on Anthropic's published pricing. There is no auto-update mechanism — if Anthropic changes their cache pricing, these multipliers must be manually updated in `backend/app/services/pricing.py`.
+
+## Configuration
+
+### Control Priority
 
 ```
 Per-request parameter  >  API Key config (token_metadata)  >  Server default (env var)
@@ -31,7 +276,7 @@ Per-request parameter  >  API Key config (token_metadata)  >  Server default (en
 | not set | not set | `true` | Injection enabled |
 | not set | not set | `false` | Injection disabled |
 
-## Server Configuration
+### Server Configuration
 
 Environment variables:
 
@@ -51,7 +296,7 @@ KBR_PROMPT_CACHE_TTL=1h             # default: 1h (options: "5m" or "1h")
 
 The default `1h` is recommended for agent loops where turns may be spaced minutes apart. With `5m`, cache misses are common when users pause between interactions.
 
-## Per-API-Key Configuration
+### Per-API-Key Configuration
 
 Each API key can have independent prompt cache settings stored in `token_metadata`. These are configured via the admin panel under **API Keys > Settings** (gear icon).
 
@@ -66,9 +311,9 @@ When an API key has no cache settings configured, the server defaults (`KBR_PROM
 
 Per-request parameters (body or header) always take the highest priority and override API key settings.
 
-## Per-Request Control
+### Per-Request Control
 
-### Body (OpenAI SDK `extra_body`)
+#### Body (OpenAI SDK `extra_body`)
 
 ```python
 # Multi-turn agent loop — caching is beneficial
@@ -81,7 +326,7 @@ response = client.chat.completions.create(
 )
 ```
 
-### Header
+#### Header
 
 ```bash
 curl -H "X-Bedrock-Auto-Cache: true" \
@@ -90,9 +335,9 @@ curl -H "X-Bedrock-Auto-Cache: true" \
      https://api.example.com/v1/chat/completions
 ```
 
-### Per-Request TTL Override
+#### Per-Request TTL Override
 
-You can also override the cache TTL on a per-request basis using `bedrock_cache_ttl`:
+You can override the cache TTL on a per-request basis using `bedrock_cache_ttl`:
 
 ```python
 response = client.chat.completions.create(
@@ -138,22 +383,9 @@ If most of your workload is one-shot, set the server default to `false` and let 
 KBR_PROMPT_CACHE_AUTO_INJECT=false
 ```
 
-## Cost Model
+## Log Verification & Testing
 
-Cache write pricing depends on the TTL:
-
-| Token type | TTL | Pricing |
-|-----------|-----|---------|
-| `cache_creation_input_tokens` | `5m` | 1.25x base input price (25% write premium) |
-| `cache_creation_input_tokens` | `1h` | 2.0x base input price (100% write premium) |
-| `cache_read_input_tokens` | any | 0.1x base input price (90% discount) |
-| `input_tokens` | — | 1x base input price (uncached) |
-
-With `5m` TTL, caching breaks even at ~2 requests. With `1h` TTL, the higher write cost means ~3 requests to break even, but significantly reduces cache misses in longer sessions.
-
-> **Note**: The cache pricing multipliers (1.25x for 5m, 2.0x for 1h, 0.1x for reads) are hardcoded in the proxy and based on Anthropic's published pricing. There is no auto-update mechanism — if Anthropic changes their cache pricing, these multipliers must be manually updated in `backend/app/services/pricing.py`.
-
-## Verifying Cache Behavior (Logs)
+### Log Examples
 
 The proxy logs cache metrics when they are non-zero.
 
@@ -185,7 +417,7 @@ INFO  Streaming chat completion successful: request_id=chatcmpl-xxx, duration=5.
 INFO  Bedrock invocation successful: model=us.anthropic.claude-sonnet-4-20250514-v1:0, api=invoke_model, attempt=1, duration=4.3s, input=1072, output=200
 ```
 
-How to read the logs:
+### Log Interpretation
 
 | Log pattern | Meaning |
 |------------|---------|
@@ -194,17 +426,17 @@ How to read the logs:
 | `cache_creation > 0`, `cache_read > 0` | Partial hit (stable prefix cached, new content written) |
 | Neither field present | Caching not active |
 
-## Testing & Verification Guide
+### End-to-End Testing Guide
 
-This section provides a step-by-step guide to verify prompt caching is working end-to-end, based on real debugging experience.
+This section provides a step-by-step guide to verify prompt caching is working correctly.
 
-### Prerequisites
+#### Prerequisites
 
 - Backend running locally with `KBR_DEBUG=true` (optional, for debug-level logs)
 - A valid API token (`kbr_xxx`)
 - `curl` and `jq` installed
 
-### Step 1: Prepare a Test Payload
+#### Step 1: Prepare a Test Payload
 
 The most common reason caching silently fails is that the **cached content doesn't meet the minimum token threshold**.
 
@@ -254,7 +486,7 @@ print(f'System prompt: {len(content)} chars (~{len(content)//4} tokens)')
 
 Expected output: `System prompt: ~15000 chars (~3700 tokens)` — well above the 1024 minimum.
 
-### Step 2: First Request (Cache Write)
+#### Step 2: First Request (Cache Write)
 
 ```bash
 curl -s -X POST http://localhost:8000/v1/chat/completions \
@@ -276,7 +508,7 @@ Key indicators:
 - `cache_write=2359` — Bedrock accepted and cached the system prompt (2359 tokens)
 - `input=7` — only the user message counted as regular input
 
-### Step 3: Second Request (Cache Read)
+#### Step 3: Second Request (Cache Read)
 
 Send the **exact same request** within the configured TTL (default 1 hour):
 
@@ -299,7 +531,7 @@ Key indicators:
 - `cache_read=2359` — cache hit! Same 2359 tokens read from cache
 - `cache_write` absent — no new cache write needed
 
-### Step 4: Verify Streaming Mode
+#### Step 4: Verify Streaming Mode
 
 ```bash
 curl -s -X POST http://localhost:8000/v1/chat/completions \
@@ -334,10 +566,12 @@ DEBUG  Prompt cache check: auto_cache=None, server_default=True, should_inject=T
 
 This shows the exact decision chain: per-request override → server default → final decision → character count.
 
-## Interaction with Manual Prompt Caching
+## Appendix
+
+### Interaction with Manual Prompt Caching
 
 If the client already sets `cache_control` markers via `bedrock_prompt_caching` (pass-through), the auto-injection is skipped entirely. This avoids conflicts — the client is assumed to manage caching itself.
 
-## Scope
+### Scope
 
 Auto-injection only applies to Anthropic models (routed via `invoke_model`). Non-Anthropic models using the Converse API are unaffected.

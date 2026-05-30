@@ -12,8 +12,15 @@ module "eks" {
   vpc_id     = var.vpc_id
   subnet_ids = var.subnet_ids
 
+  # --- Auto Mode: enable compute_config, AWS manages nodes/networking/storage/LB ---
+  compute_config = var.eks_mode == "auto" ? {
+    enabled    = true
+    node_pools = ["general-purpose"]
+  } : null
+
+  # --- Addons: standard mode gets core addons; cloudwatch is optional for both ---
   addons = merge(
-    {
+    var.eks_mode == "standard" ? {
       coredns = {}
       eks-pod-identity-agent = {
         before_compute = true
@@ -25,15 +32,17 @@ module "eks" {
         before_compute = true
       }
       aws-ebs-csi-driver = {}
-    },
-    var.enable_cloudwatch_observability ? {
-      amazon-cloudwatch-observability = {
-        pod_identity_association = [{
-          role_arn        = aws_iam_role.cloudwatch_agent[0].arn
-          service_account = "cloudwatch-agent"
-        }]
-      }
-    } : {}
+    } : {},
+    {
+      for name, config in {
+        amazon-cloudwatch-observability = {
+          pod_identity_association = [{
+            role_arn        = try(aws_iam_role.cloudwatch_agent[0].arn, null)
+            service_account = "cloudwatch-agent"
+          }]
+        }
+      } : name => config if var.enable_cloudwatch_observability
+    }
   )
 
   endpoint_private_access = true
@@ -47,7 +56,8 @@ module "eks" {
   security_group_use_name_prefix      = false
   node_security_group_use_name_prefix = false
 
-  eks_managed_node_groups = {
+  # --- Standard Mode: managed node groups ---
+  eks_managed_node_groups = var.eks_mode == "standard" ? {
     core_node_group = {
       use_name_prefix          = false
       iam_role_use_name_prefix = false
@@ -92,11 +102,12 @@ module "eks" {
 
       tags = var.default_tags
     }
-  }
+  } : {}
 
-  node_security_group_tags = {
+  # Karpenter discovery tag (standard mode uses Karpenter for additional scaling)
+  node_security_group_tags = var.eks_mode == "standard" ? {
     "karpenter.sh/discovery" = var.cluster_name
-  }
+  } : {}
 
   tags = var.default_tags
 }
@@ -169,8 +180,10 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_agent_xray" {
   }
 }
 
-# Add EBS CSI permissions to EKS node group role
+# Add EBS CSI permissions to EKS node group role (standard mode only)
 resource "aws_iam_role_policy_attachment" "node_group_ebs_csi_policy" {
+  count = var.eks_mode == "standard" ? 1 : 0
+
   role       = module.eks.eks_managed_node_groups["core_node_group"].iam_role_name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }

@@ -48,7 +48,9 @@ After Terraform completes, proceed to Kubernetes add-ons and application deploym
 
 ## Providers
 
-No providers.
+| Name | Version |
+|------|---------|
+| <a name="provider_aws"></a> [aws](#provider\_aws) | 6.47.0 |
 
 ## Modules
 
@@ -64,7 +66,13 @@ No providers.
 
 ## Resources
 
-No resources.
+| Name | Type |
+|------|------|
+| [aws_ec2_tag.private_subnet_internal_elb](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ec2_tag) | resource |
+| [aws_ec2_tag.private_subnet_karpenter](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ec2_tag) | resource |
+| [aws_ec2_tag.public_subnet_elb](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ec2_tag) | resource |
+| [aws_security_group.eks_nodes_byovpc](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group) | resource |
+| [aws_security_group.rds_byovpc](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group) | resource |
 
 ## Inputs
 
@@ -78,6 +86,7 @@ No resources.
 | <a name="input_cognito_id_token_validity"></a> [cognito\_id\_token\_validity](#input\_cognito\_id\_token\_validity) | Cognito ID token validity in minutes | `number` | `60` | no |
 | <a name="input_cognito_logout_urls"></a> [cognito\_logout\_urls](#input\_cognito\_logout\_urls) | List of allowed logout URLs for Cognito | `list(string)` | <pre>[<br/>  "http://localhost:9000"<br/>]</pre> | no |
 | <a name="input_cognito_refresh_token_validity"></a> [cognito\_refresh\_token\_validity](#input\_cognito\_refresh\_token\_validity) | Cognito refresh token validity in days | `number` | `30` | no |
+| <a name="input_egress_mode"></a> [egress\_mode](#input\_egress\_mode) | Network mode: 'nat\_gateway' (create new VPC) or 'byovpc' (use existing VPC) | `string` | `"nat_gateway"` | no |
 | <a name="input_eks_version"></a> [eks\_version](#input\_eks\_version) | EKS Kubernetes version | `string` | `"1.35"` | no |
 | <a name="input_enable_cognito"></a> [enable\_cognito](#input\_enable\_cognito) | Enable AWS Cognito for user authentication | `bool` | `true` | no |
 | <a name="input_enable_global_accelerator"></a> [enable\_global\_accelerator](#input\_enable\_global\_accelerator) | Enable AWS Global Accelerator for reduced latency | `bool` | `false` | no |
@@ -85,10 +94,15 @@ No resources.
 | <a name="input_frontend_domain"></a> [frontend\_domain](#input\_frontend\_domain) | Frontend domain (e.g. kbp.kolya.fun) | `string` | `""` | no |
 | <a name="input_ga_api_alb_name"></a> [ga\_api\_alb\_name](#input\_ga\_api\_alb\_name) | Name of the API ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
 | <a name="input_ga_frontend_alb_name"></a> [ga\_frontend\_alb\_name](#input\_ga\_frontend\_alb\_name) | Name of the frontend ALB for Global Accelerator (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
+| <a name="input_is_private"></a> [is\_private](#input\_is\_private) | Whether ALB is internal-only (consumed by k8s ingress generation, not Terraform) | `bool` | `false` | no |
+| <a name="input_ops_low"></a> [ops\_low](#input\_ops\_low) | Low-ops mode: true = EKS Auto Mode + Aurora Serverless v2; false = EKS Standard + Aurora Provisioned | `bool` | `false` | no |
+| <a name="input_private_subnet_ids"></a> [private\_subnet\_ids](#input\_private\_subnet\_ids) | Existing private subnet IDs (required when egress\_mode = 'byovpc', min 2 AZs) | `list(string)` | `[]` | no |
 | <a name="input_project_name"></a> [project\_name](#input\_project\_name) | The name of the project | `string` | `"kolya-br-proxy"` | no |
 | <a name="input_project_name_alias"></a> [project\_name\_alias](#input\_project\_name\_alias) | The short name of the project | `string` | `"kbr-proxy"` | no |
+| <a name="input_public_subnet_ids"></a> [public\_subnet\_ids](#input\_public\_subnet\_ids) | Existing public subnet IDs (required when egress\_mode = 'byovpc', min 2 AZs) | `list(string)` | `[]` | no |
 | <a name="input_region"></a> [region](#input\_region) | AWS region | `string` | n/a | yes |
 | <a name="input_vpc_cidr"></a> [vpc\_cidr](#input\_vpc\_cidr) | CIDR block for VPC | `string` | `"10.1.8.0/22"` | no |
+| <a name="input_vpc_id"></a> [vpc\_id](#input\_vpc\_id) | Existing VPC ID (required when egress\_mode = 'byovpc') | `string` | `""` | no |
 | <a name="input_waf_api_alb_name"></a> [waf\_api\_alb\_name](#input\_waf\_api\_alb\_name) | Name of the API ALB for WAF association (auto-discovery) | `string` | `"kolya-br-proxy-api-alb"` | no |
 | <a name="input_waf_frontend_alb_name"></a> [waf\_frontend\_alb\_name](#input\_waf\_frontend\_alb\_name) | Name of the frontend ALB for WAF association (auto-discovery) | `string` | `"kolya-br-proxy-frontend-alb"` | no |
 | <a name="input_waf_rate_limit_auth"></a> [waf\_rate\_limit\_auth](#input\_waf\_rate\_limit\_auth) | WAF rate limit per IP for /admin/auth/* (requests per 5 minutes) | `number` | `20` | no |

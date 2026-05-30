@@ -48,3 +48,8 @@ output "security_group_id" {
   description = "Security group ID for RDS"
   value       = length(var.security_group_ids) > 0 ? var.security_group_ids[0] : aws_security_group.aurora_security_group[0].id
 }
+
+output "aurora_mode" {
+  description = "Aurora deployment mode (provisioned or serverless)"
+  value       = var.aurora_mode
+}

@@ -6,6 +6,19 @@
 
 ---
 
+## 架构概览
+
+| 组件 | 技术 | 说明 |
+|------|------|------|
+| **计算** | EKS（Standard 或 Auto Mode） | Standard：Managed Node Groups + Karpenter；Auto：完全 AWS 托管 |
+| **数据库** | Aurora PostgreSQL 16（Provisioned 或 Serverless v2） | Provisioned：`db.r6g.large`；Serverless：0.5–8 ACU 自动扩缩 |
+| **认证** | AWS Cognito 和/或 Microsoft Entra ID | 支持双 SSO — 部署时选择一种或两种 |
+| **RBAC** | Entra ID Group Sync | Azure AD 安全组 → 角色/权限映射 |
+| **密钥** | AWS Secrets Manager + ExternalSecret Operator | 零密钥入库；ESO 同步到 K8s Pod |
+| **网络** | ALB（AWS LB Controller）+ 可选 Global Accelerator | ALB 就绪后自动启用 WAF |
+
+---
+
 ## 前置条件
 
 | 工具 | 安装方式 |
@@ -24,6 +37,16 @@
 - 需要拥有创建 VPC、EKS、RDS、IAM、ACM、Route 53 和 ECR 资源权限的 AWS 账户
 - AWS CLI 已配置有效凭证（`aws configure`、SSO 或环境变量）
 - 已注册并通过 Route 53 管理的域名（默认：`kolya.fun`）
+
+### 认证（部署时选择）
+
+| 选项 | 说明 |
+|------|------|
+| **AWS Cognito** | 托管用户池，支持邮箱/密码自注册。适合自助注册场景。 |
+| **Microsoft Entra ID** | 企业 SSO（Azure AD）。支持 Group Sync RBAC 实现组织级访问控制。 |
+| **两者都用** | Cognito 对外部用户 + Entra ID 对内部团队。用户可关联账户。 |
+
+`deploy-all.sh` 步骤 0 会提示选择认证方式。后续可通过 `./deploy-all.sh --configure auth` 修改。
 
 ---
 
@@ -163,15 +186,44 @@ aws s3 mb s3://tf-state-<account-id>-${AWS_REGION}-kolya --region $AWS_REGION
 
 脚本将交互式引导你完成：
 
-1. 验证 AWS 凭证和区域
-2. **配置 `terraform.tfvars`**（步骤 0）— 自动检测账户/区域/功能开关，提示输入域名
-3. 提示 S3 后端配置（存储桶名称）— 从模板生成 `iac/providers.tf`
-4. 选择或创建 Terraform workspace
-5. 执行 `terraform init` + `plan` + `apply`（VPC、EKS、RDS 等）
-6. 部署 Helm charts（ALB Controller、Karpenter、Metrics Server）
-7. 构建并推送 Docker 镜像到 ECR（域名从 `terraform.tfvars` 读取）
-8. 部署 K8s 应用（从 `terraform.tfvars` 生成配置，通过 ESO 管理 secrets）
-9. ALB 就绪后自动启用 WAF
+| 步骤 | 操作内容 |
+|------|---------|
+| 预检 | 验证 AWS 凭证，检查工具安装 |
+| **步骤 0** | 配置 `terraform.tfvars` — 自动检测账户/区域，选择**认证方式**（Cognito / Entra ID / 两者），选择**运维模式**（Standard / Low-Ops），设置域名 |
+| S3 后端 | 提示 bucket 名称，从模板生成 `iac/providers.tf` |
+| Workspace | 选择或创建 Terraform workspace |
+| **步骤 1** | `terraform init` + `plan` + `apply`（VPC、EKS、Aurora PostgreSQL、Cognito、IAM） |
+| **步骤 2** | 部署 Helm charts（ALB Controller、Karpenter、Metrics Server、ESO、Redis）。Low-Ops 模式下 EKS 内置组件自动跳过。 |
+| **步骤 3** | 构建并推送 Docker 镜像到 ECR |
+| **步骤 4** | 部署 K8s 应用（ConfigMap、ExternalSecrets、Deployments、Ingress）。ALB 就绪后自动启用 WAF。 |
+| **步骤 5** | （可选）Global Accelerator 开关 |
+
+#### 步骤依赖关系
+
+```
+步骤 0 ─── 写入 ──→ terraform.tfvars（唯一配置源）
+  │
+  ├──→ 步骤 1 读取 tfvars ──→ terraform apply ──→ 产出 state + outputs
+  │         │
+  │         ├──→ 步骤 2 读取 tfvars（EKS 模式）+ terraform output（cluster_name）
+  │         │         │
+  │         │         └──→ 步骤 4 读取 terraform output（ECR URI、域名等）
+  │         │
+  │         └──→ 步骤 3 读取 terraform output（ECR 仓库地址）
+  │
+  └──→ 步骤 5 读写 tfvars + 执行 terraform apply
+```
+
+- **步骤 0 → 所有后续步骤**：步骤 0 将 `ops_low`、`enable_cognito`、`region` 等写入 `terraform.tfvars`，后续步骤均从此文件读取配置。
+- **步骤 1 → 步骤 2/3/4**：步骤 1 产出 Terraform state。步骤 2 从 `terraform output` 读取 `cluster_name` 配置 kubectl；步骤 3 读取 ECR 仓库地址；步骤 4 读取域名、数据库端点等。
+- **步骤 2 → 步骤 4**：Helm charts（ESO、Redis、ALB Controller）必须先运行，应用才能部署。
+- **单独运行某步骤**：`--step N` 会跳过之前的步骤，但假定它们已成功完成。如果步骤 0 的配置有变更，需先重新运行步骤 1，再运行步骤 2。
+
+部署完成后，如需配置 Microsoft Entra ID SSO：
+
+```bash
+./deploy-all.sh --configure auth
+```
 
 ### 5.（可选）启用 Global Accelerator
 
@@ -224,22 +276,25 @@ cd k8s && ./deploy.sh logs     # 查看日志
 cd k8s && ./deploy.sh update   # 更新应用配置
 ```
 
-### 部署后添加认证提供商
+### 添加或切换认证提供商
 
-如果初始部署时使用 Cognito，后续需要添加 Microsoft Entra ID：
+部署后可随时添加或切换认证提供商：
 
 ```bash
 ./deploy-all.sh --configure auth
-# 选择 "Microsoft (Entra ID)"
-# 输入 Client ID、Client Secret、Tenant ID
-# 脚本自动更新 AWS Secrets Manager 并触发 ESO 同步
+# 选项：
+#   1) 添加/更新 Microsoft Entra ID (SSO)  → 提示输入 Client ID、Secret、Tenant ID
+#   2) 开关 Cognito                        → 更新 terraform.tfvars + 执行 terraform apply
+#   3) 查看当前认证状态
 ```
 
-配置密钥后，重启后端以加载新值：
+脚本将凭证写入 AWS Secrets Manager → ExternalSecret 同步到 Pod → 重启后端：
 
 ```bash
 kubectl rollout restart deploy/backend -n kbp
 ```
+
+> **首次配置 Entra ID？** 需要先在 Azure Portal 注册应用。参见下方 [Microsoft Entra ID 配置](#microsoft-entra-id-配置) 的完整步骤（约 3 分钟）。
 
 ---
 
@@ -345,19 +400,28 @@ Terraform workspace（`prod` vs 其他）决定资源规格：
 
 | 类别 | 配置项 | 非生产环境 | 生产环境 |
 |------|--------|----------|---------|
-| **Backend Pod** | CPU 请求/限制 | 100m / 500m | 200m / 1000m |
-| | 内存请求/限制 | 256Mi / 512Mi | 512Mi / 1024Mi |
-| | HPA 最小副本数 | 1 | 2 |
-| **Frontend Pod** | CPU 请求/限制 | 50m / 200m | 100m / 500m |
-| | 内存请求/限制 | 128Mi / 256Mi | 256Mi / 512Mi |
-| | HPA 最小副本数 | 1 | 2 |
-| **EKS 核心节点** | 实例类型 | `t4g.small` | `t4g.medium` |
+| **Backend Pod** | CPU 请求/限制 | 250m / 500m | 500m / 1000m |
+| | 内存请求/限制 | 384Mi / 768Mi | 512Mi / 1024Mi |
+| | HPA 副本范围 | 2–5 | 3–16 |
+| **Frontend Pod** | CPU 请求/限制 | 30m / 100m | 50m / 200m |
+| | 内存请求/限制 | 64Mi / 128Mi | 128Mi / 256Mi |
+| | HPA 副本范围 | 1–2 | 2–4 |
+| **EKS 核心节点（Standard）** | 实例类型 | `t4g.small` | `t4g.medium` |
 | | EBS 卷大小 | 30 GB | 100 GB |
-| **Karpenter 节点** | 实例类别 | `t`（t4g） | `m`（m7g） |
+| **Karpenter 节点（Standard）** | 实例类别 | `t`（t4g） | `m`（m7g） |
 | | EBS 卷大小 | 30 GB | 100 GB |
 | | CPU 上限 | 100 | 1000 |
 | | 内存上限 | 100 Gi | 1000 Gi |
-| **RDS Aurora** | 删除保护 | 关闭 | 开启 |
+| **EKS Auto Mode NodePool** | 架构 | arm64（Graviton） | arm64（Graviton） |
+| | 实例类别 | `c`, `m`, `r`（gen > 4） | `c`, `m`, `r`（gen > 4） |
+| | CPU 上限 | 1000 | 1000 |
+| | 内存上限 | 1000 Gi | 1000 Gi |
+| | 容量类型 | On-Demand | On-Demand |
+| **RDS Aurora PostgreSQL** | 实例规格（Standard） | `db.r6g.large`（2 vCPU / 16 GB） | `db.r6g.large`（2 vCPU / 16 GB） |
+| | 实例规格（Low-Ops） | `db.serverless`（0.5–4 ACU） | `db.serverless`（0.5–8 ACU） |
+| | 存储 | 自动扩展（10 GB → 128 TB） | 自动扩展（10 GB → 128 TB） |
+| | Performance Insights | 开启 | 开启 |
+| | 删除保护 | 关闭 | 开启 |
 | | 备份保留天数 | 1 天 | 7 天 |
 | | 备份时间窗口 | 未设置 | 03:00-04:00 UTC |
 | | 快照标签复制 | 否 | 是 |
@@ -365,10 +429,136 @@ Terraform workspace（`prod` vs 其他）决定资源规格：
 | | 立即应用变更 | 是 | 否 |
 | | CloudWatch 日志导出 | 无 | `["postgresql"]` |
 | | 监控间隔（秒） | 0（关闭） | 60 |
-| | Performance Insights | 关闭 | 开启 |
 | **Cognito** | 高级安全模式 | `AUDIT` | `ENFORCED` |
 | | 删除保护 | 关闭 | 开启 |
 | **Global Accelerator** | 流日志 | 关闭 | 开启 |
+
+---
+
+## Aurora PostgreSQL 存储与容量
+
+部署支持两种 Aurora 模式，通过步骤 0 的**运维模式**选择：
+
+| 模式 | 实例 | 扩缩方式 | 特点 |
+|------|------|---------|------|
+| **Provisioned**（Standard） | `db.r6g.large`（2 vCPU，16 GB） | 固定 | 稳定负载，固定成本 |
+| **Serverless v2**（Low-Ops） | `db.serverless`（0.5–8 ACU） | 秒级自动扩缩 | 弹性负载，空闲低成本 |
+
+### 存储
+
+两种模式下 Aurora 存储均为**全托管自动扩展** — 无需配置磁盘大小：
+
+- 起始 10 GB，自动按 10 GB 增量扩展
+- 最大：128 TB
+- 计费：$0.10/GB/月（仅按实际使用量计费）
+- 对于 AI Gateway 工作负载（元数据 + 使用记录），预计数年内 < 10 GB
+
+### 成本对比（us-west-2）
+
+| 模式 | 空闲成本 | 活跃成本 |
+|------|---------|---------|
+| Provisioned `db.r6g.large` | ~$185/月（常开） | ~$185/月 |
+| Serverless v2（最低 0.5 ACU） | ~$44/月 | 随负载扩展（8 ACU 时约 ~$350/月） |
+
+### Provisioned：何时需要升级实例
+
+| 指标 | 当前（`db.r6g.large`） | 考虑升级 |
+|------|----------------------|---------|
+| 并发数据库连接 | 舒适支撑 ~500 | > 500 → `db.r6g.xlarge` |
+| CPU 利用率（CloudWatch） | < 70% 持续 | > 70% 持续 |
+| 可用内存 | > 4 GB | < 2 GB |
+
+对于 AI Gateway 场景（轻量 CRUD，大部分延迟在 Bedrock 侧），`db.r6g.large` 足以支撑到数千并发用户。
+
+### Serverless v2：ACU 配置
+
+| 环境 | 最低 ACU | 最高 ACU | 说明 |
+|------|---------|---------|------|
+| 非生产 | 0.5 | 4 | 空闲时缩到接近零 |
+| 生产 | 0.5 | 8 | 更高上限应对流量尖峰 |
+
+1 ACU ≈ 2 GB RAM + 对应 CPU。扩缩自动完成，秒级响应。
+
+---
+
+## Microsoft Entra ID 配置
+
+完整 OAuth 配置指南参见 [OAuth Setup Guide](oauth-setup.md#microsoft-entra-id-azure-ad)。
+
+### 快速配置（3 分钟）
+
+**1. Azure Portal — 注册应用：**
+
+```
+Azure Portal > App registrations > New registration
+  Name:              Kolya BR Proxy
+  Account types:     Multi-tenant (any org + personal)
+  Redirect URI:      Web → https://<frontend-domain>/auth/microsoft/callback
+```
+
+**2. 创建 Client Secret：**
+
+```
+Certificates & secrets > New client secret
+  Description:   Kolya BR Proxy
+  Expiry:        24 months
+  → 立即复制 Value（仅显示一次）
+```
+
+**3. API 权限（关键）：**
+
+```
+API permissions > Add permission > Microsoft Graph > Delegated
+  添加: openid, profile, email, User.Read, GroupMember.Read.All
+  → 点击 "Grant admin consent for [tenant]"
+```
+
+> **如果不授予 `GroupMember.Read.All` 的 admin consent**，Entra Group Sync 会返回 403。
+
+**4. 注入到集群：**
+
+```bash
+./deploy-all.sh --configure auth
+# 选择 "Add/Update Microsoft Entra ID (SSO)"
+# 输入: Client ID、Client Secret、Tenant ID
+# 脚本写入 AWS Secrets Manager → ESO 同步到 Pod
+```
+
+**5. 重启后端以加载密钥：**
+
+```bash
+kubectl rollout restart deploy/backend -n kbp
+```
+
+### Entra ID Group Sync（通过 Azure 组实现 RBAC）
+
+Group Sync 将 Azure AD 安全组映射为角色和权限。启用后，访问由组成员关系控制：
+
+```bash
+# 启用 Group Sync
+KBR_MICROSOFT_ENABLE_GROUP_SYNC=true
+```
+
+**首次登录（引导）：** 第一个通过 Microsoft 登录的用户自动获得 `super_admin` — 解决鸡生蛋问题。引导窗口在此之后立即关闭。
+
+**配置流程：**
+1. 在 Azure Portal 创建安全组（如 `KBP-Admins`、`KBP-Users`）
+2. 在 Azure Portal 将成员添加到组
+3. 首次登录 KBP → 获得 super_admin
+4. 进入管理面板 > **Entra Groups** > 添加映射：
+
+| Entra Group ID (Object ID) | 显示名称 | 角色 | 优先级 |
+|-----------------------------|---------|------|--------|
+| `aaaaaaaa-bbbb-...` | KBP-Admins | `super_admin` | 100 |
+| `cccccccc-dddd-...` | KBP-Users | `admin` | 50 |
+
+**行为规则：**
+- 用户在已映射的组中 → 每次登录分配该组角色
+- 用户不在任何映射组中 → 403 拒绝
+- Graph API 不可达 → 503 拒绝（fail-closed 设计）
+- 用户在多个组中 → 最高优先级生效
+
+详细行为矩阵和故障排查参见 [OAuth Setup — Entra ID Group Sync](oauth-setup.md#entra-id-group-sync)。
 
 ---
 
@@ -459,6 +649,18 @@ kubectl get ingress -n kbp
 |------|------|---|
 | `kbp.kolya.fun` | CNAME | Frontend ALB 主机名 |
 | `api.kbp.kolya.fun` | CNAME | API ALB 主机名 |
+
+如果启用了 Global Accelerator，两条记录都应指向 GA DNS 名称（参见[配合 Global Accelerator 的 DNS 配置](#配合-global-accelerator-的-dns-配置)）。
+
+### 配置位置
+
+| DNS 服务商 | 操作方式 |
+|-----------|---------|
+| **Route 53** | 在托管区域中创建 CNAME 记录（zone apex 可使用 Alias 记录） |
+| **Cloudflare** | 在 Cloudflare 控制台添加 CNAME 记录。代理状态设为 "DNS only"（灰色云朵），避免与 ALB 双重代理 |
+| **其他服务商** | 在 DNS 管理控制台中添加 CNAME 记录，指向 ALB 主机名（或 GA DNS 名称） |
+
+> **注意：** CNAME 记录不能用于 zone apex（如不带子域名的 `example.com`）。如果你的域名是裸域名，请使用服务商提供的 ALIAS/ANAME 记录，或添加子域名前缀。
 
 ---
 

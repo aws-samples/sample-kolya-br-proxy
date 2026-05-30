@@ -264,7 +264,7 @@ deploy_app() {
     fi
 
     # 部署步骤
-    print_info "步骤 1/8: 创建命名空间..."
+    print_info "步骤 1/9: 创建命名空间..."
 
     # 检查命名空间状态
     local ns_status=$(kubectl get namespace ${NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null || echo "NotFound")
@@ -362,11 +362,9 @@ deploy_app() {
     kubectl apply -f backend-configmap.yaml
     kubectl apply -f frontend-configmap.yaml
 
-    # 生成 Ingress（依赖 ESO 同步后的 k8s secret + ConfigMaps 中的域名）
-    if [ ! -f "ingress-frontend.yaml" ] || [ ! -f "ingress-api.yaml" ]; then
-        print_info "生成 Ingress 配置..."
-        ./generate-ingress.sh
-    fi
+    # 生成 Ingress（每次从 k8s secret 读取最新证书 ARN）
+    print_info "生成 Ingress 配置..."
+    ./generate-ingress.sh
 
     print_info "步骤 5/9: 部署 Backend..."
     kubectl apply -f backend-deployment.yaml
@@ -388,11 +386,25 @@ deploy_app() {
 
     print_success "部署完成！"
 
-    # 等待 Pod 启动
+    # 等待 Pod 启动（并行等待，最多 300s）
     echo ""
     print_info "等待 Pod 启动..."
-    kubectl wait --for=condition=ready pod -l app=backend -n ${NAMESPACE} --timeout=300s || true
-    kubectl wait --for=condition=ready pod -l app=frontend -n ${NAMESPACE} --timeout=300s || true
+    local backend_ok=true frontend_ok=true
+    kubectl wait --for=condition=ready pod -l app=backend -n ${NAMESPACE} --timeout=300s 2>/dev/null || backend_ok=false &
+    local pid_backend=$!
+    kubectl wait --for=condition=ready pod -l app=frontend -n ${NAMESPACE} --timeout=300s 2>/dev/null || frontend_ok=false &
+    local pid_frontend=$!
+    wait $pid_backend || backend_ok=false
+    wait $pid_frontend || frontend_ok=false
+    if [[ "$backend_ok" == "false" ]]; then
+        print_warning "⚠️  Backend pods 未就绪（超时 300s）。请检查: kubectl get pods -n ${NAMESPACE} -l app=backend"
+    fi
+    if [[ "$frontend_ok" == "false" ]]; then
+        print_warning "⚠️  Frontend pods 未就绪（超时 300s）。请检查: kubectl get pods -n ${NAMESPACE} -l app=frontend"
+    fi
+    if [[ "$backend_ok" == "false" || "$frontend_ok" == "false" ]]; then
+        print_warning "部分 Pod 未就绪，但 Ingress/ALB/WAF 配置将继续执行"
+    fi
 
     # 显示状态
     show_status

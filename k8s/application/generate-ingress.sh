@@ -48,6 +48,14 @@ else
     ENVIRONMENT="non-prod"
 fi
 
+# Read is_private from terraform.tfvars to determine ALB scheme
+IS_PRIVATE=$(grep -E "^is_private\s*=" "$TERRAFORM_DIR/terraform.tfvars" 2>/dev/null | head -1 | sed 's/^[^=]*=\s*//' | sed 's/^\s*"\(.*\)"\s*$/\1/' | sed 's/^\s*//;s/\s*$//')
+if [[ "$IS_PRIVATE" == "true" ]]; then
+    ALB_SCHEME="internal"
+else
+    ALB_SCHEME="internet-facing"
+fi
+
 # Validate required values
 if [[ -z "$FRONTEND_ACM_CERT" ]]; then
     echo "❌ Error: acm-certificate-frontend-arn not found in secret '$SECRET_NAME'"
@@ -90,7 +98,7 @@ echo "   API ACM Cert: ${API_ACM_CERT:0:50}..."
 echo ""
 
 # Export variables for envsubst
-export FRONTEND_ACM_CERT API_ACM_CERT ENVIRONMENT FRONTEND_DOMAIN API_DOMAIN
+export FRONTEND_ACM_CERT API_ACM_CERT ENVIRONMENT FRONTEND_DOMAIN API_DOMAIN ALB_SCHEME
 
 # Generate ingress-frontend.yaml from template
 echo "🔨 Generating ingress-frontend.yaml..."

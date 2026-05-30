@@ -1,4 +1,8 @@
+# Karpenter is only needed in standard mode.
+# In Auto Mode, AWS manages compute scaling natively.
+
 module "karpenter" {
+  count   = var.eks_mode == "standard" ? 1 : 0
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
   version = "~> 21.0"
 
@@ -9,10 +13,11 @@ module "karpenter" {
   # Node IAM role is self-managed in karpenter-node-iam.tf to ensure
   # create_before_destroy lifecycle on policy attachments.
   create_node_iam_role = false
-  node_iam_role_arn    = aws_iam_role.karpenter_node.arn
+  node_iam_role_arn    = aws_iam_role.karpenter_node[0].arn
 
   iam_role_name            = "karp-ctrl-${var.project_name_alias}-${var.workspace}-${var.account}-${var.region}"
   iam_role_use_name_prefix = false
+  enable_inline_policy     = true
 
   queue_name = "${var.project_name_alias}-${var.workspace}-karpenter"
 

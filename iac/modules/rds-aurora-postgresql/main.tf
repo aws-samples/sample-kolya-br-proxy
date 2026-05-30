@@ -92,7 +92,7 @@ locals {
   default_master_username = "postgres"
   default_engine          = "aurora-postgresql"
   default_engine_version  = "16.11"
-  default_instance_class  = var.workspace == "prod" ? "db.r6g.large" : "db.r6g.large"
+  default_instance_class  = var.aurora_mode == "serverless" ? "db.serverless" : "db.r6g.large"
 
   # Use created monitoring role if monitoring is enabled and no role ARN provided
   effective_monitoring_role_arn = var.monitoring_interval > 0 ? (
@@ -147,6 +147,15 @@ resource "aws_rds_cluster" "aurora_cluster" {
   # Engine configuration
   engine         = local.default_engine
   engine_version = local.default_engine_version
+
+  # Serverless v2 scaling (only when aurora_mode = "serverless")
+  dynamic "serverlessv2_scaling_configuration" {
+    for_each = var.aurora_mode == "serverless" ? [1] : []
+    content {
+      min_capacity = var.serverless_min_capacity
+      max_capacity = var.serverless_max_capacity
+    }
+  }
 
   # Database configuration
   database_name   = local.default_database_name
