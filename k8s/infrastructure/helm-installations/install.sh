@@ -11,8 +11,10 @@ set -e
 # 4. Helm must be installed
 #
 # Environment variables:
+#   EKS_MODE=auto        EKS Auto Mode — automatically skips built-in components
 #   SKIP_ALBC=true       Skip AWS Load Balancer Controller installation
 #   SKIP_KARPENTER=true  Skip Karpenter installation
+#   SKIP_METRICS_SERVER=true  Skip Metrics Server installation
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -34,6 +36,34 @@ function error() {
     echo -e "${RED}[ERROR]${NC} $1"
     exit 1
 }
+
+# EKS Auto Mode: skip components that are built-in to Auto Mode
+if [[ "${EKS_MODE}" == "auto" ]]; then
+    info "EKS Auto Mode detected — skipping built-in components (ALBC, Karpenter, Metrics Server)"
+    SKIP_ALBC=true
+    SKIP_KARPENTER=true
+    SKIP_METRICS_SERVER=true
+
+    # Patch general-purpose nodepool: arm64 (Graviton) + resource limits
+    info "Patching general-purpose nodepool (arch=arm64, limits)..."
+    if kubectl get nodepool general-purpose &>/dev/null; then
+        kubectl patch nodepool general-purpose --type='merge' -p='
+        {
+          "spec": {
+            "limits": {"cpu": "1000", "memory": "1000Gi"},
+            "template": {"spec": {"requirements": [
+              {"key": "karpenter.sh/capacity-type", "operator": "In", "values": ["on-demand"]},
+              {"key": "eks.amazonaws.com/instance-category", "operator": "In", "values": ["c", "m", "r"]},
+              {"key": "eks.amazonaws.com/instance-generation", "operator": "Gt", "values": ["4"]},
+              {"key": "kubernetes.io/arch", "operator": "In", "values": ["arm64"]},
+              {"key": "kubernetes.io/os", "operator": "In", "values": ["linux"]}
+            ]}}
+          }
+        }' \
+            && success "NodePool patched: arch=arm64, limits=1000cpu/1000Gi" \
+            || warning "Failed to patch nodepool (may already be configured)"
+    fi
+fi
 
 # Check prerequisites
 if ! command -v kubectl &> /dev/null; then
@@ -65,15 +95,21 @@ helm repo add bitnami https://charts.bitnami.com/bitnami
 info "Updating Helm repositories..."
 helm repo update
 
+# StorageClass — provisioner differs between standard and auto mode
 info "Creating gp3 StorageClass..."
-kubectl apply -f - <<'EOF'
+if [[ "${EKS_MODE}" == "auto" ]]; then
+    GP3_PROVISIONER="ebs.csi.eks.amazonaws.com"
+else
+    GP3_PROVISIONER="ebs.csi.aws.com"
+fi
+kubectl apply -f - <<EOF
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: gp3
   annotations:
     storageclass.kubernetes.io/is-default-class: "true"
-provisioner: ebs.csi.aws.com
+provisioner: ${GP3_PROVISIONER}
 parameters:
   type: gp3
   encrypted: "true"
@@ -133,14 +169,19 @@ else
     fi
 fi
 
-info "Installing Metrics Server..."
-helm upgrade --install metrics-server metrics-server/metrics-server \
-    --version 3.13.0 \
-    --namespace kube-system \
-    --values "$SCRIPT_DIR/metrics-server-values.yaml" \
-    --timeout 600s \
-    --wait
-info "Metrics Server installed successfully"
+# Metrics Server
+if [[ "${SKIP_METRICS_SERVER}" == "true" ]]; then
+    warn "Skipping Metrics Server installation (SKIP_METRICS_SERVER=true)"
+else
+    info "Installing Metrics Server..."
+    helm upgrade --install metrics-server metrics-server/metrics-server \
+        --version 3.13.0 \
+        --namespace kube-system \
+        --values "$SCRIPT_DIR/metrics-server-values.yaml" \
+        --timeout 600s \
+        --wait
+    info "Metrics Server installed successfully"
+fi
 
 info "Installing External Secrets Operator..."
 helm upgrade --install external-secrets external-secrets/external-secrets \

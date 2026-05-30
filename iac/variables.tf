@@ -42,6 +42,19 @@ variable "eks_version" {
   default     = "1.35"
 }
 
+variable "ops_low" {
+  description = "Low-ops mode: true = EKS Auto Mode + Aurora Serverless v2; false = EKS Standard + Aurora Provisioned"
+  type        = bool
+  default     = false
+}
+
+# tflint-ignore: terraform_unused_declarations
+variable "is_private" {
+  description = "Whether ALB is internal-only (consumed by k8s ingress generation, not Terraform)"
+  type        = bool
+  default     = false
+}
+
 variable "enable_global_accelerator" {
   description = "Enable AWS Global Accelerator for reduced latency"
   type        = bool
@@ -64,6 +77,34 @@ variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
   default     = "10.1.8.0/22"
+}
+
+variable "egress_mode" {
+  description = "Network mode: 'nat_gateway' (create new VPC) or 'byovpc' (use existing VPC)"
+  type        = string
+  default     = "nat_gateway"
+  validation {
+    condition     = contains(["nat_gateway", "byovpc"], var.egress_mode)
+    error_message = "egress_mode must be 'nat_gateway' or 'byovpc'"
+  }
+}
+
+variable "vpc_id" {
+  description = "Existing VPC ID (required when egress_mode = 'byovpc')"
+  type        = string
+  default     = ""
+}
+
+variable "private_subnet_ids" {
+  description = "Existing private subnet IDs (required when egress_mode = 'byovpc', min 2 AZs)"
+  type        = list(string)
+  default     = []
+}
+
+variable "public_subnet_ids" {
+  description = "Existing public subnet IDs (required when egress_mode = 'byovpc', min 2 AZs)"
+  type        = list(string)
+  default     = []
 }
 
 # Cognito configuration

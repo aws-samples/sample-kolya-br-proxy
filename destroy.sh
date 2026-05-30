@@ -278,10 +278,13 @@ disable_waf_and_ga() {
 
     local needs_apply=false
 
-    # Check if WAF is enabled
-    if terraform state list 2>/dev/null | grep -q "module.waf"; then
-        print_substep "WAF is enabled, disabling..."
+    # Disable WAF (data sources fail if ALB is already gone)
+    if grep -q 'enable_waf\s*=\s*true' "$TFVARS_FILE" 2>/dev/null; then
+        print_substep "Disabling WAF in tfvars..."
         _write_tfvar "enable_waf" "false" "bare"
+    fi
+    if terraform state list 2>/dev/null | grep -q "module.waf"; then
+        print_substep "WAF in state, will be destroyed"
         needs_apply=true
     else
         print_info "WAF not in state, skipping"

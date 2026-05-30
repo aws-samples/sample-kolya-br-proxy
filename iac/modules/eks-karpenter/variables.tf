@@ -58,3 +58,9 @@ variable "enable_cloudwatch_observability" {
   type        = bool
   default     = false
 }
+
+variable "eks_mode" {
+  description = "EKS deployment mode: 'standard' (managed node groups + Karpenter) or 'auto' (fully AWS-managed)"
+  type        = string
+  default     = "standard"
+}

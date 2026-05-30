@@ -7,6 +7,8 @@
 ################################################################################
 
 data "aws_iam_policy_document" "karpenter_node_assume_role" {
+  count = var.eks_mode == "standard" ? 1 : 0
+
   statement {
     sid     = "EKSNodeAssumeRole"
     actions = ["sts:AssumeRole"]
@@ -19,8 +21,10 @@ data "aws_iam_policy_document" "karpenter_node_assume_role" {
 }
 
 resource "aws_iam_role" "karpenter_node" {
+  count = var.eks_mode == "standard" ? 1 : 0
+
   name                  = "${var.project_name_alias}-${var.workspace}-${var.account}-${var.region}-kpnodeiamrole"
-  assume_role_policy    = data.aws_iam_policy_document.karpenter_node_assume_role.json
+  assume_role_policy    = data.aws_iam_policy_document.karpenter_node_assume_role[0].json
   force_detach_policies = true
 
   tags = var.default_tags
@@ -41,10 +45,10 @@ locals {
 }
 
 resource "aws_iam_role_policy_attachment" "karpenter_node" {
-  for_each = local.karpenter_node_policies
+  for_each = var.eks_mode == "standard" ? local.karpenter_node_policies : {}
 
   policy_arn = each.value
-  role       = aws_iam_role.karpenter_node.name
+  role       = aws_iam_role.karpenter_node[0].name
 
   lifecycle {
     create_before_destroy = true
@@ -52,38 +56,6 @@ resource "aws_iam_role_policy_attachment" "karpenter_node" {
 }
 
 ################################################################################
-# State migration: moved blocks for other environments
-# These tell Terraform to move existing module-managed resources to our
-# self-managed resources automatically, without manual state mv commands.
-# Safe to remove after all environments have been migrated.
+# State migration moved blocks removed — all environments migrated.
+# (Previously moved module.karpenter IAM resources to self-managed ones)
 ################################################################################
-
-moved {
-  from = module.karpenter.aws_iam_role.node[0]
-  to   = aws_iam_role.karpenter_node
-}
-
-moved {
-  from = module.karpenter.aws_iam_role_policy_attachment.node["AmazonEKSWorkerNodePolicy"]
-  to   = aws_iam_role_policy_attachment.karpenter_node["AmazonEKSWorkerNodePolicy"]
-}
-
-moved {
-  from = module.karpenter.aws_iam_role_policy_attachment.node["AmazonEKS_CNI_Policy"]
-  to   = aws_iam_role_policy_attachment.karpenter_node["AmazonEKS_CNI_Policy"]
-}
-
-moved {
-  from = module.karpenter.aws_iam_role_policy_attachment.node["AmazonEC2ContainerRegistryPullOnly"]
-  to   = aws_iam_role_policy_attachment.karpenter_node["AmazonEC2ContainerRegistryPullOnly"]
-}
-
-moved {
-  from = module.karpenter.aws_iam_role_policy_attachment.node_additional["AmazonEC2ContainerRegistryReadOnly"]
-  to   = aws_iam_role_policy_attachment.karpenter_node["AmazonEC2ContainerRegistryReadOnly"]
-}
-
-moved {
-  from = module.karpenter.aws_iam_role_policy_attachment.node_additional["AmazonEBSCSIDriverPolicy"]
-  to   = aws_iam_role_policy_attachment.karpenter_node["AmazonEBSCSIDriverPolicy"]
-}

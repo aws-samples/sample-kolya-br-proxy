@@ -158,10 +158,10 @@ configure_tfvars() {
     print_substep "Auto-detecting AWS account and region..."
     local detected_account
     detected_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
-    # For region: prefer existing tfvars value, then AWS_REGION env, then aws configure
+    # Region priority: --region flag (AWS_REGION) > existing tfvars > aws configure
     local existing_region
     existing_region=$(_read_tfvar "region" 2>/dev/null || echo "")
-    local detected_region="${existing_region:-${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}}"
+    local detected_region="${AWS_REGION:-${existing_region:-$(aws configure get region 2>/dev/null || echo "")}}"
 
     if [[ -n "$detected_account" ]]; then
         _write_tfvar "account" "$detected_account"
@@ -246,6 +246,155 @@ configure_tfvars() {
                 _write_tfvar "enable_cognito" "true" "bare"
                 print_success "enable_cognito = true"
             fi
+            ;;
+    esac
+
+    # 2c. Ops mode selection (EKS + Aurora combined)
+    local current_ops_low
+    current_ops_low=$(_read_tfvar "ops_low")
+    echo ""
+    print_substep "Ops mode"
+    echo ""
+    echo "  ┌──────────────────────────────────────────────────────────────────────┐"
+    echo "  │ 1) Standard (default)                                                │"
+    echo "  │    - EKS: Managed Node Groups + Karpenter auto-scaling              │"
+    echo "  │    - Aurora: Provisioned db.r6g.large (fixed cost ~\$185/mo)         │"
+    echo "  │    - You manage: node addons, upgrades, Helm charts                 │"
+    echo "  │    - Full SSH/SSM access to nodes                                   │"
+    echo "  │                                                                      │"
+    echo "  │ 2) Low-Ops (fully managed, elastic)                                  │"
+    echo "  │    - EKS Auto Mode: AWS manages nodes/networking/storage/LB         │"
+    echo "  │    - Aurora Serverless v2: auto-scales 0.5-4 ACU (pay per use)      │"
+    echo "  │    - No SSH/SSM (nodes are ephemeral appliances)                    │"
+    echo "  │    - Idle cost: ~\$44/mo DB vs Provisioned ~\$185/mo (always-on)     │"
+    echo "  │                                                                      │"
+    echo "  │ NOTE: Cannot migrate in-place. Switching requires fresh deployment. │"
+    echo "  └──────────────────────────────────────────────────────────────────────┘"
+    echo ""
+
+    local ops_default="1"
+    if [[ "$current_ops_low" == "true" ]]; then
+        ops_default="2"
+    fi
+    read -p "Select ops mode [$ops_default]: " ops_choice
+    ops_choice="${ops_choice:-$ops_default}"
+
+    case "$ops_choice" in
+        2)
+            _write_tfvar "ops_low" "true" "bare"
+            print_success "ops_low = true (EKS Auto Mode + Aurora Serverless v2)"
+            ;;
+        *)
+            _write_tfvar "ops_low" "false" "bare"
+            print_success "ops_low = false (EKS Standard + Aurora Provisioned)"
+            ;;
+    esac
+
+    # 2d. Network exposure (public vs private ALB)
+    local current_is_private
+    current_is_private=$(_read_tfvar "is_private")
+    echo ""
+    print_substep "Network exposure"
+    echo ""
+    echo "  ┌──────────────────────────────────────────────────────────────────────┐"
+    echo "  │ 1) Public (default)                                                  │"
+    echo "  │    - ALB: internet-facing (public IP)                                │"
+    echo "  │    - Access: anyone with the URL                                     │"
+    echo "  │                                                                      │"
+    echo "  │ 2) Private (internal only)                                           │"
+    echo "  │    - ALB: internal (private IP only)                                 │"
+    echo "  │    - Access: VPN / Direct Connect / same VPC only                    │"
+    echo "  └──────────────────────────────────────────────────────────────────────┘"
+    echo ""
+
+    local net_default="1"
+    if [[ "$current_is_private" == "true" ]]; then
+        net_default="2"
+    fi
+    read -p "Select network exposure [$net_default]: " net_choice
+    net_choice="${net_choice:-$net_default}"
+
+    case "$net_choice" in
+        2)
+            _write_tfvar "is_private" "true" "bare"
+            print_success "is_private = true (Internal ALB, VPN/Direct Connect access only)"
+            ;;
+        *)
+            _write_tfvar "is_private" "false" "bare"
+            print_success "is_private = false (Internet-facing ALB)"
+            ;;
+    esac
+
+    # 2e. Egress mode (New VPC vs BYOVPC)
+    local current_egress_mode
+    current_egress_mode=$(_read_tfvar "egress_mode")
+    echo ""
+    print_substep "Egress mode"
+    echo ""
+    echo "  ┌──────────────────────────────────────────────────────────────────────┐"
+    echo "  │ 1) New VPC (default)                                                 │"
+    echo "  │    - Creates VPC, subnets, NAT Gateway, IGW, route tables            │"
+    echo "  │    - Fully managed by this deployment                                │"
+    echo "  │                                                                      │"
+    echo "  │ 2) Existing VPC (BYOVPC)                                             │"
+    echo "  │    - Deploy into your existing VPC (e.g. with firewall routing)      │"
+    echo "  │    - You provide: VPC ID, private subnet IDs, public subnet IDs     │"
+    echo "  │    - We do NOT create/modify VPC, subnets, NAT, or route tables     │"
+    echo "  └──────────────────────────────────────────────────────────────────────┘"
+    echo ""
+
+    local egress_default="1"
+    if [[ "$current_egress_mode" == "byovpc" ]]; then
+        egress_default="2"
+    fi
+    read -p "Select egress mode [$egress_default]: " egress_choice
+    egress_choice="${egress_choice:-$egress_default}"
+
+    case "$egress_choice" in
+        2)
+            _write_tfvar "egress_mode" "byovpc"
+            echo ""
+            # VPC ID
+            local current_vpc_id
+            current_vpc_id=$(_read_tfvar "vpc_id")
+            read -p "  VPC ID [${current_vpc_id:-vpc-xxxxxxxxx}]: " vpc_input
+            vpc_input="${vpc_input:-$current_vpc_id}"
+            if [[ -z "$vpc_input" || ! "$vpc_input" =~ ^vpc- ]]; then
+                print_error "Invalid VPC ID (must start with vpc-)"
+                exit 1
+            fi
+            _write_tfvar "vpc_id" "$vpc_input"
+
+            # Private Subnet IDs (comma-separated, min 2)
+            local current_private_subnets
+            current_private_subnets=$(_read_tfvar "private_subnet_ids")
+            read -p "  Private subnet IDs (comma-separated, min 2 AZs) [${current_private_subnets:-subnet-aaa,subnet-bbb}]: " priv_input
+            priv_input="${priv_input:-$current_private_subnets}"
+            if [[ -z "$priv_input" ]]; then
+                print_error "Private subnet IDs required"
+                exit 1
+            fi
+            _write_tfvar "private_subnet_ids" "$priv_input"
+
+            # Public Subnet IDs (comma-separated, min 2)
+            local current_public_subnets
+            current_public_subnets=$(_read_tfvar "public_subnet_ids")
+            read -p "  Public subnet IDs (comma-separated, min 2 AZs) [${current_public_subnets:-subnet-ccc,subnet-ddd}]: " pub_input
+            pub_input="${pub_input:-$current_public_subnets}"
+            if [[ -z "$pub_input" ]]; then
+                print_error "Public subnet IDs required"
+                exit 1
+            fi
+            _write_tfvar "public_subnet_ids" "$pub_input"
+
+            print_success "egress_mode = byovpc"
+            print_success "  VPC: $vpc_input"
+            print_success "  Private subnets: $priv_input"
+            print_success "  Public subnets: $pub_input"
+            ;;
+        *)
+            _write_tfvar "egress_mode" "nat_gateway"
+            print_success "egress_mode = nat_gateway (new VPC, fully managed)"
             ;;
     esac
 
@@ -594,6 +743,10 @@ push_secrets_to_sm() {
     cfg_ms_client_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-client-secret" // empty' 2>/dev/null || echo "")
     cfg_ms_tenant_id=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-tenant-id" // empty' 2>/dev/null || echo "")
 
+    # Read existing Gemini API key from SM (preserve if present)
+    local cfg_gemini_api_key=""
+    cfg_gemini_api_key=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."gemini-api-key" // empty' 2>/dev/null || echo "")
+
     # Read existing cert ARNs from SM (preserve if present)
     local cfg_frontend_cert_arn=""
     local cfg_api_cert_arn=""
@@ -609,6 +762,7 @@ push_secrets_to_sm() {
         read -p "Frontend ACM Certificate ARN: " cfg_frontend_cert_arn
         read -p "API ACM Certificate ARN: " cfg_api_cert_arn
     fi
+
 
     print_substep "Pushing secrets to AWS Secrets Manager..."
     local secret_json
@@ -626,6 +780,7 @@ push_secrets_to_sm() {
       --arg api_cert_arn "$cfg_api_cert_arn" \
       --arg account_id "$cfg_account_id" \
       --arg region "$cfg_region" \
+      --arg gemini_api_key "$cfg_gemini_api_key" \
       '{
         "database-url": $db_url,
         "jwt-secret-key": $jwt,
@@ -641,7 +796,8 @@ push_secrets_to_sm() {
         "acm-certificate-frontend-arn": $frontend_cert_arn,
         "acm-certificate-api-arn": $api_cert_arn,
         "aws-account-id": $account_id,
-        "aws-region": $region
+        "aws-region": $region,
+        "gemini-api-key": $gemini_api_key
       }')
 
     aws secretsmanager put-secret-value \
@@ -653,8 +809,8 @@ push_secrets_to_sm() {
 }
 
 # Interactive secrets update
-update_secrets_interactive() {
-    print_header "Update Secrets (AWS Secrets Manager)"
+configure_certs() {
+    print_header "Update ACM Certificates"
 
     cd "$IAC_DIR"
 
@@ -668,135 +824,71 @@ update_secrets_interactive() {
         exit 1
     fi
 
-    print_info "Secret: $secret_name"
-    echo ""
-
-    # Read current values
     local current_secret
     current_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --region "$cfg_region" --query SecretString --output text 2>/dev/null || echo "{}")
 
-    echo "Which secrets do you want to update?"
+    # Show current certs
+    local current_frontend_cert
+    current_frontend_cert=$(echo "$current_secret" | jq -r '."acm-certificate-frontend-arn" // empty')
+    local current_api_cert
+    current_api_cert=$(echo "$current_secret" | jq -r '."acm-certificate-api-arn" // empty')
+
+    if [[ -n "$current_frontend_cert" ]]; then
+        print_info "Current Frontend cert: $current_frontend_cert"
+    fi
+    if [[ -n "$current_api_cert" ]]; then
+        print_info "Current API cert:      $current_api_cert"
+    fi
     echo ""
-    echo "  1) Microsoft OAuth (Client ID, Client Secret, Tenant ID)"
-    echo "  2) Cognito OAuth (User Pool ID, Client ID, Client Secret)"
-    echo "  3) ACM Certificates (Frontend ARN, API ARN)"
-    echo "  4) View current secret values (masked)"
+
+    print_substep "Available certificates in $cfg_region:"
+    aws acm list-certificates --region "$cfg_region" --output table --no-cli-pager 2>/dev/null || true
     echo ""
-    read -p "Select (1-4): " secret_choice
 
-    case $secret_choice in
-        1)
-            print_substep "Microsoft OAuth Configuration"
-            echo ""
-            print_info "Get these values from Azure Portal → App registrations → Your app"
-            echo ""
+    read -p "Frontend ACM Certificate ARN [keep current]: " frontend_cert
+    frontend_cert="${frontend_cert:-$current_frontend_cert}"
+    read -p "API ACM Certificate ARN [keep current]: " api_cert
+    api_cert="${api_cert:-$current_api_cert}"
 
-            local current_ms_id
-            current_ms_id=$(echo "$current_secret" | jq -r '."microsoft-client-id" // empty')
-            local current_ms_tenant
-            current_ms_tenant=$(echo "$current_secret" | jq -r '."microsoft-tenant-id" // empty')
+    local updated_secret
+    updated_secret=$(echo "$current_secret" | jq \
+        --arg fc "$frontend_cert" \
+        --arg ac "$api_cert" \
+        '."acm-certificate-frontend-arn" = $fc | ."acm-certificate-api-arn" = $ac')
 
-            if [[ -n "$current_ms_id" ]]; then
-                print_info "Current Client ID: ${current_ms_id:0:8}..."
-            fi
-            if [[ -n "$current_ms_tenant" ]]; then
-                print_info "Current Tenant ID: ${current_ms_tenant:0:8}..."
-            fi
-            echo ""
+    aws secretsmanager put-secret-value \
+        --secret-id "$secret_name" \
+        --secret-string "$updated_secret" \
+        --region "$cfg_region" \
+        --no-cli-pager
 
-            read -p "Microsoft Client ID (Application ID): " ms_client_id
-            read -s -p "Microsoft Client Secret: " ms_client_secret
-            echo ""
-            read -p "Microsoft Tenant ID (Directory ID): " ms_tenant_id
+    print_success "ACM certificate ARNs updated!"
 
-            if [[ -z "$ms_client_id" || -z "$ms_client_secret" || -z "$ms_tenant_id" ]]; then
-                print_error "All three values are required"
-                exit 1
-            fi
+    echo ""
+    print_info "To regenerate Ingress with new certs, re-run Step 4 or:"
+    echo "  cd k8s/application && ./generate-ingress.sh && kubectl apply -f ingress-*.yaml"
+}
 
-            # Update secret
-            local updated_secret
-            updated_secret=$(echo "$current_secret" | jq \
-                --arg id "$ms_client_id" \
-                --arg secret "$ms_client_secret" \
-                --arg tenant "$ms_tenant_id" \
-                '."microsoft-client-id" = $id | ."microsoft-client-secret" = $secret | ."microsoft-tenant-id" = $tenant')
+# Configure AI model providers (API keys for non-Bedrock providers)
+configure_providers() {
+    print_header "Configure AI Model Providers"
 
-            aws secretsmanager put-secret-value \
-                --secret-id "$secret_name" \
-                --secret-string "$updated_secret" \
-                --region "$cfg_region" \
-                --no-cli-pager
+    cd "$IAC_DIR"
 
-            print_success "Microsoft OAuth secrets updated!"
-            ;;
-        2)
-            print_substep "Cognito OAuth Configuration"
-            echo ""
+    local secret_name
+    secret_name=$(_tf_output backend_secrets_manager_name || echo "")
+    local cfg_region
+    cfg_region=$(_tf_output region || echo "$AWS_REGION")
 
-            read -p "Cognito User Pool ID: " cognito_pool_id
-            read -p "Cognito Client ID: " cognito_client_id
-            read -s -p "Cognito Client Secret: " cognito_client_secret
-            echo ""
-            read -p "Cognito Region [$cfg_region]: " cognito_region
-            cognito_region="${cognito_region:-$cfg_region}"
+    if [[ -z "$secret_name" ]]; then
+        print_error "Secrets Manager name not found in Terraform outputs. Run Step 1 first."
+        exit 1
+    fi
 
-            local updated_secret
-            updated_secret=$(echo "$current_secret" | jq \
-                --arg pool "$cognito_pool_id" \
-                --arg client "$cognito_client_id" \
-                --arg secret "$cognito_client_secret" \
-                --arg region "$cognito_region" \
-                '."cognito-user-pool-id" = $pool | ."cognito-client-id" = $client | ."cognito-client-secret" = $secret | ."cognito-region" = $region')
+    local current_secret
+    current_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --region "$cfg_region" --query SecretString --output text 2>/dev/null || echo "{}")
 
-            aws secretsmanager put-secret-value \
-                --secret-id "$secret_name" \
-                --secret-string "$updated_secret" \
-                --region "$cfg_region" \
-                --no-cli-pager
-
-            print_success "Cognito OAuth secrets updated!"
-            ;;
-        3)
-            print_substep "ACM Certificate ARNs"
-            echo ""
-            aws acm list-certificates --region "$cfg_region" --output table --no-cli-pager 2>/dev/null || true
-            echo ""
-
-            read -p "Frontend ACM Certificate ARN: " frontend_cert
-            read -p "API ACM Certificate ARN: " api_cert
-
-            local updated_secret
-            updated_secret=$(echo "$current_secret" | jq \
-                --arg fc "$frontend_cert" \
-                --arg ac "$api_cert" \
-                '."acm-certificate-frontend-arn" = $fc | ."acm-certificate-api-arn" = $ac')
-
-            aws secretsmanager put-secret-value \
-                --secret-id "$secret_name" \
-                --secret-string "$updated_secret" \
-                --region "$cfg_region" \
-                --no-cli-pager
-
-            print_success "ACM certificate ARNs updated!"
-            ;;
-        4)
-            print_substep "Current secret values (sensitive values masked)"
-            echo ""
-            echo "$current_secret" | jq 'to_entries | map(
-                if (.value | length) > 0 then
-                    .value = (.value | tostring | .[0:8] + "..." + "(" + (. | length | tostring) + " chars)")
-                else
-                    .value = "(empty)"
-                end
-            ) | from_entries'
-            exit 0
-            ;;
-        *)
-            print_error "Invalid choice"
-            exit 1
-            ;;
-    esac
+    _configure_providers "$current_secret" "$secret_name" "$cfg_region"
 
     echo ""
     read -p "Restart backend to apply changes? (y/N): " restart
@@ -804,10 +896,83 @@ update_secrets_interactive() {
         print_info "Restarting backend..."
         kubectl rollout restart deployment/backend -n kbp
         kubectl rollout status deployment/backend -n kbp --timeout=120s
-        print_success "Backend restarted with new secrets"
+        print_success "Backend restarted with new configuration"
     else
         print_info "Run 'kubectl rollout restart deployment/backend -n kbp' to apply changes"
     fi
+}
+
+_configure_providers() {
+    local current_secret="$1"
+    local secret_name="$2"
+    local cfg_region="$3"
+
+    print_substep "AI Model Providers"
+    echo ""
+    echo "  Configure API keys for non-Bedrock model providers."
+    echo "  These are optional — leave empty to disable a provider."
+    echo ""
+
+    # Show current status
+    local current_gemini
+    current_gemini=$(echo "$current_secret" | jq -r '."gemini-api-key" // empty')
+    if [[ -n "$current_gemini" ]]; then
+        print_success "Google Gemini: Configured (Key: ${current_gemini:0:8}...)"
+    else
+        print_warning "Google Gemini: Not configured"
+    fi
+    echo ""
+
+    echo "  1) Add/Update Google Gemini API Key"
+    echo "  2) Remove Google Gemini API Key"
+    echo "  3) Cancel"
+    echo ""
+    read -p "Select (1-3): " provider_choice
+
+    case $provider_choice in
+        1)
+            echo ""
+            print_info "Get your API key from: https://aistudio.google.com/apikey"
+            echo ""
+            read -s -p "Gemini API Key: " gemini_key
+            echo ""
+
+            if [[ -z "$gemini_key" ]]; then
+                print_error "API key cannot be empty"
+                return 1
+            fi
+
+            local updated_secret
+            updated_secret=$(echo "$current_secret" | jq --arg key "$gemini_key" '."gemini-api-key" = $key')
+
+            aws secretsmanager put-secret-value \
+                --secret-id "$secret_name" \
+                --secret-string "$updated_secret" \
+                --region "$cfg_region" \
+                --no-cli-pager
+
+            print_success "Google Gemini API key configured!"
+            ;;
+        2)
+            local updated_secret
+            updated_secret=$(echo "$current_secret" | jq '."gemini-api-key" = ""')
+
+            aws secretsmanager put-secret-value \
+                --secret-id "$secret_name" \
+                --secret-string "$updated_secret" \
+                --region "$cfg_region" \
+                --no-cli-pager
+
+            print_success "Google Gemini API key removed"
+            ;;
+        3)
+            print_info "Cancelled"
+            ;;
+        *)
+            print_error "Invalid choice"
+            return 1
+            ;;
+    esac
 }
 
 # Configure authentication providers
@@ -1076,6 +1241,17 @@ configure_view() {
     fi
     echo ""
 
+    print_substep "AI Model Providers"
+    echo ""
+    local gemini_key
+    gemini_key=$(echo "$current_secret" | jq -r '."gemini-api-key" // empty')
+    if [[ -n "$gemini_key" ]]; then
+        print_success "Google Gemini: Configured (Key: ${gemini_key:0:8}...)"
+    else
+        print_warning "Google Gemini: Not configured"
+    fi
+    echo ""
+
     print_substep "Infrastructure"
     echo ""
     echo "    Database:     $(echo "$current_secret" | jq -r '."database-url" // "N/A"' | sed 's/:[^:@]*@/:***@/')"
@@ -1149,9 +1325,10 @@ Options:
                       5: Toggle Global Accelerator (enable/disable)
 
   --configure <cmd>   Configure the deployment interactively
-                      auth:    Add/update authentication providers (Microsoft/Cognito)
-                      secrets: Update individual secrets in Secrets Manager
-                      view:    View current configuration status
+                      auth:      Add/update authentication providers (Microsoft/Cognito)
+                      providers: Add/update AI model provider API keys (Gemini, etc.)
+                      certs:     Update ACM certificate ARNs
+                      view:      View current configuration status
 
   --update-secrets    (Alias for --configure secrets)
   --yes               Skip all confirmation prompts (dangerous!)
@@ -1679,18 +1856,33 @@ deploy_k8s_infrastructure() {
     fi
     print_success "Cluster connection OK"
 
-    # Authenticate to ECR Public for Karpenter
-    print_substep "Authenticating to ECR Public..."
-    if aws ecr-public get-login-password --region us-east-1 | helm registry login --username AWS --password-stdin public.ecr.aws 2>/dev/null; then
-        print_success "ECR Public authentication successful"
+    # Detect EKS mode for Helm install script
+    cd "$IAC_DIR"
+    local ops_low
+    ops_low=$(_read_tfvar "ops_low")
+    if [[ "$ops_low" == "true" ]]; then
+        export EKS_MODE="auto"
     else
-        print_warning "ECR Public authentication failed, trying docker login..."
-        if aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws 2>/dev/null; then
-            print_success "ECR Public authentication successful (via docker)"
+        export EKS_MODE="standard"
+    fi
+    if [[ "$EKS_MODE" == "auto" ]]; then
+        print_info "EKS Auto Mode: built-in components (ALBC, Karpenter, Metrics Server) will be skipped"
+    fi
+
+    # Authenticate to ECR Public for Karpenter (only needed in standard mode)
+    if [[ "$EKS_MODE" != "auto" ]]; then
+        print_substep "Authenticating to ECR Public..."
+        if aws ecr-public get-login-password --region us-east-1 | helm registry login --username AWS --password-stdin public.ecr.aws 2>/dev/null; then
+            print_success "ECR Public authentication successful"
         else
-            print_error "ECR Public authentication failed"
-            print_info "Karpenter installation may fail. Please run manually:"
-            echo "  aws ecr-public get-login-password --region us-east-1 | helm registry login --username AWS --password-stdin public.ecr.aws"
+            print_warning "ECR Public authentication failed, trying docker login..."
+            if aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws 2>/dev/null; then
+                print_success "ECR Public authentication successful (via docker)"
+            else
+                print_error "ECR Public authentication failed"
+                print_info "Karpenter installation may fail. Please run manually:"
+                echo "  aws ecr-public get-login-password --region us-east-1 | helm registry login --username AWS --password-stdin public.ecr.aws"
+            fi
         fi
     fi
 
@@ -1729,10 +1921,12 @@ build_and_push_images() {
     local account_id=$(aws sts get-caller-identity --query Account --output text)
     print_info "AWS Account ID: $account_id"
 
-    # ECR login
+    # ECR login (use temp config dir to avoid macOS keychain conflicts)
     print_substep "Logging in to Amazon ECR..."
+    local ecr_registry="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com"
+    export DOCKER_CONFIG="${DOCKER_CONFIG:-$(mktemp -d)}"
     aws ecr get-login-password --region "$AWS_REGION" | \
-        docker login --username AWS --password-stdin "$account_id.dkr.ecr.$AWS_REGION.amazonaws.com"
+        docker login --username AWS --password-stdin "$ecr_registry"
     print_success "ECR login successful"
 
     # Create ECR repositories (if not exist)
@@ -1835,7 +2029,7 @@ deploy_application() {
     # Generate k8s configs from tfvars (non-interactive)
     generate_k8s_configs
 
-    # Push secrets if not yet present
+    # Push secrets if not yet present, or backfill missing keys
     local secret_name
     secret_name=$(cd "$IAC_DIR" && _tf_output backend_secrets_manager_name || echo "")
     if [[ -n "$secret_name" ]]; then
@@ -1845,7 +2039,25 @@ deploy_application() {
             print_info "Secrets Manager is empty, pushing secrets..."
             push_secrets_to_sm
         else
-            print_success "Secrets already present in Secrets Manager"
+            # Backfill missing keys that ESO requires
+            local needs_update=false
+            local updated_secret="$existing_secret"
+            for key in "gemini-api-key"; do
+                if ! echo "$updated_secret" | jq -e --arg k "$key" 'has($k)' &>/dev/null; then
+                    updated_secret=$(echo "$updated_secret" | jq --arg k "$key" '. + {($k): ""}')
+                    needs_update=true
+                fi
+            done
+            if [[ "$needs_update" == "true" ]]; then
+                print_info "Backfilling missing keys in Secrets Manager..."
+                aws secretsmanager put-secret-value \
+                    --secret-id "$secret_name" \
+                    --secret-string "$updated_secret" \
+                    --no-cli-pager
+                print_success "Missing keys backfilled"
+            else
+                print_success "Secrets already present in Secrets Manager"
+            fi
         fi
     fi
 
@@ -1853,14 +2065,24 @@ deploy_application() {
     local app_dir="$K8S_DIR/application"
     export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
     export AWS_REGION
-    print_substep "Generating Deployment and HPA ($DEPLOY_ENV resources)..."
+
+    # Determine Karpenter nodepool name based on EKS mode
+    local ops_low
+    ops_low=$(_read_tfvar "ops_low")
+    if [[ "$ops_low" == "true" ]]; then
+        export KARPENTER_NODEPOOL="general-purpose"
+    else
+        export KARPENTER_NODEPOOL="common-nodepool"
+    fi
+
+    print_substep "Generating Deployment and HPA ($DEPLOY_ENV resources, nodepool=$KARPENTER_NODEPOOL)..."
     if [[ "$DEPLOY_ENV" == "prod" ]]; then
         export BACKEND_CPU_REQUEST="500m"  BACKEND_CPU_LIMIT="1000m"
         export BACKEND_MEMORY_REQUEST="512Mi"  BACKEND_MEMORY_LIMIT="1024Mi"
         export FRONTEND_CPU_REQUEST="50m"  FRONTEND_CPU_LIMIT="200m"
         export FRONTEND_MEMORY_REQUEST="128Mi"  FRONTEND_MEMORY_LIMIT="256Mi"
-        export BACKEND_HPA_MIN="2"  BACKEND_HPA_MAX="8"
-        export FRONTEND_HPA_MIN="1"  FRONTEND_HPA_MAX="2"
+        export BACKEND_HPA_MIN="3"  BACKEND_HPA_MAX="16"
+        export FRONTEND_HPA_MIN="2"  FRONTEND_HPA_MAX="4"
     else
         export BACKEND_CPU_REQUEST="250m"  BACKEND_CPU_LIMIT="500m"
         export BACKEND_MEMORY_REQUEST="384Mi"  BACKEND_MEMORY_LIMIT="768Mi"
@@ -2163,6 +2385,15 @@ deploy_global_accelerator() {
         print_info "Global Accelerator is currently: DISABLED"
         echo ""
 
+        # Check if ALBs are internal (incompatible with GA)
+        local is_private
+        is_private=$(_read_tfvar "is_private")
+        if [[ "$is_private" == "true" ]]; then
+            print_error "Global Accelerator requires internet-facing ALBs, but is_private=true (internal ALBs)."
+            print_info "Change to public ALBs first: ./deploy-all.sh --step 0 (select Public network exposure)"
+            return 0
+        fi
+
         # Verify ALBs exist
         print_substep "Verifying ALBs exist..."
         local ga_frontend_alb_name=$(_tf_output ga_frontend_alb_name || echo "kolya-br-proxy-frontend-alb")
@@ -2309,26 +2540,33 @@ main() {
             auth)
                 configure_auth
                 ;;
+            providers)
+                configure_providers
+                ;;
+            certs)
+                configure_certs
+                ;;
             secrets)
-                update_secrets_interactive
+                # Legacy alias
+                configure_certs
                 ;;
             view)
                 configure_view
                 ;;
             *)
                 print_error "Unknown configure subcommand: $CONFIGURE_CMD"
-                echo "  Available: auth, secrets, view"
+                echo "  Available: auth, providers, certs, view"
                 exit 1
                 ;;
         esac
         exit 0
     fi
 
-    # Handle --update-secrets (legacy, redirects to --configure secrets)
+    # Handle --update-secrets (legacy alias for --configure certs)
     if [[ "$UPDATE_SECRETS" == "true" ]]; then
         check_dependencies
         check_aws_credentials
-        update_secrets_interactive
+        configure_certs
         exit 0
     fi
 

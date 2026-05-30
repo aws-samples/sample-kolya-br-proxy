@@ -1,9 +1,9 @@
 # AWS Load Balancer Controller Helm Values
 # Generated automatically from Terraform outputs
 
-clusterName: kbr-proxy-eks-us-west-1-kolya
-region: us-west-1
-vpcId: vpc-0a3690acf92b1a87f
+clusterName: kbp-eks-us-west-2-kolya
+region: us-west-2
+vpcId: vpc-04bd50d5389f47acd
 
 serviceAccount:
   name: aws-load-balancer-controller

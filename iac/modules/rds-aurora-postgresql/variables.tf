@@ -28,6 +28,24 @@ variable "subnet_ids" {
   type        = list(string)
 }
 
+variable "aurora_mode" {
+  description = "Aurora deployment mode: 'provisioned' (fixed instance) or 'serverless' (auto-scaling ACU)"
+  type        = string
+  default     = "provisioned"
+}
+
+variable "serverless_min_capacity" {
+  description = "Minimum ACU for Aurora Serverless v2 (0.5 to 256, in 0.5 increments)"
+  type        = number
+  default     = 0.5
+}
+
+variable "serverless_max_capacity" {
+  description = "Maximum ACU for Aurora Serverless v2 (0.5 to 256, in 0.5 increments)"
+  type        = number
+  default     = 4
+}
+
 variable "instance_count" {
   description = "Number of instances in the cluster"
   type        = number

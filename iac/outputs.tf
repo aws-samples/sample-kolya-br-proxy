@@ -18,22 +18,22 @@ output "region" {
 # VPC Outputs
 output "vpc_id" {
   description = "ID of the VPC"
-  value       = module.vpc.vpc_id
+  value       = local.vpc_id
 }
 
 output "vpc_cidr_block" {
   description = "CIDR block of the VPC"
-  value       = module.vpc.vpc_cidr_block
+  value       = var.egress_mode == "byovpc" ? "" : module.vpc[0].vpc_cidr_block
 }
 
 output "private_subnet_ids" {
   description = "List of IDs of private subnets"
-  value       = module.vpc.private_subnet_ids
+  value       = local.private_subnet_ids
 }
 
 output "public_subnet_ids" {
   description = "List of IDs of public subnets"
-  value       = module.vpc.public_subnet_ids
+  value       = local.public_subnet_ids
 }
 
 # EKS Outputs
@@ -120,12 +120,12 @@ output "karpenter_service_account" {
 # Security Group Outputs
 output "eks_nodes_security_group_id" {
   description = "ID of the EKS nodes security group"
-  value       = module.vpc.eks_nodes_security_group_id
+  value       = local.eks_nodes_sg_id
 }
 
 output "rds_security_group_id" {
   description = "ID of the RDS security group"
-  value       = module.vpc.rds_security_group_id
+  value       = local.rds_sg_id
 }
 
 # Global Accelerator Outputs (conditional)
