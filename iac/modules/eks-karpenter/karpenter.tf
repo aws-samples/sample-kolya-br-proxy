@@ -17,6 +17,7 @@ module "karpenter" {
 
   iam_role_name            = "karp-ctrl-${var.project_name_alias}-${var.workspace}-${var.account}-${var.region}"
   iam_role_use_name_prefix = false
+  enable_inline_policy     = true
 
   queue_name = "${var.project_name_alias}-${var.workspace}-karpenter"
 

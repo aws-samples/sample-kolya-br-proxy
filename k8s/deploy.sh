@@ -362,11 +362,9 @@ deploy_app() {
     kubectl apply -f backend-configmap.yaml
     kubectl apply -f frontend-configmap.yaml
 
-    # 生成 Ingress（依赖 ESO 同步后的 k8s secret + ConfigMaps 中的域名）
-    if [ ! -f "ingress-frontend.yaml" ] || [ ! -f "ingress-api.yaml" ]; then
-        print_info "生成 Ingress 配置..."
-        ./generate-ingress.sh
-    fi
+    # 生成 Ingress（每次从 k8s secret 读取最新证书 ARN）
+    print_info "生成 Ingress 配置..."
+    ./generate-ingress.sh
 
     print_info "步骤 5/9: 部署 Backend..."
     kubectl apply -f backend-deployment.yaml

@@ -753,14 +753,31 @@ push_secrets_to_sm() {
     cfg_frontend_cert_arn=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."acm-certificate-frontend-arn" // empty' 2>/dev/null || echo "")
     cfg_api_cert_arn=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."acm-certificate-api-arn" // empty' 2>/dev/null || echo "")
 
-    # If cert ARNs are missing, ask user
+    # Validate cert ARNs: must match deployment region
+    if [[ -n "$cfg_frontend_cert_arn" && "$cfg_frontend_cert_arn" != *":${cfg_region}:"* ]]; then
+        print_warning "Frontend cert region mismatch (cert: $(echo "$cfg_frontend_cert_arn" | cut -d: -f4), deployment: ${cfg_region})"
+        cfg_frontend_cert_arn=""
+    fi
+    if [[ -n "$cfg_api_cert_arn" && "$cfg_api_cert_arn" != *":${cfg_region}:"* ]]; then
+        print_warning "API cert region mismatch (cert: $(echo "$cfg_api_cert_arn" | cut -d: -f4), deployment: ${cfg_region})"
+        cfg_api_cert_arn=""
+    fi
+
+    # If cert ARNs are missing or invalid, ask user
     if [[ -z "$cfg_frontend_cert_arn" || -z "$cfg_api_cert_arn" ]]; then
         echo ""
         print_substep "ACM certificate configuration"
         aws acm list-certificates --region "${cfg_region}" --output table --no-cli-pager 2>/dev/null || true
         echo ""
-        read -p "Frontend ACM Certificate ARN: " cfg_frontend_cert_arn
-        read -p "API ACM Certificate ARN: " cfg_api_cert_arn
+        print_info "If your certificate is not in ACM, import it first:"
+        echo "  aws acm import-certificate --certificate fileb://cert.pem --private-key fileb://privkey.pem --certificate-chain fileb://chain.pem --region ${cfg_region}"
+        echo ""
+        if [[ -z "$cfg_frontend_cert_arn" ]]; then
+            read -p "Frontend ACM Certificate ARN (region: ${cfg_region}): " cfg_frontend_cert_arn
+        fi
+        if [[ -z "$cfg_api_cert_arn" ]]; then
+            read -p "API ACM Certificate ARN (region: ${cfg_region}): " cfg_api_cert_arn
+        fi
     fi
 
 
@@ -1671,16 +1688,41 @@ deploy_terraform() {
         print_success "providers.tf generated (bucket: $tf_state_bucket, region: $tf_state_region)"
     fi
 
-    # Terraform init (use -reconfigure when backend config just changed)
+    # Terraform init
     print_substep "Initializing Terraform..."
-    local init_flags="-upgrade"
-    if [[ "$backend_changed" == "true" ]]; then
-        init_flags="-reconfigure -upgrade"
-        print_info "Backend changed, running init with -reconfigure"
-    fi
-    if ! terraform init $init_flags; then
-        print_error "Terraform init failed"
-        exit 1
+    if ! terraform init -upgrade 2>/tmp/tf_init_err.log; then
+        if grep -q "Backend configuration changed" /tmp/tf_init_err.log; then
+            print_warning "检测到 Backend 配置变更（可能上次部署使用了不同环境）"
+            print_info "选项:"
+            print_info "  1) -reconfigure: 使用新配置，不迁移 state（适合切换环境重新部署）"
+            print_info "  2) -migrate-state: 迁移已有 state 到新 backend"
+            print_info "  3) 退出"
+            echo ""
+            read -p "请选择 [1/2/3] (默认 1): " backend_choice
+            backend_choice=${backend_choice:-1}
+            case "$backend_choice" in
+                1)
+                    if ! terraform init -reconfigure -upgrade; then
+                        print_error "Terraform init failed"
+                        exit 1
+                    fi
+                    ;;
+                2)
+                    if ! terraform init -migrate-state -upgrade; then
+                        print_error "Terraform init failed"
+                        exit 1
+                    fi
+                    ;;
+                *)
+                    print_info "已退出"
+                    exit 0
+                    ;;
+            esac
+        else
+            cat /tmp/tf_init_err.log >&2
+            print_error "Terraform init failed"
+            exit 1
+        fi
     fi
     print_success "Terraform initialized"
 
