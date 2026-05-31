@@ -22,10 +22,6 @@ set -e
 # Disable AWS CLI pager so commands never block waiting for user input
 export AWS_PAGER=""
 
-# Use BuildKit (not the deprecated legacy builder) — handles --platform
-# cross-builds natively and silences the "legacy builder is deprecated" warning.
-export DOCKER_BUILDKIT=1
-
 # Color definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'

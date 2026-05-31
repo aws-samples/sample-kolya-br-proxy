@@ -12,10 +12,6 @@
 
 set -e
 
-# Use BuildKit (not the deprecated legacy builder) — handles --platform
-# cross-builds natively and silences the "legacy builder is deprecated" warning.
-export DOCKER_BUILDKIT=1
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
