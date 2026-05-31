@@ -152,6 +152,12 @@ resource "aws_secretsmanager_secret" "backend_secrets" {
   name       = "${local.resource_prefix}-backend-secrets"
   kms_key_id = aws_kms_key.secrets.arn
 
+  # Delete immediately on destroy (no recovery window) so a subsequent deploy can
+  # recreate the same-named secret without hitting "scheduled for deletion" — the
+  # value here is a placeholder ("{}") populated at runtime by External Secrets
+  # Operator, so there is nothing to recover. Mirrors the RDS password secret.
+  recovery_window_in_days = 0
+
   tags = var.default_tags
 }
 

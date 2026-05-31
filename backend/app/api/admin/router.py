@@ -9,6 +9,7 @@ from app.api.admin.endpoints import (
     alerts,
     audit,
     auth,
+    data_management,
     entra_groups,
     models,
     teams,
@@ -60,6 +61,11 @@ admin_router.include_router(users.router, prefix="/users", tags=["admin-users"])
 # Entra ID group mapping (super_admin only)
 admin_router.include_router(
     entra_groups.router, prefix="/entra-groups", tags=["admin-entra-groups"]
+)
+
+# Data management - export/import (super_admin only)
+admin_router.include_router(
+    data_management.router, prefix="/data-management", tags=["admin-data-management"]
 )
 
 

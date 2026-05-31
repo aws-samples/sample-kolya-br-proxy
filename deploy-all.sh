@@ -136,16 +136,51 @@ _tf_output() {
     echo "$val"
 }
 
-# Detect whether a terraform module is present in state (for bool toggles)
-# Usage: _detect_bool_from_state "module_name"  →  prints "true" or "false"
-_detect_bool_from_state() {
-    local module_name="$1"
-    cd "$IAC_DIR"
-    if terraform state list 2>/dev/null | grep -q "module.${module_name}"; then
-        echo "true"
-    else
-        echo "false"
+# Read a field from providers.tf (e.g. "region", "bucket")
+_read_providers_field() {
+    local field="$1"
+    grep "$field" "$IAC_DIR/providers.tf" 2>/dev/null | head -1 | sed 's/.*= *"\(.*\)"/\1/'
+}
+
+# Ensure an S3 bucket exists; offer to create if not.
+# Usage: _ensure_s3_bucket "bucket-name" "region"
+_ensure_s3_bucket() {
+    local bucket="$1" region="$2"
+    if ! aws s3api head-bucket --bucket "$bucket" --region "$region" 2>/dev/null; then
+        print_warning "S3 bucket '$bucket' does not exist in $region"
+        read -p "Create it now? (yes/no) [yes]: " create_bucket
+        create_bucket="${create_bucket:-yes}"
+        if [[ "$create_bucket" == "yes" ]]; then
+            if [[ "$region" == "us-east-1" ]]; then
+                aws s3api create-bucket --bucket "$bucket" --region "$region"
+            else
+                aws s3api create-bucket --bucket "$bucket" --region "$region" \
+                    --create-bucket-configuration LocationConstraint="$region"
+            fi
+            aws s3api put-bucket-versioning --bucket "$bucket" --versioning-configuration Status=Enabled
+            print_success "Bucket '$bucket' created with versioning enabled"
+        else
+            print_warning "Bucket does not exist — terraform init will fail"
+        fi
     fi
+}
+
+# Prompt user for a boolean tfvar with current value as default.
+# Usage: _prompt_bool_tfvar "var_name" "Display Label"
+_prompt_bool_tfvar() {
+    local var_name="$1" label="$2"
+    local current
+    current=$(_read_tfvar "$var_name")
+    echo ""
+    print_substep "$label"
+    if [[ -n "$current" ]]; then
+        echo "  Current: $var_name = $current"
+    fi
+    local input
+    read -p "Enable ${label}? (true/false) [${current:-false}]: " input
+    input="${input:-${current:-false}}"
+    _write_tfvar "$var_name" "$input" "bare"
+    print_success "$var_name = $input"
 }
 
 # Step 0: Configure terraform.tfvars as single source of truth
@@ -160,7 +195,7 @@ configure_tfvars() {
     detected_account=$(aws sts get-caller-identity --query Account --output text 2>/dev/null || echo "")
     # Region priority: --region flag (AWS_REGION) > existing tfvars > aws configure
     local existing_region
-    existing_region=$(_read_tfvar "region" 2>/dev/null || echo "")
+    existing_region=$(_read_tfvar "region")
     local detected_region="${AWS_REGION:-${existing_region:-$(aws configure get region 2>/dev/null || echo "")}}"
 
     if [[ -n "$detected_account" ]]; then
@@ -172,22 +207,9 @@ configure_tfvars() {
         print_success "region = $detected_region"
     fi
 
-    # 2. Auto-detect boolean toggles from terraform state
-    print_substep "Detecting feature flags from Terraform state..."
-    if [[ -d "$IAC_DIR/.terraform" ]]; then
-        local detected_waf
-        detected_waf=$(_detect_bool_from_state "waf")
-        _write_tfvar "enable_waf" "$detected_waf" "bare"
-        print_success "enable_waf = $detected_waf (from state)"
-
-        local detected_ga
-        detected_ga=$(_detect_bool_from_state "global_accelerator")
-        _write_tfvar "enable_global_accelerator" "$detected_ga" "bare"
-        print_success "enable_global_accelerator = $detected_ga (from state)"
-
-    else
-        print_warning "Terraform not initialized, skipping state detection"
-    fi
+    # 2. WAF and Global Accelerator
+    _prompt_bool_tfvar "enable_waf" "WAF (Web Application Firewall)"
+    _prompt_bool_tfvar "enable_global_accelerator" "Global Accelerator"
 
     # 2b. Authentication provider selection (always prompt, show current value as default)
     local current_cognito
@@ -227,15 +249,18 @@ configure_tfvars() {
     case "$auth_choice" in
         1)
             _write_tfvar "enable_cognito" "true" "bare"
+            _write_tfvar "enable_microsoft" "false" "bare"
             print_success "enable_cognito = true"
             ;;
         2|microsoft)
             _write_tfvar "enable_cognito" "false" "bare"
+            _write_tfvar "enable_microsoft" "true" "bare"
             print_success "enable_cognito = false (Microsoft only)"
             ;;
         3)
             _write_tfvar "enable_cognito" "true" "bare"
-            print_success "enable_cognito = true (+ Microsoft via Secrets Manager)"
+            _write_tfvar "enable_microsoft" "true" "bare"
+            print_success "enable_cognito = true + Microsoft Entra ID"
             ;;
         *)
             # Keep current or default to Cognito
@@ -735,23 +760,49 @@ push_secrets_to_sm() {
         cfg_cognito_client_secret=$(_tf_output cognito_app_client_secret || echo "")
     fi
 
-    # Read existing MS config from SM (preserve if present)
-    local cfg_ms_client_id=""
-    local cfg_ms_client_secret=""
-    local cfg_ms_tenant_id=""
-    cfg_ms_client_id=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-client-id" // empty' 2>/dev/null || echo "")
-    cfg_ms_client_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-client-secret" // empty' 2>/dev/null || echo "")
-    cfg_ms_tenant_id=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."microsoft-tenant-id" // empty' 2>/dev/null || echo "")
+    # Read all existing values from SM in a single API call
+    local _sm_json
+    _sm_json=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null || echo "{}")
 
-    # Read existing Gemini API key from SM (preserve if present)
-    local cfg_gemini_api_key=""
-    cfg_gemini_api_key=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."gemini-api-key" // empty' 2>/dev/null || echo "")
+    local cfg_ms_client_id cfg_ms_client_secret cfg_ms_tenant_id
+    cfg_ms_client_id=$(echo "$_sm_json" | jq -r '."microsoft-client-id" // empty')
+    cfg_ms_client_secret=$(echo "$_sm_json" | jq -r '."microsoft-client-secret" // empty')
+    cfg_ms_tenant_id=$(echo "$_sm_json" | jq -r '."microsoft-tenant-id" // empty')
 
-    # Read existing cert ARNs from SM (preserve if present)
-    local cfg_frontend_cert_arn=""
-    local cfg_api_cert_arn=""
-    cfg_frontend_cert_arn=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."acm-certificate-frontend-arn" // empty' 2>/dev/null || echo "")
-    cfg_api_cert_arn=$(aws secretsmanager get-secret-value --secret-id "$secret_name" --query SecretString --output text 2>/dev/null | jq -r '."acm-certificate-api-arn" // empty' 2>/dev/null || echo "")
+    # Read enable_microsoft from tfvars (persisted by step 0)
+    local _enable_microsoft
+    _enable_microsoft=$(_read_tfvar "enable_microsoft")
+    if [[ "$_enable_microsoft" == "true" && ( -z "$cfg_ms_client_id" || -z "$cfg_ms_client_secret" || -z "$cfg_ms_tenant_id" ) ]]; then
+        echo ""
+        print_substep "Microsoft Entra ID Configuration"
+        echo ""
+        echo "  You need the following from Azure Portal → App registrations → Your app:"
+        echo "    • Application (client) ID    → Overview page"
+        echo "    • Client secret              → Certificates & secrets → New client secret"
+        echo "    • Directory (tenant) ID      → Overview page"
+        echo ""
+        echo "  Also ensure:"
+        echo "    • API permissions → Add 'GroupMember.Read.All' (Delegated) → Grant admin consent"
+        echo "    • Redirect URI → https://<your-frontend-domain>/auth/microsoft/callback"
+        echo ""
+        read -p "Microsoft Client ID (Application ID): " cfg_ms_client_id
+        read -s -p "Microsoft Client Secret: " cfg_ms_client_secret
+        echo ""
+        read -p "Microsoft Tenant ID (Directory ID): " cfg_ms_tenant_id
+        if [[ -z "$cfg_ms_client_id" || -z "$cfg_ms_client_secret" || -z "$cfg_ms_tenant_id" ]]; then
+            print_warning "Microsoft credentials incomplete — skipping (configure later with: ./deploy-all.sh auth)"
+            cfg_ms_client_id=""
+            cfg_ms_client_secret=""
+            cfg_ms_tenant_id=""
+        fi
+    fi
+
+    local cfg_gemini_api_key
+    cfg_gemini_api_key=$(echo "$_sm_json" | jq -r '."gemini-api-key" // empty')
+
+    local cfg_frontend_cert_arn cfg_api_cert_arn
+    cfg_frontend_cert_arn=$(echo "$_sm_json" | jq -r '."acm-certificate-frontend-arn" // empty')
+    cfg_api_cert_arn=$(echo "$_sm_json" | jq -r '."acm-certificate-api-arn" // empty')
 
     # Validate cert ARNs: must match deployment region
     if [[ -n "$cfg_frontend_cert_arn" && "$cfg_frontend_cert_arn" != *":${cfg_region}:"* ]]; then
@@ -1550,9 +1601,9 @@ verify_terraform_state() {
         need_configure=true
     else
         # Show current backend config and let user confirm
-        local current_bucket=$(grep 'bucket' "$IAC_DIR/providers.tf" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
-        local current_region=$(grep 'region' "$IAC_DIR/providers.tf" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
-        local current_key=$(grep 'key' "$IAC_DIR/providers.tf" | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+        local current_bucket=$(_read_providers_field 'bucket')
+        local current_region=$(_read_providers_field 'region')
+        local current_key=$(_read_providers_field 'key')
 
         echo ""
         print_info "Current Terraform backend configuration:"
@@ -1586,6 +1637,8 @@ verify_terraform_state() {
 
         local tf_state_region="$AWS_REGION"
         local tf_state_key="kolya-br-proxy/tf.state"
+
+        _ensure_s3_bucket "$tf_state_bucket" "$tf_state_region"
 
         export TF_STATE_BUCKET="$tf_state_bucket"
         export TF_STATE_REGION="$tf_state_region"
@@ -1655,6 +1708,21 @@ deploy_terraform() {
 
     # --- Backend & Init (must happen before any workspace operations) ---
 
+    # Check if providers.tf region matches current deployment region
+    if [[ -f "$IAC_DIR/providers.tf" ]]; then
+        local backend_region=$(_read_providers_field 'region')
+        if [[ -n "$backend_region" && "$backend_region" != "$AWS_REGION" ]]; then
+            local backend_bucket=$(_read_providers_field 'bucket')
+            print_warning "Backend region mismatch: providers.tf has '$backend_region', deployment target is '$AWS_REGION'"
+            print_info "Current backend: bucket=$backend_bucket, region=$backend_region"
+            read -p "Reconfigure backend for $AWS_REGION? (yes/no) [yes]: " reconfig_choice
+            reconfig_choice="${reconfig_choice:-yes}"
+            if [[ "$reconfig_choice" == "yes" ]]; then
+                rm -f "$IAC_DIR/providers.tf"
+            fi
+        fi
+    fi
+
     # Generate providers.tf from template if it doesn't exist
     local backend_changed=false
     if [[ ! -f "$IAC_DIR/providers.tf" ]]; then
@@ -1667,7 +1735,6 @@ deploy_terraform() {
 
         echo ""
         print_info "Terraform remote state requires an S3 bucket."
-        print_info "Please create the bucket first if it doesn't exist."
         echo ""
 
         local tf_state_bucket=""
@@ -1680,6 +1747,8 @@ deploy_terraform() {
 
         local tf_state_region="$AWS_REGION"
         local tf_state_key="kolya-br-proxy/tf.state"
+
+        _ensure_s3_bucket "$tf_state_bucket" "$tf_state_region"
 
         export TF_STATE_BUCKET="$tf_state_bucket"
         export TF_STATE_REGION="$tf_state_region"
@@ -1849,11 +1918,39 @@ deploy_terraform() {
         fi
     fi
 
-    # Terraform apply
+    # Terraform apply (with auto-recovery for Secrets Manager conflicts)
     print_substep "Deploying infrastructure..."
-    if ! terraform apply tfplan; then
-        print_error "Terraform apply failed"
-        exit 1
+    # Stream output to the terminal live AND capture it to a log for conflict inspection.
+    # PIPESTATUS[0] is terraform's real exit code (not tee's), so the conflict-recovery
+    # below still works while the user sees real-time "Still creating..." progress.
+    local apply_rc=0
+    terraform apply tfplan 2>&1 | tee /tmp/tf_apply_err.log
+    apply_rc=${PIPESTATUS[0]}
+    if [[ $apply_rc -ne 0 ]]; then
+        if grep -q "Secrets Manager Secret" /tmp/tf_apply_err.log && grep -q "scheduled for deletion\|ResourceExistsException\|already exists\|KMSInvalidStateException" /tmp/tf_apply_err.log; then
+            # Secrets Manager conflict (pending deletion, exists, or KMS issue) — force delete and retry
+            local sm_secret_id
+            sm_secret_id=$(grep "Secrets Manager Secret" /tmp/tf_apply_err.log | sed 's/.*Secret (\([^)]*\)).*/\1/' | head -1)
+            local sm_resource_addr
+            sm_resource_addr=$(grep "with " /tmp/tf_apply_err.log | sed 's/.*with \([^,]*\).*/\1/' | head -1)
+            if [[ -n "$sm_secret_id" ]]; then
+                print_warning "Secrets Manager conflict for '$sm_secret_id' — cleaning up and retrying..."
+                aws secretsmanager delete-secret --secret-id "$sm_secret_id" --force-delete-without-recovery --region "$AWS_REGION" 2>/dev/null || true
+                if [[ -n "$sm_resource_addr" ]]; then
+                    terraform state rm "$sm_resource_addr" 2>/dev/null || true
+                fi
+                print_info "Re-running terraform plan + apply..."
+                terraform plan -out=tfplan && terraform apply tfplan || { print_error "Terraform apply failed after cleanup"; exit 1; }
+            else
+                cat /tmp/tf_apply_err.log >&2
+                print_error "Terraform apply failed (Secrets Manager conflict but could not parse secret ID)"
+                exit 1
+            fi
+        else
+            cat /tmp/tf_apply_err.log >&2
+            print_error "Terraform apply failed"
+            exit 1
+        fi
     fi
 
     # Clean up plan file
@@ -1952,7 +2049,7 @@ build_and_push_images() {
     # Override AWS_REGION from tfvars (single source of truth), in case
     # 'aws configure get region' returned a different region than the deployment
     local tfvars_region
-    tfvars_region=$(_read_tfvar "region" 2>/dev/null || echo "")
+    tfvars_region=$(_read_tfvar "region")
     if [[ -n "$tfvars_region" ]]; then
         AWS_REGION="$tfvars_region"
         print_info "Region from tfvars: $AWS_REGION"
@@ -2112,7 +2209,7 @@ deploy_application() {
     local ops_low
     ops_low=$(_read_tfvar "ops_low")
     if [[ "$ops_low" == "true" ]]; then
-        export KARPENTER_NODEPOOL="general-purpose"
+        export KARPENTER_NODEPOOL="graviton-pool"
     else
         export KARPENTER_NODEPOOL="common-nodepool"
     fi
