@@ -187,3 +187,11 @@ resource "aws_iam_role_policy_attachment" "node_group_ebs_csi_policy" {
   role       = module.eks.eks_managed_node_groups["core_node_group"].iam_role_name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
+
+# This attachment became count-indexed when Auto Mode was introduced. Migrate
+# existing state from the un-indexed address so standard-mode upgrades see a
+# no-op instead of a destroy/recreate.
+moved {
+  from = aws_iam_role_policy_attachment.node_group_ebs_csi_policy
+  to   = aws_iam_role_policy_attachment.node_group_ebs_csi_policy[0]
+}

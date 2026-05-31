@@ -34,6 +34,15 @@ module "vpc" {
   cluster_name = local.cluster_name
 }
 
+# Existing deployments created the VPC before it became count-indexed (when
+# egress_mode/byovpc was introduced). Without this, Terraform would destroy the
+# old un-indexed VPC and recreate it at index 0 — tearing down the network that
+# EKS and RDS run in. This block migrates the state address in place (no-op plan).
+moved {
+  from = module.vpc
+  to   = module.vpc[0]
+}
+
 # Unified network values (regardless of egress_mode)
 locals {
   vpc_id             = var.egress_mode == "byovpc" ? var.vpc_id : module.vpc[0].vpc_id
