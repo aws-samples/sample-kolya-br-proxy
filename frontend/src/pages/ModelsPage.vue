@@ -23,7 +23,7 @@
         </div>
         <q-select
           v-model="selectedTokenId"
-          :options="tokenOptions"
+          :options="filteredTokenOptions"
           option-value="id"
           option-label="label"
           outlined
@@ -33,6 +33,9 @@
           emit-value
           map-options
           clearable
+          use-input
+          input-debounce="200"
+          @filter="filterTokens"
           @update:model-value="onTokenChange"
           :loading="tokensStore.loading"
           class="q-mb-md"
@@ -309,6 +312,18 @@ const tokenOptions = computed(() => {
     value: token.id,
   }));
 });
+
+// Client-side search for the API Key dropdown (use-input + @filter)
+const filteredTokenOptions = ref<{ id: string; label: string; value: string }[]>([]);
+
+function filterTokens(needle: string, update: (cb: () => void) => void) {
+  update(() => {
+    const term = needle.toLowerCase();
+    filteredTokenOptions.value = term
+      ? tokenOptions.value.filter(o => o.label.toLowerCase().includes(term))
+      : tokenOptions.value;
+  });
+}
 
 const currentToken = computed(() => {
   if (!selectedTokenId.value) return null;
