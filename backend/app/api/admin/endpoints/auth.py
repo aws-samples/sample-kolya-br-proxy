@@ -818,6 +818,20 @@ async def cognito_callback(
 
         settings = get_settings()
 
+        # Bootstrap: the very first user to register becomes super_admin so the
+        # system has an owner who can manage everything (mirrors the Microsoft
+        # group-sync bootstrap). All subsequent users default to admin.
+        existing_user = (
+            await db.execute(select(User.id).limit(1))
+        ).scalar_one_or_none()
+        bootstrap_role = (
+            UserRole.SUPER_ADMIN if existing_user is None else UserRole.ADMIN
+        )
+        if bootstrap_role == UserRole.SUPER_ADMIN:
+            logger.info(
+                f"COGNITO_BOOTSTRAP: first user, granting super_admin to {email}"
+            )
+
         user = User(
             email=email,
             password_hash=None,  # No password for OAuth users
@@ -827,7 +841,7 @@ async def cognito_callback(
             current_balance=Decimal(str(settings.INITIAL_USER_BALANCE_USD)),
             is_active=True,
             is_admin=True,
-            role=UserRole.ADMIN,
+            role=bootstrap_role,
             email_verified=True,  # Cognito accounts are pre-verified
         )
         db.add(user)
