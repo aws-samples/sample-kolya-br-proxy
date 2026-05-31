@@ -67,6 +67,10 @@ class AuditAction(enum.Enum):
     ALERT_RULE_UPDATED = "alert_rule_updated"
     ALERT_RULE_DELETED = "alert_rule_deleted"
 
+    # Data Management
+    DATA_EXPORTED = "data_exported"
+    DATA_IMPORTED = "data_imported"
+
     # Authorization
     UNAUTHORIZED_ACCESS_ATTEMPT = "unauthorized_access_attempt"
     PERMISSION_DENIED = "permission_denied"

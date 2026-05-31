@@ -430,6 +430,47 @@ cleanup_k8s_resources() {
 
     echo ""
     print_success "Kubernetes resources cleanup complete"
+
+    # Wait for Karpenter to reclaim all nodes (empty nodes get terminated after workloads are gone)
+    print_header "Waiting for Karpenter Node Reclamation"
+    print_info "Karpenter will terminate empty nodes after workloads are removed."
+    print_info "This must complete before destroying VPC/subnets to avoid dependency errors."
+    echo ""
+
+    local node_max_wait=300
+    local node_waited=0
+    while [[ $node_waited -lt $node_max_wait ]]; do
+        # Count nodes managed by Karpenter (any node carrying the karpenter.sh/nodepool
+        # label — covers graviton-pool in Auto Mode and common-nodepool otherwise)
+        local karpenter_nodes
+        karpenter_nodes=$(kubectl get nodes -l 'karpenter.sh/nodepool' --no-headers 2>/dev/null | wc -l | xargs)
+
+        if [[ "$karpenter_nodes" -eq 0 ]]; then
+            print_success "All Karpenter-managed nodes have been reclaimed"
+            break
+        fi
+
+        if [[ $((node_waited % 30)) -eq 0 ]]; then
+            print_info "Waiting for $karpenter_nodes Karpenter node(s) to be reclaimed... (${node_waited}s/${node_max_wait}s)"
+        fi
+        sleep 10
+        node_waited=$((node_waited + 10))
+    done
+
+    if [[ $node_waited -ge $node_max_wait ]]; then
+        print_warning "Timeout waiting for Karpenter node reclamation (${node_max_wait}s)"
+        local remaining_nodes
+        remaining_nodes=$(kubectl get nodes -l 'karpenter.sh/nodepool' --no-headers 2>/dev/null || true)
+        if [[ -n "$remaining_nodes" ]]; then
+            echo "$remaining_nodes"
+            echo ""
+            read -p "Proceed with destroy anyway? Remaining nodes may cause VPC dependency errors. (yes/no): " proceed_anyway
+            if [[ "$proceed_anyway" != "yes" ]]; then
+                print_info "Destroy cancelled. Please manually drain/delete remaining nodes and retry."
+                exit 1
+            fi
+        fi
+    fi
 }
 
 # Initialize Terraform backend and select workspace (shared by disable_waf_and_ga + destroy)

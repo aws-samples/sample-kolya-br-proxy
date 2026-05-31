@@ -57,6 +57,11 @@
 
 
 
+      <!-- Data Management (super-admin only) -->
+      <div class="col-12" v-if="authStore.isSuperAdmin">
+        <DataManagementCard />
+      </div>
+
       <!-- Observability -->
       <div class="col-12">
         <q-card>
@@ -121,6 +126,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useAuthStore } from 'src/stores/auth';
 import { Notify } from 'quasar';
 import { api } from 'src/boot/axios';
+import DataManagementCard from 'src/components/DataManagementCard.vue';
 
 const authStore = useAuthStore();
 

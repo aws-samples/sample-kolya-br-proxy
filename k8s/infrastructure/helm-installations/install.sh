@@ -44,24 +44,62 @@ if [[ "${EKS_MODE}" == "auto" ]]; then
     SKIP_KARPENTER=true
     SKIP_METRICS_SERVER=true
 
-    # Patch general-purpose nodepool: arm64 (Graviton) + resource limits
-    info "Patching general-purpose nodepool (arch=arm64, limits)..."
-    if kubectl get nodepool general-purpose &>/dev/null; then
-        kubectl patch nodepool general-purpose --type='merge' -p='
-        {
-          "spec": {
-            "limits": {"cpu": "1000", "memory": "1000Gi"},
-            "template": {"spec": {"requirements": [
-              {"key": "karpenter.sh/capacity-type", "operator": "In", "values": ["on-demand"]},
-              {"key": "eks.amazonaws.com/instance-category", "operator": "In", "values": ["c", "m", "r"]},
-              {"key": "eks.amazonaws.com/instance-generation", "operator": "Gt", "values": ["4"]},
-              {"key": "kubernetes.io/arch", "operator": "In", "values": ["arm64"]},
-              {"key": "kubernetes.io/os", "operator": "In", "values": ["linux"]}
-            ]}}
-          }
-        }' \
-            && success "NodePool patched: arch=arm64, limits=1000cpu/1000Gi" \
-            || warning "Failed to patch nodepool (may already be configured)"
+    # Ensure ALB IngressClass exists (EKS Auto Mode's built-in ALBC needs it)
+    if ! kubectl get ingressclass alb &>/dev/null; then
+        info "Creating IngressClass 'alb' for EKS Auto Mode..."
+        kubectl apply -f - <<'INGRESSCLASS'
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: alb
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: eks.amazonaws.com/alb
+INGRESSCLASS
+        info "IngressClass 'alb' created"
+    else
+        info "IngressClass 'alb' already exists"
+    fi
+
+    # Create custom arm64 NodePool (built-in "general-purpose" is immutable and locked to amd64)
+    if kubectl get nodepool graviton-pool &>/dev/null; then
+        info "NodePool 'graviton-pool' already exists"
+    else
+        info "Creating custom NodePool 'graviton-pool' (arm64/Graviton)..."
+        kubectl apply -f - <<'NODEPOOL'
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: graviton-pool
+spec:
+  template:
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: default
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: eks.amazonaws.com/instance-category
+          operator: In
+          values: ["c", "m", "r"]
+        - key: eks.amazonaws.com/instance-generation
+          operator: Gt
+          values: ["4"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+  limits:
+    cpu: "1000"
+    memory: 1000Gi
+NODEPOOL
+        info "NodePool 'graviton-pool' created"
     fi
 fi
 

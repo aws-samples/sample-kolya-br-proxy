@@ -107,11 +107,18 @@ variable "public_subnet_ids" {
   default     = []
 }
 
-# Cognito configuration
+# Authentication configuration
 variable "enable_cognito" {
   description = "Enable AWS Cognito for user authentication"
   type        = bool
   default     = true
+}
+
+# tflint-ignore: terraform_unused_declarations
+variable "enable_microsoft" {
+  description = "Enable Microsoft Entra ID authentication (consumed by deploy-all.sh, not Terraform)"
+  type        = bool
+  default     = false
 }
 
 variable "cognito_callback_urls" {
