@@ -100,7 +100,7 @@
           <p>Share this link with the invited admin:</p>
           <q-input :model-value="inviteLink" readonly outlined dense dark>
             <template v-slot:append>
-              <q-btn flat dense icon="content_copy" @click="copyInviteLink" />
+              <q-btn flat dense round icon="content_copy" @click="copyInviteLink" />
             </template>
           </q-input>
         </q-card-section>

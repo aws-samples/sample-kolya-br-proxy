@@ -110,66 +110,64 @@
                   />
                 </template>
                 <template v-else-if="col.name === 'actions'">
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="settings"
-                    color="grey-7"
-                    @click.stop="openSettings(props.row)"
-                    class="q-mr-xs"
-                  >
-                    <q-tooltip>Cache Settings</q-tooltip>
-                  </q-btn>
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="account_balance_wallet"
-                    color="positive"
-                    @click.stop="rechargeToken(props.row)"
-                    class="q-mr-xs"
-                  >
-                    <q-tooltip>Recharge</q-tooltip>
-                  </q-btn>
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="notifications"
-                    color="warning"
-                    @click.stop="openAlertDialog(props.row)"
-                    class="q-mr-xs"
-                  >
-                    <q-tooltip>Alerts</q-tooltip>
-                  </q-btn>
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="email"
-                    color="info"
-                    @click.stop="openNotifyDialog(props.row)"
-                    class="q-mr-xs"
-                  >
-                    <q-tooltip>Email this key to users</q-tooltip>
-                  </q-btn>
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="delete"
-                    color="negative"
-                    @click.stop="deleteToken(props.row)"
-                    :loading="deletingTokenId === props.row.id"
-                  >
-                    <q-tooltip>Delete</q-tooltip>
-                  </q-btn>
+                  <div class="row no-wrap items-center action-btns">
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="settings"
+                      color="grey-7"
+                      @click.stop="openSettings(props.row)"
+                    >
+                      <q-tooltip>Cache Settings</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="account_balance_wallet"
+                      color="positive"
+                      @click.stop="rechargeToken(props.row)"
+                    >
+                      <q-tooltip>Recharge</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="notifications"
+                      color="warning"
+                      @click.stop="openAlertDialog(props.row)"
+                    >
+                      <q-tooltip>Alerts</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="email"
+                      color="info"
+                      @click.stop="openNotifyDialog(props.row)"
+                    >
+                      <q-tooltip>Email this key to users</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="delete"
+                      color="negative"
+                      @click.stop="deleteToken(props.row)"
+                      :loading="deletingTokenId === props.row.id"
+                    >
+                      <q-tooltip>Delete</q-tooltip>
+                    </q-btn>
+                  </div>
                 </template>
                 <template v-else>
                   {{ col.value }}
@@ -711,7 +709,7 @@
               dense
               round
               icon="add"
-              color="info"
+              color="grey-6"
               @click="addNotifyEmail"
               class="q-ml-xs"
             >
@@ -722,7 +720,7 @@
               dense
               round
               icon="remove"
-              color="negative"
+              color="grey-6"
               :disable="notifyEmails.length === 1"
               @click="removeNotifyEmail(idx)"
             >
@@ -735,7 +733,6 @@
         </q-card-section>
 
         <q-card-actions align="right">
-          <q-btn label="Cancel" flat v-close-popup />
           <q-btn
             label="Save"
             color="grey-8"
@@ -746,7 +743,6 @@
           />
           <q-btn
             label="Send"
-            icon="send"
             color="info"
             @click="sendNotify"
             :loading="sendingNotify"
@@ -1382,6 +1378,18 @@ onMounted(async () => {
   font-family: 'Courier New', monospace;
   font-size: 13px;
   color: #9aa0a6;
+}
+
+// Compact, perfectly-circular action buttons (override any pill/min-width styling)
+.action-btns {
+  gap: 2px;
+
+  .q-btn {
+    min-width: 0;
+    min-height: 0;
+    border-radius: 50%;
+    aspect-ratio: 1;
+  }
 }
 </style>
 

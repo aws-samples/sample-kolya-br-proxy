@@ -11,7 +11,7 @@
         @update:model-value="fetchActivity"
       />
       <q-space />
-      <q-btn flat icon="refresh" @click="fetchActivity" />
+      <q-btn flat dense round icon="refresh" @click="fetchActivity" />
     </div>
 
     <q-table
