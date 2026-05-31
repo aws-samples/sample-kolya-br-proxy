@@ -56,6 +56,9 @@ API 请求 → record_usage() → check_alerts_for_usage() → AlertNotification
 - **应用内通知**（默认启用）— 创建 `AlertNotification` 记录，通过顶部铃铛图标查看
 - **邮件**（可选）— 通过 AWS SES 发送到逗号分隔的邮箱地址列表
 
+邮件同样用于 **API Key 分发** 功能（Tokens 页面 → 邮件动作），把某个 Key 的明文值
+发送给其关联收件人。两者共用下方的同一套 SES 配置。
+
 ## 冷却机制
 
 每条规则有 `cooldown_hours` 设置（默认 24 小时）。触发后，同一规则在冷却期内不会重复触发，防止通知风暴。
@@ -139,4 +142,96 @@ async def check_alerts_for_usage(token_id, user_id, db):
 | `KBR_ALERT_SES_SENDER_EMAIL` | SES 验证发件人（如 `noreply@kbp.kolya.fun`） |
 | `KBR_ALERT_SES_REGION` | SES 的 AWS 区域（默认使用 `AWS_REGION`） |
 
-如果未配置 `ALERT_SES_SENDER_EMAIL`，邮件通知会静默跳过。
+如果未配置 `ALERT_SES_SENDER_EMAIL`，邮件通知会静默跳过（后端日志打印
+`SES sender not configured, cannot send email`，API Key 通知接口返回 `502`）。
+
+## 开启邮件发送（SES 配置）
+
+以下命令均针对后端所在区域（生产环境为 `us-east-1`）。先执行
+`export AWS_PROFILE=<admin-profile>`。步骤 1–3 每个 AWS 账号/区域只需做一次，
+步骤 4 每次部署执行。
+
+### 1. 将 SES 移出 sandbox（申请 production access）
+
+新的 SES 账号处于 **sandbox** 模式 —— 只能发给预先验证过的地址。每个区域申请一次
+production access：
+
+```bash
+aws sesv2 put-account-details \
+  --production-access-enabled \
+  --mail-type TRANSACTIONAL \
+  --website-url "https://kbp.kolya.icu" \
+  --contact-language EN \
+  --use-case-description "Internal transactional emails: delivering API keys to colleagues and usage/quota alerts. Internal recipients only, <50 emails/day." \
+  --region us-east-1
+```
+
+查看状态（AWS 审核需几小时到约一个工作日）：
+
+```bash
+aws sesv2 get-account --region us-east-1 \
+  --query '{ProductionAccessEnabled:ProductionAccessEnabled,SendingEnabled:SendingEnabled,ReviewStatus:Details.ReviewDetails.Status}'
+```
+
+`ProductionAccessEnabled: true` 且 `ReviewStatus: GRANTED` 即通过。
+
+> 测试**不一定**需要 production access —— 如果只发给已验证的地址（步骤 2），可以跳过此步。
+> 要给任意收件人发邮件时才需要。
+
+### 2. 验证发件身份
+
+发件地址（`KBR_ALERT_SES_SENDER_EMAIL`）必须是已验证的 SES 身份，即使 production
+access 已通过也是如此：
+
+```bash
+aws ses verify-email-identity --email-address <sender@example.com> --region us-east-1
+```
+
+该命令会发一封确认邮件 —— 点击其中的链接。然后确认：
+
+```bash
+aws sesv2 get-email-identity --email-identity <sender@example.com> --region us-east-1 \
+  --query '{Type:IdentityType,Verified:VerifiedForSendingStatus}'
+```
+
+`Verified: true` 即就绪。（也支持用 `verify-domain-identity` + DNS 记录验证整个域名，
+而非单个地址。）
+
+> 企业域名（如 `@amazon.com`）的邮件网关可能拦截 AWS 验证邮件 —— 留意垃圾箱，
+> 或改用你能在外部收信的地址。
+
+### 3. 确认 IAM 权限
+
+后端 pod 的角色（EKS Pod Identity，命名空间 `kbp` 下的 SA `backend`）需要
+`ses:SendEmail` / `ses:SendRawEmail`。本项目中它已包含在 `*-backend-bedrock` 策略里。
+验证方式：
+
+```bash
+ASSOC=$(aws eks list-pod-identity-associations --cluster-name <cluster> --region us-east-1 \
+  --query "associations[?serviceAccount=='backend'&&namespace=='kbp'].associationId | [0]" --output text)
+ROLE=$(aws eks describe-pod-identity-association --cluster-name <cluster> --region us-east-1 \
+  --association-id "$ASSOC" --query 'association.roleArn' --output text)
+# 检查该角色附加的策略中是否含 ses:SendEmail
+```
+
+### 4. 配置后端并重启
+
+把已验证的发件人加到后端 ConfigMap 源文件
+（`k8s/application/backend-configmap.yaml`）：
+
+```yaml
+data:
+  KBR_ALERT_SES_SENDER_EMAIL: "<sender@example.com>"
+```
+
+应用并滚动重启：
+
+```bash
+kubectl apply -f k8s/application/backend-configmap.yaml
+kubectl rollout restart deploy/backend -n kbp
+kubectl rollout status deploy/backend -n kbp
+# 确认变量进入新 pod
+kubectl exec -n kbp deploy/backend -- printenv KBR_ALERT_SES_SENDER_EMAIL
+```
+
+邮件发送即生效。触发一条告警，或用 Tokens 页面的邮件动作测试。

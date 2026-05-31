@@ -17,6 +17,7 @@ export interface APIToken {
   used_usd: string;
   remaining_quota: string | null;
   allowed_ips: string[];
+  notify_emails: string[];
   allowed_models: string[];
   is_active: boolean;
   is_expired: boolean;
@@ -39,6 +40,7 @@ export interface CreateTokenRequest {
   expires_at?: string;
   quota_usd?: number;
   allowed_ips?: string[];
+  notify_emails?: string[];
   allowed_models?: string[];
   token_metadata?: TokenMetadata | null;
 }
@@ -222,6 +224,32 @@ export const useTokensStore = defineStore('tokens', {
         const message = error && typeof error === 'object' && 'response' in error
           ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to revoke token'
           : 'Failed to revoke token';
+        Notify.create({
+          type: 'negative',
+          message,
+          position: 'top',
+        });
+        return false;
+      }
+    },
+
+    async notifyToken(tokenId: string, emails?: string[]): Promise<boolean> {
+      try {
+        const response = await api.post<{ sent: boolean; recipients: string[] }>(
+          `/admin/tokens/${tokenId}/notify`,
+          emails !== undefined ? { emails } : {},
+        );
+
+        Notify.create({
+          type: 'positive',
+          message: `Key emailed to ${response.data.recipients.length} recipient(s)`,
+          position: 'top',
+        });
+        return true;
+      } catch (error: unknown) {
+        const message = error && typeof error === 'object' && 'response' in error
+          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to send notification'
+          : 'Failed to send notification';
         Notify.create({
           type: 'negative',
           message,

@@ -38,6 +38,9 @@ class APIToken(Base):
     # Access control
     allowed_ips = Column(ARRAY(String), nullable=True)
 
+    # Email addresses to notify with this key's value (one key, many users)
+    notify_emails = Column(ARRAY(String), nullable=True)
+
     # Status
     is_active = Column(Boolean, default=True, nullable=False)
     is_deleted = Column(Boolean, default=False, nullable=False)

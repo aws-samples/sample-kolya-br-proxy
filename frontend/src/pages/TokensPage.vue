@@ -151,6 +151,18 @@
                     dense
                     round
                     size="xs"
+                    icon="email"
+                    color="info"
+                    @click.stop="openNotifyDialog(props.row)"
+                    class="q-mr-xs"
+                  >
+                    <q-tooltip>Email this key to users</q-tooltip>
+                  </q-btn>
+                  <q-btn
+                    flat
+                    dense
+                    round
+                    size="xs"
                     icon="delete"
                     color="negative"
                     @click.stop="deleteToken(props.row)"
@@ -666,6 +678,81 @@
 
         <q-card-actions align="right" class="q-pt-none">
           <q-btn label="Close" flat v-close-popup size="sm" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Notify (email key to users) Dialog -->
+    <q-dialog v-model="showNotifyDialog">
+      <q-card dark style="min-width: 500px">
+        <q-card-section>
+          <div class="text-h6">Email Key — {{ notifyTokenRow?.name }}</div>
+        </q-card-section>
+
+        <q-card-section class="q-pt-none">
+          <div
+            v-for="(email, idx) in notifyEmails"
+            :key="idx"
+            class="row items-center no-wrap q-mb-sm"
+          >
+            <q-input
+              v-model="notifyEmails[idx]"
+              label="Email address"
+              type="email"
+              outlined
+              rounded
+              dark
+              dense
+              class="col"
+              @keyup.enter="addNotifyEmail"
+            />
+            <q-btn
+              flat
+              dense
+              round
+              icon="add"
+              color="info"
+              @click="addNotifyEmail"
+              class="q-ml-xs"
+            >
+              <q-tooltip>Add another</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              icon="remove"
+              color="negative"
+              :disable="notifyEmails.length === 1"
+              @click="removeNotifyEmail(idx)"
+            >
+              <q-tooltip>Remove</q-tooltip>
+            </q-btn>
+          </div>
+          <div class="text-caption text-warning q-mt-sm">
+            The email contains the plain API key. Make sure the recipients are correct.
+          </div>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn label="Cancel" flat v-close-popup />
+          <q-btn
+            label="Save"
+            color="grey-8"
+            @click="saveNotifyEmails"
+            :loading="savingNotify"
+            :disable="!hasValidNotifyEmail"
+            unelevated
+          />
+          <q-btn
+            label="Send"
+            icon="send"
+            color="info"
+            @click="sendNotify"
+            :loading="sendingNotify"
+            :disable="!hasValidNotifyEmail"
+            unelevated
+          />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -1215,6 +1302,73 @@ async function deleteAlertRule(ruleId: string) {
   const deleted = await alertsStore.deleteRule(ruleId);
   if (deleted && alertDialogToken.value) {
     await alertsStore.fetchRules(alertDialogToken.value.id);
+  }
+}
+
+// --- Notify (email key to users) ---
+const showNotifyDialog = ref(false);
+const notifyTokenRow = ref<APIToken | null>(null);
+const notifyEmails = ref<string[]>([]);
+const savingNotify = ref(false);
+const sendingNotify = ref(false);
+
+// At least one row is always shown so the user has somewhere to type.
+const hasValidNotifyEmail = computed(() =>
+  notifyEmails.value.some((e) => e.trim().length > 0),
+);
+
+function openNotifyDialog(token: APIToken) {
+  notifyTokenRow.value = token;
+  const saved = (token.notify_emails || []).filter((e) => e.trim());
+  notifyEmails.value = saved.length > 0 ? saved : [''];
+  showNotifyDialog.value = true;
+}
+
+function addNotifyEmail() {
+  notifyEmails.value.push('');
+}
+
+function removeNotifyEmail(idx: number) {
+  notifyEmails.value.splice(idx, 1);
+  if (notifyEmails.value.length === 0) notifyEmails.value = [''];
+}
+
+function cleanedNotifyEmails(): string[] {
+  return notifyEmails.value.map((e) => e.trim()).filter((e) => e.length > 0);
+}
+
+async function persistNotifyEmails(): Promise<boolean> {
+  if (!notifyTokenRow.value) return false;
+  return tokensStore.updateToken(
+    notifyTokenRow.value.id,
+    { notify_emails: cleanedNotifyEmails() },
+  );
+}
+
+async function saveNotifyEmails() {
+  savingNotify.value = true;
+  try {
+    if (await persistNotifyEmails()) {
+      showNotifyDialog.value = false;
+      Notify.create({ type: 'positive', message: 'Recipients saved', position: 'top' });
+    }
+  } finally {
+    savingNotify.value = false;
+  }
+}
+
+async function sendNotify() {
+  if (!notifyTokenRow.value) return;
+  sendingNotify.value = true;
+  try {
+    // Send implies save — persist the recipients, then email the key.
+    if (!(await persistNotifyEmails())) return;
+    const sent = await tokensStore.notifyToken(notifyTokenRow.value.id, cleanedNotifyEmails());
+    if (sent) {
+      showNotifyDialog.value = false;
+    }
+  } finally {
+    sendingNotify.value = false;
   }
 }
 
