@@ -155,21 +155,46 @@
           />
 
           <q-select
-            v-model="selectedAwsModel"
+            v-model="selectedAwsModels"
             :options="filteredAwsModels"
             option-label="friendly_name"
             option-value="friendly_name"
-            :label="selectedProvider === 'google' ? 'Select Gemini Model' : 'Select Model from AWS Bedrock'"
+            :label="selectedProvider === 'google' ? 'Select Gemini Model(s)' : 'Select Model(s) from AWS Bedrock'"
             outlined
             dense
             dark
+            multiple
             :loading="loadingAwsModels"
             use-input
             input-debounce="300"
             @filter="filterModels"
           >
+            <template v-slot:before-options>
+              <q-item v-if="filteredAwsModels.length > 0" clickable @click.stop="toggleSelectAllModels">
+                <q-item-section side>
+                  <q-checkbox
+                    :model-value="allModelsSelected"
+                    dense
+                    dark
+                    @click.stop="toggleSelectAllModels"
+                  />
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label class="text-weight-medium">Select All</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-separator dark />
+            </template>
             <template v-slot:option="scope">
               <q-item v-bind="scope.itemProps">
+                <q-item-section side>
+                  <q-checkbox
+                    :model-value="scope.selected"
+                    dense
+                    dark
+                    @click.stop="scope.toggleOption(scope.opt)"
+                  />
+                </q-item-section>
                 <q-item-section>
                   <q-item-label>
                     {{ scope.opt.friendly_name }}
@@ -200,7 +225,7 @@
             color="grey-8"
             @click="addModel"
             :loading="adding"
-            :disable="!selectedAwsModel"
+            :disable="selectedAwsModels.length === 0"
             unelevated
           />
         </q-card-actions>
@@ -276,7 +301,7 @@ const selectedProvider = ref<'bedrock' | 'google'>('bedrock');
 const awsModels = ref<AwsModel[]>([]);
 const filteredAwsModels = ref<AwsModel[]>([]);
 const loadingAwsModels = ref(false);
-const selectedAwsModel = ref<AwsModel | null>(null);
+const selectedAwsModels = ref<AwsModel[]>([]);
 const adding = ref(false);
 const deletingModelId = ref<string | null>(null);
 const selectedTokenId = ref<string | null>(null);
@@ -334,7 +359,7 @@ const currentToken = computed(() => {
 
 function openAddDialog() {
   selectedProvider.value = 'bedrock';
-  selectedAwsModel.value = null;
+  selectedAwsModels.value = [];
   filteredAwsModels.value = _modelsForProvider();
   showAddDialog.value = true;
 }
@@ -366,7 +391,7 @@ function _modelsForProvider(): AwsModel[] {
 
 function onProviderChange() {
   // Clear selection when switching provider
-  selectedAwsModel.value = null;
+  selectedAwsModels.value = [];
   filteredAwsModels.value = _modelsForProvider();
 }
 
@@ -386,32 +411,58 @@ function filterModels(val: string, update: (fn: () => void) => void) {
   });
 }
 
+const allModelsSelected = computed(
+  () =>
+    filteredAwsModels.value.length > 0 &&
+    selectedAwsModels.value.length === filteredAwsModels.value.length,
+);
+
+function toggleSelectAllModels() {
+  selectedAwsModels.value = allModelsSelected.value ? [] : [...filteredAwsModels.value];
+}
+
 async function addModel() {
-  if (!selectedAwsModel.value || !selectedTokenId.value) return;
+  if (selectedAwsModels.value.length === 0 || !selectedTokenId.value) return;
 
   adding.value = true;
   try {
     // Use model_id as-is from backend (already has correct prefix:
     // cross-region models have geographic prefix e.g. "us.", standard models have no prefix)
-    await api.post('/admin/models', {
-      token_id: selectedTokenId.value,
-      model_name: selectedAwsModel.value.model_id,
-    });
+    const results = await Promise.allSettled(
+      selectedAwsModels.value.map((m) =>
+        api.post('/admin/models', {
+          token_id: selectedTokenId.value,
+          model_name: m.model_id,
+        }),
+      ),
+    );
 
-    Notify.create({
-      type: 'positive',
-      message: 'Model added successfully',
-      position: 'top',
-    });
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.length - succeeded;
+
+    if (succeeded > 0) {
+      Notify.create({
+        type: 'positive',
+        message: `Added ${succeeded} model(s)${failed > 0 ? `, ${failed} failed` : ''}`,
+        position: 'top',
+      });
+    }
+    if (failed > 0 && succeeded === 0) {
+      Notify.create({
+        type: 'negative',
+        message: 'Failed to add models',
+        position: 'top',
+      });
+    }
 
     showAddDialog.value = false;
-    selectedAwsModel.value = null;
+    selectedAwsModels.value = [];
     // Refresh models for the selected token only
     await modelsStore.fetchModels(selectedTokenId.value);
   } catch {
     Notify.create({
       type: 'negative',
-      message: 'Failed to add model',
+      message: 'Failed to add models',
       position: 'top',
     });
   } finally {
