@@ -27,6 +27,7 @@
           option-value="id"
           option-label="label"
           outlined
+          dense
           rounded
           dark
           label="Select API Key"
@@ -160,6 +161,7 @@
             option-value="friendly_name"
             :label="selectedProvider === 'google' ? 'Select Gemini Model' : 'Select Model from AWS Bedrock'"
             outlined
+            dense
             dark
             :loading="loadingAwsModels"
             use-input

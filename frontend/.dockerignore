@@ -1,0 +1,32 @@
+# Dependencies — reinstalled inside the image via `npm ci`
+node_modules
+
+# Build output — regenerated inside the image via `npm run build`
+dist
+.quasar
+
+# Environment files (secrets must not be baked into images)
+.env
+.env.*
+!.env.example
+
+# Git / VCS
+.git
+.gitignore
+
+# IDE / editor
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS cruft
+.DS_Store
+
+# Logs and caches
+*.log
+.npm
+.eslintcache
+
+# Docs / misc not needed for the build
+*.md

@@ -1,1 +1,18 @@
 // app global css in SCSS form
+//
+// Sizing here only touches buttons. Form controls are made compact by adding
+// Quasar's native `dense` prop on each field (40px, with the floating label
+// positioned correctly by Quasar) — NOT by overriding heights in CSS, which
+// breaks the floating-label geometry and overlaps the label with the value.
+
+// Default text/standard buttons match the dense-field height (40px) so a row
+// of "input + button" lines up. Round/fab/dense buttons keep their own sizing.
+.q-btn:not(.q-btn--round):not(.q-btn--fab):not(.q-btn--fab-mini):not(.q-btn--dense) {
+  min-height: 40px;
+  font-size: 13px;
+  padding: 0 14px;
+
+  .q-btn__content .q-icon {
+    font-size: 1.3em;
+  }
+}

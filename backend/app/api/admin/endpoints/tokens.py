@@ -2,6 +2,7 @@
 API Token management endpoints.
 """
 
+import asyncio
 import calendar
 import csv
 import io
@@ -34,6 +35,7 @@ from app.models.usage import UsageRecord
 from app.models.user import User, UserRole
 from app.services.audit_log import AuditLogService
 from app.services.auth import AuthService
+from app.services.notification import send_email
 from app.services.token import TokenService
 
 router = APIRouter()
@@ -127,6 +129,7 @@ class UpdateTokenRequest(BaseModel):
     monthly_quota_usd: Decimal | None = None
     monthly_reset_policy: str | None = None
     allowed_ips: List[str] | None = None
+    notify_emails: List[str] | None = None
     is_active: bool | None = None
     token_metadata: dict | None = None
 
@@ -148,6 +151,7 @@ class TokenResponse(BaseModel):
     daily_used_usd: str | None = None
     remaining_quota: str | None
     allowed_ips: List[str]
+    notify_emails: List[str]
     is_active: bool
     is_expired: bool
     is_quota_exceeded: bool
@@ -277,6 +281,7 @@ def build_token_response(
         daily_used_usd=str(daily_used_usd) if daily_used_usd is not None else None,
         remaining_quota=str(token.remaining_quota) if token.remaining_quota else None,
         allowed_ips=token.allowed_ips or [],
+        notify_emails=token.notify_emails or [],
         is_active=token.is_active,
         is_expired=token.is_expired,
         is_quota_exceeded=token.is_quota_exceeded,
@@ -754,6 +759,8 @@ async def update_token(
         token.monthly_reset_policy = request.monthly_reset_policy
     if request.allowed_ips is not None:
         token.allowed_ips = request.allowed_ips
+    if request.notify_emails is not None:
+        token.notify_emails = request.notify_emails
     if request.is_active is not None:
         token.is_active = request.is_active
     if request.token_metadata is not None:
@@ -935,6 +942,119 @@ async def get_plain_token(
         )
 
     return {"token": plain_token}
+
+
+class NotifyKeyRequest(BaseModel):
+    """Email this key's value to its associated users.
+
+    If ``emails`` is provided it overrides the token's stored notify_emails
+    for this send (without persisting). Otherwise the stored list is used.
+    """
+
+    emails: List[str] | None = None
+
+
+class NotifyKeyResponse(BaseModel):
+    """Result of a notify-key send."""
+
+    sent: bool
+    recipients: List[str]
+
+
+@router.post("/{token_id}/notify", response_model=NotifyKeyResponse)
+async def notify_token(
+    token_id: str,
+    request: NotifyKeyRequest,
+    current_user: User = Depends(require_permission("manage_api_keys")),
+    token_service: TokenService = Depends(get_token_service),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
+):
+    """
+    Email the plain key value to its associated users.
+
+    - **token_id**: Token UUID
+    - **emails**: Optional recipient override; defaults to the token's stored
+      ``notify_emails``.
+
+    Sends the decrypted key to every recipient (one key may serve many users).
+    """
+    check_resource_scope(current_user, "manage_api_keys", token_id)
+
+    try:
+        token_uuid = UUID(token_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid token ID format",
+        )
+
+    token = await token_service.get_token_by_id(token_uuid)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Token not found",
+        )
+
+    if token.user_id != current_user.id:
+        allowed = get_allowed_resource_ids(current_user, "manage_api_keys")
+        if allowed is not None and str(token.id) not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
+
+    recipients = [
+        e.strip()
+        for e in (request.emails or token.notify_emails or [])
+        if e and e.strip()
+    ]
+    if not recipients:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No recipient emails configured for this key",
+        )
+
+    # Decrypt the already-loaded token directly — avoids a second DB round-trip
+    # that get_plain_token() would incur re-fetching the same row.
+    try:
+        plain_token = (
+            decrypt_token(token.encrypted_token) if token.encrypted_token else None
+        )
+    except Exception:
+        plain_token = None
+    if not plain_token:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to decrypt token",
+        )
+
+    subject = f"Your API Key: {token.name}"
+    body = (
+        f"Hello,\n\n"
+        f'You have been granted access to the API key "{token.name}".\n\n'
+        f"API Key: {plain_token}\n\n"
+        f"Keep this key secret. Do not share it outside your team.\n\n"
+        f"— Kolya BR Proxy"
+    )
+
+    sent = await asyncio.to_thread(send_email, subject, body, recipients)
+    if not sent:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Email delivery failed or is not configured (ALERT_SES_SENDER_EMAIL)."
+            ),
+        )
+
+    await audit_service.log(
+        action=AuditAction.API_KEY_NOTIFIED,
+        user=current_user,
+        resource_type="api_token",
+        resource_id=str(token.id),
+        details={"name": token.name, "recipient_count": len(recipients)},
+    )
+
+    return NotifyKeyResponse(sent=True, recipients=recipients)
 
 
 class AdjustBalanceRequest(BaseModel):

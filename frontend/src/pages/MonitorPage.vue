@@ -196,6 +196,7 @@
             <q-btn
               flat
               dense
+              round
               icon="refresh"
               color="primary"
               :loading="monitorStore.loadingPricing"

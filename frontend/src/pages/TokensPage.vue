@@ -110,54 +110,64 @@
                   />
                 </template>
                 <template v-else-if="col.name === 'actions'">
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="settings"
-                    color="grey-7"
-                    @click.stop="openSettings(props.row)"
-                    class="q-mr-xs"
-                  >
-                    <q-tooltip>Cache Settings</q-tooltip>
-                  </q-btn>
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="account_balance_wallet"
-                    color="positive"
-                    @click.stop="rechargeToken(props.row)"
-                    class="q-mr-xs"
-                  >
-                    <q-tooltip>Recharge</q-tooltip>
-                  </q-btn>
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="notifications"
-                    color="warning"
-                    @click.stop="openAlertDialog(props.row)"
-                    class="q-mr-xs"
-                  >
-                    <q-tooltip>Alerts</q-tooltip>
-                  </q-btn>
-                  <q-btn
-                    flat
-                    dense
-                    round
-                    size="xs"
-                    icon="delete"
-                    color="negative"
-                    @click.stop="deleteToken(props.row)"
-                    :loading="deletingTokenId === props.row.id"
-                  >
-                    <q-tooltip>Delete</q-tooltip>
-                  </q-btn>
+                  <div class="row no-wrap items-center action-btns">
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="settings"
+                      color="grey-7"
+                      @click.stop="openSettings(props.row)"
+                    >
+                      <q-tooltip>Cache Settings</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="account_balance_wallet"
+                      color="positive"
+                      @click.stop="rechargeToken(props.row)"
+                    >
+                      <q-tooltip>Recharge</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="notifications"
+                      color="warning"
+                      @click.stop="openAlertDialog(props.row)"
+                    >
+                      <q-tooltip>Alerts</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="email"
+                      color="info"
+                      @click.stop="openNotifyDialog(props.row)"
+                    >
+                      <q-tooltip>Email this key to users</q-tooltip>
+                    </q-btn>
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      size="xs"
+                      icon="delete"
+                      color="negative"
+                      @click.stop="deleteToken(props.row)"
+                      :loading="deletingTokenId === props.row.id"
+                    >
+                      <q-tooltip>Delete</q-tooltip>
+                    </q-btn>
+                  </div>
                 </template>
                 <template v-else>
                   {{ col.value }}
@@ -213,6 +223,7 @@
             v-model.number="rechargeAmount"
             label="Recharge Amount (USD)"
             outlined
+            dense
             rounded
             dark
             type="text"
@@ -251,6 +262,7 @@
               v-model="newToken.name"
               label="Key Name"
               outlined
+              dense
               rounded
               dark
               :rules="[(val) => !!val || 'Please enter name']"
@@ -261,6 +273,7 @@
               v-model="newToken.description"
               label="Description (optional)"
               outlined
+              dense
               rounded
               dark
               class="q-mb-md"
@@ -270,6 +283,7 @@
               v-model.number="newToken.quota_usd"
               label="Quota (USD)"
               outlined
+              dense
               rounded
               dark
               type="text"
@@ -281,6 +295,7 @@
               v-model="newToken.expires_at"
               label="Expiration Time"
               outlined
+              dense
               rounded
               dark
               hint="Leave empty for never expires"
@@ -355,6 +370,7 @@
           <q-input
             v-model="displayKey"
             outlined
+            dense
             rounded
             readonly
             type="textarea"
@@ -439,6 +455,7 @@
               v-model="batchForm.names"
               label="Names"
               outlined
+              dense
               rounded
               dark
               type="textarea"
@@ -452,6 +469,7 @@
               v-model.number="batchForm.quota_usd"
               label="Quota per Key (USD)"
               outlined
+              dense
               rounded
               dark
               type="text"
@@ -463,6 +481,7 @@
               v-model="batchForm.expires_at"
               label="Expiration Time"
               outlined
+              dense
               rounded
               dark
               hint="Leave empty for never expires"
@@ -490,6 +509,7 @@
               :options="availableModelOptions"
               label="Models (optional)"
               outlined
+              dense
               rounded
               dark
               multiple
@@ -666,6 +686,79 @@
 
         <q-card-actions align="right" class="q-pt-none">
           <q-btn label="Close" flat v-close-popup size="sm" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
+
+    <!-- Notify (email key to users) Dialog -->
+    <q-dialog v-model="showNotifyDialog">
+      <q-card dark style="min-width: 500px">
+        <q-card-section>
+          <div class="text-h6">Email Key — {{ notifyTokenRow?.name }}</div>
+        </q-card-section>
+
+        <q-card-section class="q-pt-none">
+          <div
+            v-for="(email, idx) in notifyEmails"
+            :key="idx"
+            class="row items-center no-wrap q-mb-sm"
+          >
+            <q-input
+              v-model="notifyEmails[idx]"
+              label="Email address"
+              type="email"
+              outlined
+              rounded
+              dark
+              dense
+              class="col"
+              @keyup.enter="addNotifyEmail"
+            />
+            <q-btn
+              flat
+              dense
+              round
+              icon="add"
+              color="grey-6"
+              @click="addNotifyEmail"
+              class="q-ml-xs"
+            >
+              <q-tooltip>Add another</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              icon="remove"
+              color="grey-6"
+              :disable="notifyEmails.length === 1"
+              @click="removeNotifyEmail(idx)"
+            >
+              <q-tooltip>Remove</q-tooltip>
+            </q-btn>
+          </div>
+          <div class="text-caption text-warning q-mt-sm">
+            The email contains the plain API key. Make sure the recipients are correct.
+          </div>
+        </q-card-section>
+
+        <q-card-actions align="right">
+          <q-btn
+            label="Save"
+            color="grey-8"
+            @click="saveNotifyEmails"
+            :loading="savingNotify"
+            :disable="!hasValidNotifyEmail"
+            unelevated
+          />
+          <q-btn
+            label="Send"
+            color="info"
+            @click="sendNotify"
+            :loading="sendingNotify"
+            :disable="!hasValidNotifyEmail"
+            unelevated
+          />
         </q-card-actions>
       </q-card>
     </q-dialog>
@@ -1218,6 +1311,73 @@ async function deleteAlertRule(ruleId: string) {
   }
 }
 
+// --- Notify (email key to users) ---
+const showNotifyDialog = ref(false);
+const notifyTokenRow = ref<APIToken | null>(null);
+const notifyEmails = ref<string[]>([]);
+const savingNotify = ref(false);
+const sendingNotify = ref(false);
+
+// At least one row is always shown so the user has somewhere to type.
+const hasValidNotifyEmail = computed(() =>
+  notifyEmails.value.some((e) => e.trim().length > 0),
+);
+
+function openNotifyDialog(token: APIToken) {
+  notifyTokenRow.value = token;
+  const saved = (token.notify_emails || []).filter((e) => e.trim());
+  notifyEmails.value = saved.length > 0 ? saved : [''];
+  showNotifyDialog.value = true;
+}
+
+function addNotifyEmail() {
+  notifyEmails.value.push('');
+}
+
+function removeNotifyEmail(idx: number) {
+  notifyEmails.value.splice(idx, 1);
+  if (notifyEmails.value.length === 0) notifyEmails.value = [''];
+}
+
+function cleanedNotifyEmails(): string[] {
+  return notifyEmails.value.map((e) => e.trim()).filter((e) => e.length > 0);
+}
+
+async function persistNotifyEmails(): Promise<boolean> {
+  if (!notifyTokenRow.value) return false;
+  return tokensStore.updateToken(
+    notifyTokenRow.value.id,
+    { notify_emails: cleanedNotifyEmails() },
+  );
+}
+
+async function saveNotifyEmails() {
+  savingNotify.value = true;
+  try {
+    if (await persistNotifyEmails()) {
+      showNotifyDialog.value = false;
+      Notify.create({ type: 'positive', message: 'Recipients saved', position: 'top' });
+    }
+  } finally {
+    savingNotify.value = false;
+  }
+}
+
+async function sendNotify() {
+  if (!notifyTokenRow.value) return;
+  sendingNotify.value = true;
+  try {
+    // Send implies save — persist the recipients, then email the key.
+    if (!(await persistNotifyEmails())) return;
+    const sent = await tokensStore.notifyToken(notifyTokenRow.value.id, cleanedNotifyEmails());
+    if (sent) {
+      showNotifyDialog.value = false;
+    }
+  } finally {
+    sendingNotify.value = false;
+  }
+}
+
 onMounted(async () => {
   await tokensStore.fetchTokens();
 });
@@ -1228,6 +1388,24 @@ onMounted(async () => {
   font-family: 'Courier New', monospace;
   font-size: 13px;
   color: #9aa0a6;
+}
+
+// Tight spacing between the round action buttons
+.action-btns {
+  gap: 4px;
+
+  .q-btn {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    padding: 0;
+    border-radius: 50%;
+
+    .q-icon {
+      font-size: 16px;
+    }
+  }
 }
 </style>
 

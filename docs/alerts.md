@@ -56,6 +56,10 @@ Each rule independently configures notification delivery:
 - **In-app** (default: enabled) — Creates `AlertNotification` record, visible via bell icon in header
 - **Email** (optional) — Sends via AWS SES to comma-separated addresses
 
+Email is also used by the **API Key delivery** feature (Tokens page → email action),
+which sends a key's plaintext value to its associated recipients. Both share the same
+SES configuration documented below.
+
 ## Cooldown
 
 Each rule has a `cooldown_hours` setting (default: 24h). After firing, the same rule won't fire again until the cooldown expires. This prevents notification floods when spending stays above threshold.
@@ -139,4 +143,97 @@ async def check_alerts_for_usage(token_id, user_id, db):
 | `KBR_ALERT_SES_SENDER_EMAIL` | SES verified sender (e.g. `noreply@kbp.kolya.fun`) |
 | `KBR_ALERT_SES_REGION` | AWS region for SES (defaults to `AWS_REGION`) |
 
-If `ALERT_SES_SENDER_EMAIL` is not configured, email notifications are silently skipped.
+If `ALERT_SES_SENDER_EMAIL` is not configured, email notifications are silently skipped
+(the backend logs `SES sender not configured, cannot send email` and the API key
+notify endpoint returns `502`).
+
+## Enabling Email Delivery (SES Setup)
+
+All commands below target the backend's region (`us-east-1` in prod). Set
+`export AWS_PROFILE=<admin-profile>` first. Steps 1–3 are one-time per AWS account/region;
+step 4 is per deployment.
+
+### 1. Move SES out of the sandbox (production access)
+
+A fresh SES account is in **sandbox** mode — it can only send to pre-verified
+addresses. Request production access once per region:
+
+```bash
+aws sesv2 put-account-details \
+  --production-access-enabled \
+  --mail-type TRANSACTIONAL \
+  --website-url "https://kbp.kolya.icu" \
+  --contact-language EN \
+  --use-case-description "Internal transactional emails: delivering API keys to colleagues and usage/quota alerts. Internal recipients only, <50 emails/day." \
+  --region us-east-1
+```
+
+Check status (AWS review takes a few hours to ~1 business day):
+
+```bash
+aws sesv2 get-account --region us-east-1 \
+  --query '{ProductionAccessEnabled:ProductionAccessEnabled,SendingEnabled:SendingEnabled,ReviewStatus:Details.ReviewDetails.Status}'
+```
+
+Approved when `ProductionAccessEnabled: true` and `ReviewStatus: GRANTED`.
+
+> Sandbox mode is **not** required for testing — if you only ever send to a verified
+> address (step 2), you can skip production access. It's needed to email arbitrary recipients.
+
+### 2. Verify a sender identity
+
+The `From` address (`KBR_ALERT_SES_SENDER_EMAIL`) must be a verified SES identity,
+even after production access is granted:
+
+```bash
+aws ses verify-email-identity --email-address <sender@example.com> --region us-east-1
+```
+
+This sends a confirmation email — click the link in it. Then confirm:
+
+```bash
+aws sesv2 get-email-identity --email-identity <sender@example.com> --region us-east-1 \
+  --query '{Type:IdentityType,Verified:VerifiedForSendingStatus}'
+```
+
+Ready when `Verified: true`. (Verifying a whole domain instead of a single address is
+also supported via `verify-domain-identity` + DNS records.)
+
+> Corporate domains (e.g. `@amazon.com`) may have mail gateways that quarantine AWS
+> verification emails — check spam, or use an address you control externally.
+
+### 3. Confirm IAM permissions
+
+The backend pod's role (EKS Pod Identity, SA `backend` in namespace `kbp`) needs
+`ses:SendEmail` / `ses:SendRawEmail`. In this project it's already in the
+`*-backend-bedrock` policy. To verify:
+
+```bash
+ASSOC=$(aws eks list-pod-identity-associations --cluster-name <cluster> --region us-east-1 \
+  --query "associations[?serviceAccount=='backend'&&namespace=='kbp'].associationId | [0]" --output text)
+ROLE=$(aws eks describe-pod-identity-association --cluster-name <cluster> --region us-east-1 \
+  --association-id "$ASSOC" --query 'association.roleArn' --output text)
+# inspect the attached policy for ses:SendEmail
+```
+
+### 4. Configure the backend and restart
+
+Add the verified sender to the backend ConfigMap source
+(`k8s/application/backend-configmap.yaml`):
+
+```yaml
+data:
+  KBR_ALERT_SES_SENDER_EMAIL: "<sender@example.com>"
+```
+
+Apply and roll the deployment:
+
+```bash
+kubectl apply -f k8s/application/backend-configmap.yaml
+kubectl rollout restart deploy/backend -n kbp
+kubectl rollout status deploy/backend -n kbp
+# verify the var landed in the new pods
+kubectl exec -n kbp deploy/backend -- printenv KBR_ALERT_SES_SENDER_EMAIL
+```
+
+Email delivery is now live. Trigger an alert or use the Tokens page email action to test.

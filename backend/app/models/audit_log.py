@@ -35,6 +35,7 @@ class AuditAction(enum.Enum):
     # API Token Management
     API_TOKEN_CREATED = "api_token_created"
     API_TOKEN_REVOKED = "api_token_revoked"
+    API_KEY_NOTIFIED = "api_key_notified"  # pragma: allowlist secret  # nosemgrep
 
     # User Management
     USER_CREATED = "user_created"

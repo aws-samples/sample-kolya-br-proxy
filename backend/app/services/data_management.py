@@ -170,6 +170,7 @@ class DataManagementService:
                     else None,
                     "monthly_reset_policy": t.monthly_reset_policy,
                     "allowed_ips": t.allowed_ips or [],
+                    "notify_emails": t.notify_emails or [],
                     "is_active": t.is_active,
                     "token_metadata": t.token_metadata,
                     "allowed_models": model_names,
@@ -418,6 +419,8 @@ class DataManagementService:
                     )
                     if "allowed_ips" in item:
                         existing.allowed_ips = item["allowed_ips"]
+                    if "notify_emails" in item:
+                        existing.notify_emails = item["notify_emails"]
                     if "token_metadata" in item:
                         existing.token_metadata = item["token_metadata"]
                     if "is_active" in item:
@@ -450,6 +453,7 @@ class DataManagementService:
                     if item.get("monthly_quota_usd")
                     else None,
                     allowed_ips=item.get("allowed_ips", []),
+                    notify_emails=item.get("notify_emails", []),
                     token_metadata=item.get("token_metadata"),
                     is_active=item.get("is_active", True),
                 )

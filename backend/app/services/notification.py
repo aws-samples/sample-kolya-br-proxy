@@ -21,27 +21,40 @@ def _get_ses_client():
     return _ses_client
 
 
-def dispatch_alert(message: str, notify_email: str) -> None:
-    """Send alert email. Called via asyncio.to_thread to avoid blocking."""
+def send_email(subject: str, body: str, recipients: list[str]) -> bool:
+    """Send a plain-text email to one or more recipients via SES.
+
+    Returns True if the message was handed to SES, False if skipped (sender
+    not configured / no recipients) or if SES rejected it. Call via
+    asyncio.to_thread to avoid blocking the event loop.
+    """
     settings = get_settings()
     sender = settings.ALERT_SES_SENDER_EMAIL
     if not sender:
-        logger.debug("SES sender not configured, skipping email")
-        return
+        logger.warning("SES sender not configured, cannot send email")
+        return False
 
-    addresses = [e.strip() for e in notify_email.split(",") if e.strip()]
+    addresses = [e.strip() for e in recipients if e and e.strip()]
     if not addresses:
-        return
+        return False
 
     try:
         _get_ses_client().send_email(
             Source=sender,
             Destination={"ToAddresses": addresses},
             Message={
-                "Subject": {"Data": "KBP Alert Notification", "Charset": "UTF-8"},
-                "Body": {"Text": {"Data": message, "Charset": "UTF-8"}},
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {"Text": {"Data": body, "Charset": "UTF-8"}},
             },
         )
-        logger.info("Alert email sent to %s", addresses)
+        logger.info("Email '%s' sent to %s", subject, addresses)
+        return True
     except ClientError:
-        logger.warning("Failed to send alert email to %s", addresses, exc_info=True)
+        logger.warning("Failed to send email to %s", addresses, exc_info=True)
+        return False
+
+
+def dispatch_alert(message: str, notify_email: str) -> None:
+    """Send alert email. Called via asyncio.to_thread to avoid blocking."""
+    addresses = [e.strip() for e in notify_email.split(",") if e.strip()]
+    send_email("KBP Alert Notification", message, addresses)
