@@ -279,6 +279,7 @@
               v-model="createForm.name"
               label="Team Name"
               outlined
+              dense
               rounded
               dark
               :rules="[(val) => !!val || 'Required']"
@@ -288,6 +289,7 @@
               v-model="createForm.monthly_budget_usd"
               label="Monthly Budget (USD)"
               outlined
+              dense
               rounded
               dark
               type="text"
@@ -299,6 +301,7 @@
               :options="policyOptions"
               label="Reset Policy"
               outlined
+              dense
               rounded
               dark
               emit-value
@@ -341,6 +344,7 @@
               v-model="editForm.name"
               label="Team Name"
               outlined
+              dense
               rounded
               dark
               class="q-mb-md"
@@ -349,6 +353,7 @@
               v-model="editForm.monthly_budget_usd"
               label="Monthly Budget (USD)"
               outlined
+              dense
               rounded
               dark
               type="text"
@@ -359,6 +364,7 @@
               :options="policyOptions"
               label="Reset Policy"
               outlined
+              dense
               rounded
               dark
               emit-value
@@ -412,6 +418,7 @@
             v-model="adjustForm.new_amount"
             label="New Allocation (USD)"
             outlined
+            dense
             rounded
             dark
             type="text"
@@ -443,6 +450,7 @@
               :options="memberOptions"
               label="From"
               outlined
+              dense
               rounded
               dark
               emit-value
@@ -457,6 +465,7 @@
               :options="memberOptions"
               label="To"
               outlined
+              dense
               rounded
               dark
               emit-value
@@ -470,6 +479,7 @@
               v-model="transferForm.amount"
               label="Amount (USD)"
               outlined
+              dense
               rounded
               dark
               type="text"
@@ -506,6 +516,7 @@
               v-model="batchForm.names"
               label="Names"
               outlined
+              dense
               rounded
               dark
               type="textarea"
@@ -518,6 +529,7 @@
               :model-value="computedPerMemberAllocation"
               label="Allocation per Member (USD)"
               outlined
+              dense
               rounded
               dark
               readonly
@@ -529,6 +541,7 @@
               :model-value="computedPerMemberDaily"
               label="Daily Limit per Member (USD)"
               outlined
+              dense
               rounded
               dark
               readonly
@@ -540,6 +553,7 @@
               :options="availableModelOptions"
               label="Models (optional)"
               outlined
+              dense
               rounded
               dark
               multiple

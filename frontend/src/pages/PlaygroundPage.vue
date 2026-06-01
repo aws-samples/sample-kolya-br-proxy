@@ -15,6 +15,7 @@
               label="API Key"
               outlined
               rounded
+              dense
               dark
               class="q-mb-lg"
               emit-value
@@ -30,6 +31,7 @@
               label="Model"
               outlined
               rounded
+              dense
               dark
               class="q-mb-lg"
               emit-value
@@ -61,6 +63,7 @@
               label="Temperature"
               outlined
               rounded
+              dense
               dark
               type="number"
               step="0.1"
@@ -75,6 +78,7 @@
               label="Max Tokens"
               outlined
               rounded
+              dense
               dark
               type="number"
               class="q-mb-lg"
@@ -171,6 +175,7 @@
               <q-input
                 v-model="userMessage"
                 outlined
+                dense
                 rounded
                 dark
                 placeholder="Enter message..."

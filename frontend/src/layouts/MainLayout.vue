@@ -460,7 +460,9 @@ onUnmounted(() => {
   color: #e8eaed;
 }
 
-:deep(.q-btn) {
+// Standard (labelled) buttons only. Round/fab icon buttons must keep their
+// square aspect — adding horizontal padding here stretches them into ovals.
+:deep(.q-btn:not(.q-btn--round):not(.q-btn--fab):not(.q-btn--fab-mini)) {
   border-radius: 24px;
   text-transform: none;
   font-weight: 500;

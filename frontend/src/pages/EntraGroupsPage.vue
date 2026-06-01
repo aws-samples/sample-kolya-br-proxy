@@ -57,6 +57,7 @@
             v-model="form.entra_group_id"
             label="Entra Group ID"
             outlined
+            dense
             dark
             class="q-mb-md"
             hint="Azure AD security group object ID"
@@ -66,6 +67,7 @@
             v-model="form.group_name"
             label="Group Name"
             outlined
+            dense
             dark
             class="q-mb-md"
             hint="Display name for this group"
@@ -75,6 +77,7 @@
             :options="roleOptions"
             label="Role"
             outlined
+            dense
             dark
             class="q-mb-md"
           />
@@ -83,6 +86,7 @@
             label="Priority"
             type="number"
             outlined
+            dense
             dark
             class="q-mb-md"
             hint="Higher priority wins when user is in multiple groups"

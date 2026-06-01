@@ -25,6 +25,9 @@ __pycache__
 .pytest_cache
 .mypy_cache
 .ruff_cache
+.venv
+venv/
+*.egg-info
 
 # Node
 node_modules
@@ -35,6 +38,15 @@ iac-*/
 k8s/
 .github/
 docs/
+
+# Large subtrees the backend image doesn't need (it only COPYs backend/ + deps).
+# Frontend builds use frontend/ as their own context, so excluding it here
+# only affects the root-context backend build.
+frontend/
+kolya-br-proxy-arch/
+benchmark/
+assets/
+graphify-out/
 
 # Other
 .claude/

@@ -13,6 +13,7 @@
                 v-model="user.email"
                 label="Email"
                 outlined
+                dense
                 readonly
                 class="q-mb-md"
               />
@@ -21,6 +22,7 @@
                 v-model="user.first_name"
                 label="First Name"
                 outlined
+                dense
                 class="q-mb-md"
               />
 
@@ -28,6 +30,7 @@
                 v-model="user.last_name"
                 label="Last Name"
                 outlined
+                dense
                 class="q-mb-md"
               />
 

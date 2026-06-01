@@ -223,6 +223,7 @@
             v-model.number="rechargeAmount"
             label="Recharge Amount (USD)"
             outlined
+            dense
             rounded
             dark
             type="text"
@@ -261,6 +262,7 @@
               v-model="newToken.name"
               label="Key Name"
               outlined
+              dense
               rounded
               dark
               :rules="[(val) => !!val || 'Please enter name']"
@@ -271,6 +273,7 @@
               v-model="newToken.description"
               label="Description (optional)"
               outlined
+              dense
               rounded
               dark
               class="q-mb-md"
@@ -280,6 +283,7 @@
               v-model.number="newToken.quota_usd"
               label="Quota (USD)"
               outlined
+              dense
               rounded
               dark
               type="text"
@@ -291,6 +295,7 @@
               v-model="newToken.expires_at"
               label="Expiration Time"
               outlined
+              dense
               rounded
               dark
               hint="Leave empty for never expires"
@@ -365,6 +370,7 @@
           <q-input
             v-model="displayKey"
             outlined
+            dense
             rounded
             readonly
             type="textarea"
@@ -449,6 +455,7 @@
               v-model="batchForm.names"
               label="Names"
               outlined
+              dense
               rounded
               dark
               type="textarea"
@@ -462,6 +469,7 @@
               v-model.number="batchForm.quota_usd"
               label="Quota per Key (USD)"
               outlined
+              dense
               rounded
               dark
               type="text"
@@ -473,6 +481,7 @@
               v-model="batchForm.expires_at"
               label="Expiration Time"
               outlined
+              dense
               rounded
               dark
               hint="Leave empty for never expires"
@@ -500,6 +509,7 @@
               :options="availableModelOptions"
               label="Models (optional)"
               outlined
+              dense
               rounded
               dark
               multiple
@@ -1380,15 +1390,21 @@ onMounted(async () => {
   color: #9aa0a6;
 }
 
-// Compact, perfectly-circular action buttons (override any pill/min-width styling)
+// Tight spacing between the round action buttons
 .action-btns {
-  gap: 2px;
+  gap: 4px;
 
   .q-btn {
-    min-width: 0;
-    min-height: 0;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    padding: 0;
     border-radius: 50%;
-    aspect-ratio: 1;
+
+    .q-icon {
+      font-size: 16px;
+    }
   }
 }
 </style>
