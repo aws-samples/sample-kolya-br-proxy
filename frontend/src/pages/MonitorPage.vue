@@ -26,6 +26,22 @@
                 </span>
               </div>
             </template>
+            <template v-slot:before-options>
+              <q-item v-if="tokenOptions.length > 0" clickable @click.stop="toggleSelectAllTokens">
+                <q-item-section side>
+                  <q-checkbox
+                    :model-value="allTokensSelected"
+                    dense
+                    dark
+                    @click.stop="toggleSelectAllTokens"
+                  />
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label class="text-weight-medium">Select All</q-item-label>
+                </q-item-section>
+              </q-item>
+              <q-separator dark />
+            </template>
             <template v-slot:option="scope">
               <q-item v-bind="scope.itemProps">
                 <q-item-section side>
@@ -773,6 +789,18 @@ const toggleToken = (tokenId: string) => {
   } else {
     monitorStore.selectedTokenIds.push(tokenId);
   }
+};
+
+const allTokensSelected = computed(
+  () =>
+    tokenOptions.value.length > 0 &&
+    monitorStore.selectedTokenIds.length === tokenOptions.value.length,
+);
+
+const toggleSelectAllTokens = () => {
+  monitorStore.selectedTokenIds = allTokensSelected.value
+    ? []
+    : tokenOptions.value.map((opt) => opt.value);
 };
 
 function applyDatePreset(preset: string) {
