@@ -1,13 +1,16 @@
 # 请求转换管线
 
-Kolya BR Proxy 如何将请求转换为上游 LLM API 调用，以及如何将响应转换回来。代理支持两种客户端 API 格式：
+Kolya BR Proxy 如何将请求转换为上游 LLM API 调用，以及如何将响应转换回来。代理支持三种客户端 API 格式：
 
-- **OpenAI 兼容**（`POST /v1/chat/completions`）-- 路由到 AWS Bedrock（非 Gemini）或 Google Gemini（模型以 `gemini-` 开头）
-- **Anthropic Messages API**（`POST /v1/messages`）-- 近乎直通 Bedrock InvokeModel
+- **OpenAI 兼容**（`POST /v1/chat/completions`）-- 路由到 AWS Bedrock（默认）、Google Gemini（模型以 `gemini-` 开头）或 AWS mantle / OpenAI Responses API（模型为 `openai.gpt-5.5` / `openai.gpt-5.4`）
+- **Anthropic Messages API**（`POST /v1/messages`）-- 近乎直通 Bedrock InvokeModel；mantle 模型（`openai.gpt-5.5` / `openai.gpt-5.4`）改为路由到 Responses API
+- **OpenAI Responses API**（`POST /v1/responses`）-- 仅服务 OpenAI GPT-5.5/5.4，原生直通 AWS mantle，零协议转换
 
 Bedrock 端：Anthropic 模型使用 InvokeModel API（原生 Messages API 格式），非 Anthropic 模型（Nova、DeepSeek、Mistral、Llama 等）使用 Converse API。
 
 Gemini 端：`GeminiClient` 使用原生 `generateContent` / `streamGenerateContent` API；OpenAI ↔ Gemini 的格式转换完全在 Client 层完成。
+
+mantle 端（OpenAI GPT-5.5/5.4）：`MantleClient` 对接由 AWS "mantle" 推理引擎服务的 OpenAI Responses API。通过 `is_openai_mantle_model(model)` 精确匹配模型 id 激活。与 Gemini 一样，所有转换都在 client 内完成，`chat.py` 始终看到 OpenAI 格式 dict；原生 `/v1/responses` 端点则完全绕过转换。
 
 ---
 
@@ -26,6 +29,7 @@ Gemini 端：`GeminiClient` 使用原生 `generateContent` / `streamGenerateCont
 11. [自动修正](#11-自动修正)
 12. [不支持的参数](#12-不支持的参数)
 13. [Google Gemini 原生 API 路径](#13-google-gemini-原生-api-路径)
+14. [OpenAI mantle（Responses API）路径](#14-openai-mantleresponses-api路径)
 
 ---
 
@@ -753,16 +757,134 @@ sequenceDiagram
 
 ---
 
+## 14. OpenAI mantle（Responses API）路径
+
+**文件**：`backend/app/services/mantle_client.py`
+
+OpenAI **GPT-5.5**（`openai.gpt-5.5`，仅 us-east-2）与 **GPT-5.4**（`openai.gpt-5.4`，us-east-2 + us-west-2）由 AWS "mantle" 推理引擎通过 **OpenAI Responses API** 服务，而非 boto3 `converse` / `invoke_model` 路径。当 `is_openai_mantle_model(model)` 返回 `True` 时激活——这是对模型 id 的精确匹配（若用 `openai.` 前缀匹配会错误地捕获走标准 Bedrock Converse 路径的开源权重 `openai.gpt-oss-*` 模型）。mantle 的区域注册表与路由逻辑位于 `mantle_models.py`；鉴权使用 SigV4，复用现有 AWS 凭证链（取自 `BedrockClient`），因此不引入新的 bearer token。
+
+与 Gemini 一样，所有格式转换均在 `MantleClient` 内部完成；`chat.py` 始终收到 OpenAI 格式的 dict，与处理 Bedrock 响应完全对称。
+
+### 14.1 数据流
+
+```mermaid
+sequenceDiagram
+    participant Chat as chat.py
+    participant MC as MantleClient
+    participant Mantle as AWS mantle (Responses API)
+
+    Chat->>MC: invoke(payload) / invoke_stream(payload)
+    Note over MC: payload 是原始 OpenAI dict<br/>（model, messages, max_tokens, tools…）
+
+    MC->>MC: _openai_to_responses(payload)
+    Note over MC: messages → input（system/developer → role developer）<br/>max_tokens → max_output_tokens<br/>tools → 扁平化的 function spec<br/>response_format → text.format<br/>reasoning.effort ← bedrock_additional_model_request_fields
+
+    MC->>MC: SigV4 签名（复用 AWS 凭证）
+
+    alt 非流式
+        MC->>Mantle: POST /openai/v1/responses
+        Mantle-->>MC: Responses 响应（JSON）
+        MC->>MC: _responses_to_openai()
+        MC-->>Chat: OpenAI ChatCompletionResponse dict
+    else 流式
+        MC->>Mantle: POST /openai/v1/responses（stream:true）
+        loop 每个具名 SSE 事件
+            Mantle-->>MC: event: response.output_text.delta<br/>data: {…}
+            MC->>MC: 转换为 chat.completion.chunk
+            MC-->>Chat: "data: {chat.completion.chunk}\n\n"
+        end
+        MC-->>Chat: "data: [DONE]\n\n"
+    end
+```
+
+### 14.2 请求转换（`_openai_to_responses`）
+
+OpenAI ChatCompletions → OpenAI Responses 请求体。
+
+| OpenAI 字段 | Responses 字段 | 说明 |
+|---|---|---|
+| `messages[role=system]` | `input[{role:"developer", content}]` | system / developer 消息映射为 role `developer` |
+| `messages[role=user]` | `input[{role:"user", content}]` | 文本 part → `input_text`；多模态保留 |
+| `messages[role=assistant]` | `input[{role:"assistant", content}]` | 文本 part → `output_text`；`tool_calls` → `function_call` item |
+| `messages[role=tool]` | `input[{type:"function_call_output", call_id, output}]` | 以 `tool_call_id` 关联 |
+| `content: [{type:"image_url", image_url:{url:"data:…"}}]` | `content[{type:"input_image", image_url}]` | data URL（或普通 URL）直接放在 `input_image` |
+| `max_tokens` | `max_output_tokens` | |
+| `temperature` | `temperature` | |
+| `top_p` | `top_p` | |
+| `tools[].function` | `tools[{type:"function", name, description, parameters}]` | function spec 扁平化到 tool 顶层 |
+| `tool_choice: "none"/"auto"/"required"` | `tool_choice` | 原样透传 |
+| `tool_choice: {type:"function", function:{name}}` | `tool_choice: {type:"function", name}` | 扁平化 |
+| `response_format: {type:"text"\|"json_object"}` | `text.format: {type}` | 透传 |
+| `response_format: {type:"json_schema", json_schema:{name, schema, strict, description}}` | `text.format: {type:"json_schema", name, schema, strict, description}` | 从嵌套的 `json_schema` 扁平化到顶层 |
+| `bedrock_additional_model_request_fields.reasoning.effort` | `reasoning: {effort}` | 复用现有 Bedrock 透传通道（无需新增 schema 字段）。mantle 支持 `none`/`low`/`medium`/`high`/`xhigh`；**不支持** `minimal` |
+| `frequency_penalty`、`presence_penalty`、`n`、`logprobs`、`user`、其他 `bedrock_*` | **静默忽略** | 不传给 mantle；无需在调用方过滤 |
+
+### 14.3 响应转换（`_responses_to_openai`）
+
+OpenAI Responses → OpenAI ChatCompletions。
+
+| Responses 字段 | OpenAI 字段 | 说明 |
+|---|---|---|
+| `output[type=message].content[output_text]` | `choices[0].message.content` | 多个 text part 拼接 |
+| `output[type=function_call]` | `choices[0].message.tool_calls[]` | `arguments` 原样携带；缺失 `call_id` 时合成 |
+| `output[type=reasoning]` | **跳过** | 内部推理 item 不转发 |
+| `status: "incomplete"` | `finish_reason: length` | 否则为 `stop`；有工具调用时覆盖为 `tool_calls` |
+| `usage.input_tokens` | `usage.prompt_tokens` | |
+| `usage.output_tokens` | `usage.completion_tokens` | |
+| `usage.total_tokens` | `usage.total_tokens` | 缺失时回退为 prompt + completion |
+| `usage.input_tokens_details.cached_tokens` | `usage.prompt_tokens_details.cached_tokens` | 仅 > 0 时设置 |
+
+### 14.4 流式转换（`invoke_stream`）
+
+与 Gemini 每行一段 JSON 的流不同，Responses API 发出**具名 SSE 事件**（`event: <name>` + `data: {…}`）。`invoke_stream` 解析这些事件并转换为 OpenAI `chat.completion.chunk` SSE 行：
+
+| Responses 事件 | OpenAI chunk delta |
+|---|---|
+| `response.output_text.delta` | `{content: <delta>}` |
+| `response.output_item.added`（function_call）| `{tool_calls:[{index, id, type:"function", function:{name, arguments:""}}]}`——开启一个工具调用 |
+| `response.function_call_arguments.delta` | `{tool_calls:[{index, function:{arguments:<delta>}}]}` |
+| `response.completed` / `response.incomplete` | 空 delta + `finish_reason`（`tool_calls` / `length` / `stop`）+ 用于计费的 `usage` |
+| `response.failed` / `error` | 空 delta + `finish_reason: stop`（记录错误日志）|
+
+终止 chunk 携带 `"usage"`，供 `stream_mantle_completion` 提取计费（`extract_cached_tokens_from_chunk`）。流以 `data: [DONE]` 结束。
+
+### 14.5 缓存 token 计费
+
+`chat.py` 在 OpenAI 格式的响应/chunk 上调用 `extract_cached_tokens()` / `extract_cached_tokens_from_chunk()`（定义于 `mantle_client.py`）。它们读取 `usage.prompt_tokens_details.cached_tokens`，该值由 `_build_usage()` 从 Responses 的 `input_tokens_details.cached_tokens` 设置。缓存 token 会从 prompt token 中扣除，避免缓存输入按完整输入价格计费。
+
+### 14.6 三条访问路径
+
+mantle 模型可通过三个端点访问，转换损耗依次递减：
+
+| 端点 | 转换 | 损耗 |
+|---|---|---|
+| `/v1/chat/completions` | OpenAI ChatCompletions ↔ Responses（`invoke` / `invoke_stream`）| 有损——仅上表映射的字段会保留 |
+| `/v1/messages` | Anthropic ↔ Responses | 有损——Anthropic `system` + `messages` 先扁平化为 OpenAI 风格 messages（`_anthropic_to_openai_messages`），再走 `MantleClient.invoke`；仅转发文本内容和 `temperature` / `max_tokens` |
+| `/v1/responses` | **无**——原生直通（`responses_passthrough` / `responses_passthrough_stream`）| 无损——body 原样转发、SSE 原样回传；只嗅探 `response.completed` / `response.incomplete` 事件中的 usage 计费 |
+
+`/v1/responses` 路径（`backend/app/api/v1/endpoints/responses.py`）是唯一能拿到 mantle 全量能力的路径，未来 AWS 一旦启用新功能即可透明可用——无需改代码。请求 body 以开放 JSON 对象接收，未知/新增的 Responses 字段直接透传。该端点对非 mantle 模型返回 HTTP 400。
+
+### 14.7 mantle 能力边界
+
+mantle 支持：文本 + vision 输入、function calling、custom tools、tool_search、namespace、MCP、reasoning effort、structured output。**不支持**：`image_generation`、`web_search`、`code_interpreter`、`file_search`、`computer_use_preview`。
+
+由于 ChatCompletions（`/v1/chat/completions`）和 Anthropic（`/v1/messages`）路径会转换到/自一个更窄的协议，任何不在 §14.2 映射表内的 Responses 专属功能（built-in tools、custom tools、MCP、多模态输出等）在这两条路径上都会被丢弃。需使用 `/v1/responses` 才能访问它们。
+
+---
+
 ## 文件参考
 
 | 文件 | 在转换中的角色 |
 |---|---|
-| `api/v1/endpoints/chat.py` | OpenAI 入口点；路由到 Bedrock 或 Gemini；编排流式/非流式流程 |
-| `api/anthropic/endpoints/messages.py` | Anthropic 入口点；`x-api-key` 认证；Anthropic SSE 流式输出 |
+| `api/v1/endpoints/chat.py` | OpenAI 入口点；路由到 Bedrock、Gemini 或 mantle；编排流式/非流式流程 |
+| `api/v1/endpoints/responses.py` | OpenAI Responses API 入口点（`/v1/responses`）；mantle 原生直通，仅嗅探 usage 计费 |
+| `api/anthropic/endpoints/messages.py` | Anthropic 入口点；`x-api-key` 认证；Anthropic SSE 流式输出；将 mantle 模型路由到 Responses API |
 | `services/translator.py` | `RequestTranslator`：OpenAI → BedrockRequest；`ResponseTranslator`：BedrockResponse → OpenAI |
 | `services/anthropic_translator.py` | `AnthropicRequestTranslator`：Anthropic → BedrockRequest；`AnthropicResponseTranslator`：BedrockResponse → Anthropic |
 | `services/bedrock.py` | `_build_anthropic_body()`：BedrockRequest → Anthropic JSON（Anthropic 模型）；`_build_converse_params()`：BedrockRequest → Converse API 参数（非 Anthropic）；`_anthropic_event_to_bedrock()` / `_converse_stream_event_to_bedrock()`：流式事件映射 |
 | `services/gemini_client.py` | `GeminiClient`：`invoke()` / `invoke_stream()` 含完整 OpenAI ↔ Gemini 原生格式转换；`extract_cached_tokens()` 计费辅助函数 |
+| `services/mantle_client.py` | `MantleClient`：`invoke()` / `invoke_stream()` 含 OpenAI ↔ Responses 转换；`responses_passthrough()` / `responses_passthrough_stream()` 原生直通；SigV4 签名；`extract_cached_tokens()` 辅助函数 |
+| `services/mantle_models.py` | mantle 模型注册表：`is_openai_mantle_model()`、`resolve_mantle_region()`、区域映射、base URL |
 | `schemas/openai.py` | OpenAI 请求/响应 Pydantic 模型 |
 | `schemas/anthropic.py` | Anthropic Messages API 请求/响应/流式 Pydantic 模型 |
 | `schemas/bedrock.py` | 内部 Bedrock Pydantic 模型（BedrockRequest、BedrockResponse、BedrockStreamEvent） |

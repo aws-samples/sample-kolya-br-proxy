@@ -5,7 +5,7 @@
 <h1 align="center">Kolya BR Proxy</h1>
 
 <p align="center">
-  <strong>AI Gateway providing OpenAI & Anthropic compatible APIs backed by AWS Bedrock and Google Gemini</strong>
+  <strong>AI Gateway providing OpenAI & Anthropic compatible APIs backed by AWS Bedrock, Google Gemini, and OpenAI GPT-5.5 / 5.4 (via AWS mantle)</strong>
 </p>
 
 <p align="center">
@@ -21,6 +21,7 @@
   <img src="https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue 3" />
   <img src="https://img.shields.io/badge/AWS_Bedrock-FF9900?logo=amazonaws&logoColor=white" alt="AWS Bedrock" />
   <img src="https://img.shields.io/badge/Google_Gemini-4285F4?logo=google&logoColor=white" alt="Google Gemini" />
+  <img src="https://img.shields.io/badge/OpenAI_GPT--5.5-412991?logo=openai&logoColor=white" alt="OpenAI GPT-5.5" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
 </p>
 
@@ -31,7 +32,7 @@
 | | |
 |---|---|
 | **Dual API, one key** | Both OpenAI (`/v1/chat/completions`) and Anthropic (`/v1/messages`) endpoints. Same `sk-ant-api03_` key works everywhere — Cursor, Cline, Claude Code, OpenAI SDK. |
-| **Multi-cloud LLM routing** | AWS Bedrock (Claude, Nova, DeepSeek, Mistral, Llama, 19+ providers) + Google Gemini (native `generateContent` API). One proxy, all models. |
+| **Multi-cloud LLM routing** | AWS Bedrock (Claude, Nova, DeepSeek, Mistral, Llama, 19+ providers) + Google Gemini (native `generateContent` API) + OpenAI GPT-5.5 / 5.4 (native Responses API via AWS mantle). One proxy, all models. |
 | **Up to 90% cost savings** | Prompt caching reads at 0.1x price. Agent loops save ~60% after just 2 requests. |
 | **Enterprise security** | 3-layer CSRF, AWS WAF, SHA256 + AES-128 token protection, OAuth SSO (Cognito / Entra ID). |
 | **Production-ready** | Distributed Redis rate limiting, HPA autoscaling (1-10 Pods), streaming heartbeat, Karpenter node scaling. |
@@ -65,6 +66,7 @@ graph LR
     Backend -->|InvokeModel - Claude| Bedrock["AWS Bedrock"]
     Backend -->|Converse API - Nova / DeepSeek / Llama| Bedrock
     Backend -->|generateContent native API| Gemini["Google Gemini"]
+    Backend -->|Responses API + SigV4| Mantle["AWS mantle (OpenAI GPT-5.5 / 5.4)"]
     Backend -->|asyncpg| DB[(PostgreSQL)]
     Backend -.->|Cache + Rate Limit| Redis[(Redis)]
     subgraph AWS EKS
@@ -79,9 +81,10 @@ graph LR
 |----------|------|--------|---------|
 | `POST /v1/chat/completions` | `Authorization: Bearer` | OpenAI | Cursor, Cline, OpenAI SDK |
 | `POST /v1/messages` | `x-api-key` | Anthropic Messages | Claude Code, Anthropic SDK |
+| `POST /v1/responses` | Both | OpenAI Responses | OpenAI SDK (native passthrough) |
 | `GET /v1/models` | Both | OpenAI | All clients |
 
-Model routing is automatic — `gemini-*` models go to Google Gemini via the native `generateContent` API; all other models go to AWS Bedrock. Both routes share the same token validation, quota tracking, and usage recording pipeline.
+Model routing is automatic — `gemini-*` models go to Google Gemini via the native `generateContent` API; `openai.gpt-5.5` / `openai.gpt-5.4` go to AWS mantle's native OpenAI Responses API (SigV4 over the existing AWS credential chain, no new secret); all other models go to AWS Bedrock. All routes share the same token validation, quota tracking, and usage recording pipeline.
 
 ---
 
@@ -211,11 +214,12 @@ print(message.content[0].text)
 - **Anthropic Claude** via native InvokeModel API (thinking, effort, prompt caching)
 - **Amazon Nova, DeepSeek, Mistral, Llama** via Converse API
 - **Google Gemini** via native `generateContent` / `streamGenerateContent` API (image generation 🍌, tool calling, implicit caching)
+- **OpenAI GPT-5.5 / 5.4** via AWS mantle native Responses API — reachable through `/v1/chat/completions` (ChatCompletions↔Responses), `/v1/messages` (Anthropic↔Responses), or `/v1/responses` (zero-conversion passthrough)
 - 19+ providers through unified translation layer
 
 ### Cost Optimization
 - **Prompt caching** — 90% discount on reads, auto-injection of cache breakpoints (up to 4 per request)
-- **Per-token billing** — Dynamic pricing from AWS API (181+ regional pricing records) + Gemini 3-tier pricing (Google official page → LiteLLM JSON → static legacy table)
+- **Per-token billing** — Dynamic pricing from AWS API (181+ regional pricing records) + Gemini 3-tier pricing (Google official page → LiteLLM JSON → static legacy table) + per-region OpenAI mantle pricing scraped from the AWS pricing page
 - **Real-time tracking** — Background async usage recording with per-token quota limits
 
 ### Security
@@ -242,7 +246,7 @@ print(message.content[0].text)
 | **Database** | PostgreSQL (Aurora in prod), asyncpg |
 | **Cache** | Redis (rate limiting, token caching) |
 | **Auth** | JWT, AWS Cognito, Microsoft OAuth |
-| **Cloud** | AWS Bedrock, EKS, ECR, WAF, Secrets Manager, Google Gemini API |
+| **Cloud** | AWS Bedrock, AWS mantle (OpenAI GPT-5.5 / 5.4), EKS, ECR, WAF, Secrets Manager, Google Gemini API |
 | **IaC** | Terraform, Karpenter, External Secrets Operator |
 
 ---

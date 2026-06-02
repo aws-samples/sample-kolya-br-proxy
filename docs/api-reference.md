@@ -6,6 +6,7 @@ Kolya BR Proxy exposes four API groups:
 |-------|--------|------|---------|
 | Gateway API (OpenAI) | `/v1` | `Authorization: Bearer` | OpenAI-compatible chat completions |
 | Gateway API (Anthropic) | `/v1` | `x-api-key` header | Anthropic Messages API compatible |
+| Gateway API (Responses) | `/v1` | `Authorization: Bearer` | Native OpenAI Responses API passthrough (mantle / GPT-5.5 / GPT-5.4) |
 | Admin API | `/admin` | Bearer JWT | User management, tokens, usage, audit |
 | Health API | `/health` | None | Load balancer probes |
 
@@ -438,6 +439,126 @@ List models the current token has access to. Returns OpenAI-compatible model lis
 }
 ```
 
+> **Dynamically listed models**: In addition to Bedrock models, both **Gemini models** (when `GEMINI_API_KEY` is configured) and **OpenAI GPT-5.5 / GPT-5.4** (served by AWS's "mantle" inference engine, `provider: openai-mantle`) appear dynamically. The mantle models are injected from a static registry because they are not discoverable via the Bedrock `list-foundation-models` / `list-inference-profiles` APIs.
+
+---
+
+## 1c. Gateway API (OpenAI Responses API — mantle passthrough)
+
+OpenAI **GPT-5.5** (`openai.gpt-5.5`) and **GPT-5.4** (`openai.gpt-5.4`) are served by AWS's "mantle" inference engine through the native **OpenAI Responses API** (`provider: openai-mantle`). These models can be reached three ways:
+
+| Path | Mode |
+|------|------|
+| `POST /v1/chat/completions` | OpenAI Chat Completions, translated to/from the Responses format |
+| `POST /v1/messages` | Anthropic Messages, translated to/from the Responses format |
+| `POST /v1/responses` | **Native Responses passthrough** — full mantle capability surface, no lossy conversion |
+
+The chat/messages paths translate to/from the Responses format and therefore flatten Responses-only features (built-in tools, multimodal output, etc.). The `/v1/responses` endpoint forwards a native Responses request body verbatim and returns the native response, so clients that speak the Responses API get the full mantle feature surface.
+
+### POST /v1/responses
+
+Create a model response using the native OpenAI Responses API. This endpoint is **mantle-only**: it accepts only GPT-5.5 / GPT-5.4 (validated via `is_openai_mantle_model`). Any other model returns **400** with a message like `Model '...' is not available on the Responses API`.
+
+Requires the same `Authorization: Bearer kbr_<token>` auth, token quota enforcement, and per-token model access checks as the other gateway endpoints.
+
+**Request body**: an **open JSON object** — forwarded to mantle verbatim. Unknown/new Responses fields pass straight through (no strict schema). Common native Responses fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | string | *required* -- must be a mantle model (`openai.gpt-5.5` or `openai.gpt-5.4`) |
+| `input` | array | Input items; each has a `role` and a `content` array of parts (`input_text`, `output_text`, `input_image`) |
+| `stream` | boolean | Enable native Responses SSE streaming (default `false`) |
+| `max_output_tokens` | integer | Maximum output tokens to generate |
+| `temperature` | float | Sampling temperature |
+| `reasoning` | object | Optional reasoning config, e.g. `{"effort": "medium"}` |
+| `tools` | array | Optional tool definitions |
+| `text` | object | Optional output config, e.g. `{"format": {...}}` for structured output |
+
+**Billing**: derived from the response `usage` object. `usage.input_tokens` (which includes cached tokens) and `usage.output_tokens` are reported by mantle; `usage.input_tokens_details.cached_tokens` is billed separately. The proxy bills `(input_tokens - cached_tokens)` as prompt, `output_tokens` as completion, and `cached_tokens` at the cache-read rate.
+
+#### Non-streaming example
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer kbr_your_token_here" \
+  -d '{
+    "model": "openai.gpt-5.5",
+    "input": [
+      {
+        "role": "user",
+        "content": [{"type": "input_text", "text": "Hello!"}]
+      }
+    ],
+    "max_output_tokens": 256
+  }'
+```
+
+**Response** (native Responses JSON, returned unchanged):
+
+```json
+{
+  "id": "resp_abc123...",
+  "object": "response",
+  "model": "openai.gpt-5.5",
+  "status": "completed",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {"type": "output_text", "text": "Hello! How can I help you?"}
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 8,
+    "input_tokens_details": {"cached_tokens": 0}
+  }
+}
+```
+
+#### Streaming example
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer kbr_your_token_here" \
+  -d '{
+    "model": "openai.gpt-5.5",
+    "input": [
+      {"role": "user", "content": [{"type": "input_text", "text": "Hello!"}]}
+    ],
+    "stream": true
+  }'
+```
+
+**Streaming response** (SSE `text/event-stream`, native Responses named events, passed through unchanged):
+
+```
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Hello"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"!"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_...","status":"completed","output":[...],"usage":{"input_tokens":10,"output_tokens":8,"input_tokens_details":{"cached_tokens":0}}}}
+```
+
+The proxy passes mantle's SSE bytes through verbatim and reads the `usage` object from the `response.completed` / `response.incomplete` event for billing. Heartbeat comments (`: heartbeat`) are sent to keep idle connections alive.
+
+#### Error responses
+
+Same status codes as `/v1/chat/completions`. Additionally, **400** is returned when the requested model is not a mantle model:
+
+```json
+{
+  "detail": "Model 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' is not available on the Responses API. This endpoint serves OpenAI GPT-5.5/5.4 (mantle) only; use /v1/chat/completions for other models."
+}
+```
+
 ---
 
 ## 2. Admin API
@@ -733,6 +854,7 @@ The list includes:
 - **Inference profiles** available in the deployment region (e.g. `us.anthropic.claude-sonnet-4-6`, `global.anthropic.claude-sonnet-4-5-20250929-v1:0`)
 - **Foundation models** available only in the fallback region (e.g. `zai.glm-5`, `deepseek.v3.2`) — marked with `is_fallback: true`
 - **Gemini models** (if `GEMINI_API_KEY` is configured) — appended dynamically
+- **OpenAI GPT-5.5 / GPT-5.4** (`provider: openai-mantle`) — appended dynamically from a static registry, since they are served by AWS's "mantle" inference engine and are not discoverable via the Bedrock `list-foundation-models` / `list-inference-profiles` APIs (`openai.gpt-5.5` is available in `us-east-2`; `openai.gpt-5.4` in `us-east-2` and `us-west-2`)
 
 Only models actually callable from the deployment region are shown. For example, if deployed in `us-west-1` where `global.anthropic.claude-sonnet-4-20250514-v1:0` is not available, it will not appear in the list.
 

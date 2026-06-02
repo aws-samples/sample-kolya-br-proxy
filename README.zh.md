@@ -5,7 +5,7 @@
 <h1 align="center">Kolya BR Proxy</h1>
 
 <p align="center">
-  <strong>AI 网关 — 提供兼容 OpenAI 和 Anthropic 的 API，后端接入 AWS Bedrock 和 Google Gemini</strong>
+  <strong>AI 网关 — 提供兼容 OpenAI 和 Anthropic 的 API，后端接入 AWS Bedrock、Google Gemini 以及 OpenAI GPT-5.5 / 5.4（经 AWS mantle）</strong>
 </p>
 
 <p align="center">
@@ -21,6 +21,7 @@
   <img src="https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue 3" />
   <img src="https://img.shields.io/badge/AWS_Bedrock-FF9900?logo=amazonaws&logoColor=white" alt="AWS Bedrock" />
   <img src="https://img.shields.io/badge/Google_Gemini-4285F4?logo=google&logoColor=white" alt="Google Gemini" />
+  <img src="https://img.shields.io/badge/OpenAI_GPT--5.5-412991?logo=openai&logoColor=white" alt="OpenAI GPT-5.5" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License" />
 </p>
 
@@ -31,7 +32,7 @@
 | | |
 |---|---|
 | **双 API，一个 Key** | 同时支持 OpenAI (`/v1/chat/completions`) 和 Anthropic (`/v1/messages`) 端点。同一个 `sk-ant-api03_` 格式的 Key 可用于 Cursor、Cline、Claude Code、OpenAI SDK。 |
-| **多云 LLM 路由** | AWS Bedrock（Claude、Nova、DeepSeek、Mistral、Llama，19+ 厂商）+ Google Gemini（原生 `generateContent` API）。一个代理，所有模型。 |
+| **多云 LLM 路由** | AWS Bedrock（Claude、Nova、DeepSeek、Mistral、Llama，19+ 厂商）+ Google Gemini（原生 `generateContent` API）+ OpenAI GPT-5.5 / 5.4（经 AWS mantle 的原生 Responses API）。一个代理，所有模型。 |
 | **最高 90% 成本节省** | Prompt Cache 读取按 0.1 倍计费；Agent 循环仅 2 次请求即可回本，10+ 轮节省约 60%。 |
 | **企业级安全** | 三层 CSRF 防御、AWS WAF、SHA256 + AES-128 Token 双重保护、OAuth SSO（Cognito / Entra ID）。 |
 | **生产就绪** | 分布式 Redis 限流、HPA 自动扩缩（1-10 Pods）、流式心跳、Karpenter 节点伸缩。 |
@@ -65,6 +66,7 @@ graph LR
     Backend -->|InvokeModel - Claude| Bedrock["AWS Bedrock"]
     Backend -->|Converse API - Nova / DeepSeek / Llama| Bedrock
     Backend -->|原生 generateContent API| Gemini["Google Gemini"]
+    Backend -->|Responses API + SigV4| Mantle["AWS mantle (OpenAI GPT-5.5 / 5.4)"]
     Backend -->|asyncpg| DB[(PostgreSQL)]
     Backend -.->|缓存 + 限流| Redis[(Redis)]
     subgraph AWS EKS
@@ -79,9 +81,10 @@ graph LR
 |------|---------|------|--------|
 | `POST /v1/chat/completions` | `Authorization: Bearer` | OpenAI | Cursor, Cline, OpenAI SDK |
 | `POST /v1/messages` | `x-api-key` | Anthropic Messages | Claude Code, Anthropic SDK |
+| `POST /v1/responses` | 两种均可 | OpenAI Responses | OpenAI SDK（原生透传） |
 | `GET /v1/models` | 两种均可 | OpenAI | 所有客户端 |
 
-模型路由自动完成 — `gemini-*` 模型通过原生 `generateContent` API 路由到 Google Gemini；其他模型路由到 AWS Bedrock。两条路由共享同一套 Token 验证、配额追踪和使用量记录管线。
+模型路由自动完成 — `gemini-*` 模型通过原生 `generateContent` API 路由到 Google Gemini；`openai.gpt-5.5` / `openai.gpt-5.4` 路由到 AWS mantle 的原生 OpenAI Responses API（SigV4 复用现有 AWS 凭证链，无需新增 secret）；其他模型路由到 AWS Bedrock。所有路由共享同一套 Token 验证、配额追踪和使用量记录管线。
 
 ---
 
@@ -211,11 +214,12 @@ print(message.content[0].text)
 - **Anthropic Claude** 使用原生 InvokeModel API（thinking、effort、prompt caching）
 - **Amazon Nova、DeepSeek、Mistral、Llama** 通过 Converse API
 - **Google Gemini** 通过原生 `generateContent` / `streamGenerateContent` API（图片生成 🍌、工具调用、隐式缓存）
+- **OpenAI GPT-5.5 / 5.4** 经 AWS mantle 原生 Responses API — 可通过 `/v1/chat/completions`（ChatCompletions↔Responses）、`/v1/messages`（Anthropic↔Responses）或 `/v1/responses`（零转换透传）三条路径调用
 - 统一转换层支持 19+ 家厂商
 
 ### 成本优化
 - **Prompt Cache** — 读取 90% 折扣，自动注入缓存断点（每请求最多 4 个）
-- **按模型按 Token 计费** — AWS 动态定价（181+ 个地区价格记录）+ Gemini 三级价格策略（Google 官方页面 → LiteLLM JSON → 静态历史表）
+- **按模型按 Token 计费** — AWS 动态定价（181+ 个地区价格记录）+ Gemini 三级价格策略（Google 官方页面 → LiteLLM JSON → 静态历史表）+ 从 AWS 定价页解析的 OpenAI mantle 分地区价格
 - **实时追踪** — 后台异步记录使用量，每个 API Token 配额限制
 
 ### 安全
@@ -242,7 +246,7 @@ print(message.content[0].text)
 | **数据库** | PostgreSQL（生产环境 Aurora），asyncpg |
 | **缓存** | Redis（限流、Token 缓存） |
 | **认证** | JWT, AWS Cognito, Microsoft OAuth |
-| **云服务** | AWS Bedrock, EKS, ECR, WAF, Secrets Manager, Google Gemini API |
+| **云服务** | AWS Bedrock, AWS mantle (OpenAI GPT-5.5 / 5.4), EKS, ECR, WAF, Secrets Manager, Google Gemini API |
 | **IaC** | Terraform, Karpenter, External Secrets Operator |
 
 ---

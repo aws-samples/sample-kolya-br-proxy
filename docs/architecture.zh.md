@@ -1,6 +1,6 @@
 # 架构文档
 
-Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 和 Anthropic Messages API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）以及通过原生 generateContent API 访问 Google Gemini 模型的 AI 网关。
+Kolya BR Proxy 综合架构文档 -- 一个提供 OpenAI 兼容 API 和 Anthropic Messages API 访问 AWS Bedrock 模型（Claude、Nova、DeepSeek、Mistral、Llama 等）、通过原生 generateContent API 访问 Google Gemini 模型，以及通过 OpenAI Responses API 访问由 AWS "mantle" 推理引擎服务的 OpenAI GPT-5.5 / GPT-5.4 模型的 AI 网关。
 
 ---
 
@@ -56,6 +56,10 @@ graph LR
         Gemini["Google Gemini API<br/>(原生 generateContent)"]
     end
 
+    subgraph Mantle_Services ["AWS mantle (OpenAI 模型)"]
+        Mantle["mantle 推理引擎<br/>(OpenAI Responses API)<br/>(GPT-5.5, GPT-5.4)"]
+    end
+
     OAI -->|"HTTPS /v1/chat/*"| ALB
     Anthropic_SDK -->|"HTTPS /v1/messages"| ALB
     Browser -->|"HTTPS /*"| ALB
@@ -65,6 +69,7 @@ graph LR
     Uvicorn --> FastAPI
     FastAPI -->|"InvokeModel /<br/>Converse API"| Bedrock
     FastAPI -->|"generateContent /<br/>streamGenerateContent"| Gemini
+    FastAPI -->|"SigV4 POST /responses<br/>(OpenAI Responses API)"| Mantle
     FastAPI -->|"SQLAlchemy async"| PG
     FastAPI -.->|"分布式限流"| Redis
 ```
@@ -83,6 +88,8 @@ graph LR
 | 后台使用量记录 | `record_usage` 作为后台任务运行，避免阻塞响应 |
 | Gemini 使用原生 API（非 OpenAI 兼容层）| 直接调用 `generateContent` / `streamGenerateContent`，避免 Gemini OpenAI 兼容层拒绝 `frequency_penalty` 等字段 |
 | Gemini 格式转换在 Client 层完成 | `GeminiClient` 负责 OpenAI ↔ Gemini 的格式互转；`chat.py` 始终看到统一的 OpenAI 格式，与处理 Bedrock 响应对称 |
+| mantle 照搬 Gemini 的 provider 模式 | OpenAI GPT-5.5/5.4（由 AWS mantle 服务）通过提前路由 + 独立的 `MantleClient` + pricing 短路，在进入 `BedrockClient` **之前**被截走，与 Gemini 完全一致；因此天然不影响现有 Claude/Nova/Gemini 路径。`is_openai_mantle_model()` 对 `openai.gpt-5.5` / `openai.gpt-5.4` 做精确匹配（避免误伤开源 `gpt-oss`） |
+| mantle 走 OpenAI Responses API + SigV4 | mantle 端点为 `https://bedrock-mantle.{region}.api.aws/openai/v1`，通过 `POST /responses` 访问（不是 boto3 converse/invoke_model）。请求经 SigV4 签名（botocore `SigV4Auth`/`AWSRequest`，service name `bedrock`），复用现有 AWS 凭证链（EKS Pod IRSA，含 SessionToken）；`MantleClient` 负责 OpenAI ChatCompletions ↔ Responses 的原生互转 |
 
 ---
 
@@ -132,6 +139,7 @@ graph TD
         ResTranslator["ResponseTranslator<br/>(Bedrock -> OpenAI)"]
         AnthReqTranslator["AnthropicRequestTranslator<br/>(Anthropic -> Bedrock)"]
         AnthResTranslator["AnthropicResponseTranslator<br/>(Bedrock -> Anthropic)"]
+        MantleSvc["MantleClient<br/>(SigV4; OpenAI ↔ Responses 转换;<br/>原生 /responses 透传)"]
         TokenSvc["TokenService<br/>(validate, CRUD)"]
         AuthSvc["AuthService<br/>(OAuth user creation)"]
         RefreshSvc["RefreshTokenService<br/>(token rotation)"]
@@ -675,11 +683,15 @@ sequenceDiagram
 
 ## 7. 请求处理流程
 
-本节详细描述网关请求的完整生命周期。代理支持三条 API 路径：
+本节详细描述网关请求的完整生命周期。代理支持以下 API 路径：
 
-- **OpenAI 路径 → AWS Bedrock**（`/v1/chat/completions`，非 Gemini 模型）：在 OpenAI 和 Bedrock 格式之间进行完整转换
+- **OpenAI 路径 → AWS Bedrock**（`/v1/chat/completions`，非 Gemini / 非 mantle 模型）：在 OpenAI 和 Bedrock 格式之间进行完整转换
 - **OpenAI 路径 → Google Gemini**（`/v1/chat/completions`，`gemini-*` 模型）：`GeminiClient` 在内部完成 OpenAI ↔ Gemini 原生格式转换；`chat.py` 格式无感知
+- **OpenAI 路径 → AWS mantle**（`/v1/chat/completions` 和 `/v1/messages`，`openai.gpt-5.5` / `openai.gpt-5.4`）：`is_openai_mantle_model()` 将请求路由到 `MantleClient`，由其完成 OpenAI ChatCompletions ↔ OpenAI Responses 转换（有损），并通过 SigV4 调用 mantle 的 `POST /responses`
+- **mantle 原生透传**（`/v1/responses`）：零转换的 OpenAI Responses API，直接转发给 mantle
 - **Anthropic 路径**（`/v1/messages`）：近乎直通，因为 Bedrock InvokeModel 原生使用 Anthropic Messages API 格式
+
+因此 OpenAI GPT-5.5/5.4 有三条访问路径：`/v1/chat/completions`（有损转换）、`/v1/messages`（有损转换）、`/v1/responses`（原生，零转换）。
 
 ### 7.1 OpenAI 路径时序图
 
@@ -806,7 +818,46 @@ sequenceDiagram
     Chat->>Chat: 后台：record_usage（从 usage 中提取缓存 token）
 ```
 
-### 7.3 Anthropic 路径时序图
+### 7.3 mantle / Responses 路径时序图
+
+当请求的模型精确匹配 `openai.gpt-5.5` / `openai.gpt-5.4`（通过 `is_openai_mantle_model()` 精确匹配）时，`chat.py`（以及 `messages.py`）在触及 `BedrockClient` **之前** 就路由到 `MantleClient`。`MantleClient` 对请求做 SigV4 签名（service `bedrock`，复用 EKS Pod IRSA 凭证链，含 SessionToken），通过 `resolve_mantle_region()` 解析区域（GPT-5.5 → 仅 `us-east-2`；GPT-5.4 → `us-east-2` + `us-west-2`），并调用 mantle 的 OpenAI Responses API。`/v1/responses` 端点则零转换原生转发。
+
+```mermaid
+sequenceDiagram
+    participant Client as OpenAI Client
+    participant Chat as chat.py / responses.py
+    participant MC as MantleClient
+    participant Mantle as AWS mantle<br/>(bedrock-mantle.{region}.api.aws)
+
+    Client->>Chat: POST /v1/chat/completions<br/>model: "openai.gpt-5.5"
+    Chat->>Chat: is_openai_mantle_model() → true
+    Chat->>Chat: 配额 + 模型权限检查
+    Chat->>MC: resolve_mantle_region(model)
+
+    alt ChatCompletions 转换（/v1/chat/completions、/v1/messages）
+        Chat->>MC: invoke / invoke_stream(payload)
+        MC->>MC: _openai_to_responses()<br/>system→developer role, max_tokens→max_output_tokens<br/>image→input_image, response_format→text.format<br/>reasoning.effort
+        MC->>MC: SigV4 签名 (SigV4Auth/AWSRequest, service=bedrock)
+        MC->>Mantle: POST /openai/v1/responses (stream:true)
+        loop 具名 SSE 事件
+            Mantle-->>MC: response.output_text.delta / response.completed
+            MC->>MC: _responses_to_openai()<br/>→ chat.completion(.chunk) 格式
+            MC-->>Chat: OpenAI dict / SSE 字符串
+        end
+        Chat-->>Client: JSON / SSE 流
+    else 原生透传（/v1/responses）
+        Chat->>MC: responses_passthrough / responses_passthrough_stream(body)
+        MC->>MC: SigV4 签名（无转换）
+        MC->>Mantle: POST /openai/v1/responses
+        Mantle-->>MC: Responses 载荷 / 具名 SSE 事件
+        MC-->>Chat: 原始 Responses 载荷 / SSE
+        Chat-->>Client: 原生 Responses 响应
+    end
+
+    Chat->>Chat: 后台：record_usage(...)
+```
+
+### 7.4 Anthropic 路径时序图
 
 Anthropic 路径是近乎直通的：由于 Bedrock 的 InvokeModel API 原生接受 Anthropic Messages API 格式，只需极少转换。与 OpenAI 路径的关键区别：
 
@@ -867,12 +918,13 @@ sequenceDiagram
     Msg->>BG: background: record_usage(...)
 ```
 
-### 7.4 请求/响应转换汇总
+### 7.5 请求/响应转换汇总
 
 | 路径 | 转换方式 | 说明 |
 |---|---|---|
 | **OpenAI → Bedrock** | 三阶段（OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI）| 完整转换；支持工具调用、图片、Bedrock 扩展字段 |
 | **OpenAI → Gemini** | `GeminiClient` 内部转换（OpenAI → Gemini GenerateContentRequest / 反向）| 原生 `generateContent` API；不经过 OpenAI 兼容层 |
+| **OpenAI → mantle** | `MantleClient` 内部转换（OpenAI ChatCompletions ↔ OpenAI Responses）| SigV4 调用 `POST /responses`；有损。原生 `/v1/responses` 为零转换透传 |
 | **Anthropic → Bedrock** | 近乎直通（`invoke_model`）| 最小转换；保留 `cache_control`、thinking blocks |
 
 代理在客户端 API 格式和 Bedrock 之间执行转换：
