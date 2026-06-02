@@ -18,6 +18,7 @@ from app.core.database import get_db
 from app.models.model import Model
 from app.services.bedrock import BedrockClient
 from app.services.gemini_client import GeminiClient, is_gemini_configured
+from app.services.mantle_models import get_mantle_models
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -163,6 +164,11 @@ async def list_aws_available_models(
                 )
             except Exception as e:
                 logger.warning(f"Failed to fetch Gemini models (non-fatal): {e}")
+
+        # Inject OpenAI GPT-5.5/5.4 (mantle) — not discoverable via Bedrock APIs
+        mantle_models = get_mantle_models()
+        models.extend(mantle_models)
+        logger.info(f"Added {len(mantle_models)} mantle models to available list")
 
         # Cache the results
         _set_aws_models_cache(models)

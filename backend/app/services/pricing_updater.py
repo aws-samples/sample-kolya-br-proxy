@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.config import get_settings
 from app.models.model_pricing import ModelPricing
+from app.services.mantle_models import MANTLE_MODEL_REGIONS, MANTLE_PRICING_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -801,6 +802,84 @@ class PricingUpdater:
             f"(standard: {standard_count}, global: {global_count}, geo: {geo_count}) "
             f"for region {target_region}"
         )
+
+        # OpenAI GPT-5.5/5.4 (mantle) live in a separate plain-text table on the
+        # same page — not in the data-pricing-markup sections handled above.
+        # Fully additive: appends per-region rows without touching anything above.
+        try:
+            mantle_pricing = self._scrape_openai_text_pricing(html)
+            if mantle_pricing:
+                pricing_data.extend(mantle_pricing)
+                logger.info(
+                    f"Extracted {len(mantle_pricing)} OpenAI (mantle) pricing records "
+                    f"from the plain-text pricing table"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to parse OpenAI (mantle) pricing table: {e}")
+
+        return pricing_data
+
+    def _scrape_openai_text_pricing(self, html: str) -> List[Dict]:
+        """Parse the OpenAI (GPT-5.5/5.4) plain-text pricing table.
+
+        These models are served by AWS mantle and do not appear in the
+        ``data-pricing-markup`` sections or the Price List API.  On the pricing
+        page they sit in an ordinary ``<table>`` with four columns::
+
+            OpenAI models | Price per 1M input tokens
+                          | Price per 1M cached output tokens
+                          | Price per 1M output tokens
+
+        Prices are identical across the model's regions, so rather than parse the
+        per-region table headers we map each display name via
+        ``MANTLE_PRICING_NAMES`` and write one row per region from
+        ``MANTLE_MODEL_REGIONS`` — keeping the pricing region keys exactly aligned
+        with ``resolve_mantle_region`` (used by calculate_cost) so every model in
+        the list can always look up a price.
+
+        The "cached output" price is stored in ``cached_input_price_per_token``
+        (the same column Gemini's implicit cache uses), so calculate_cost reads it
+        back uniformly.
+        """
+        # Locate every <tr> whose first cell is one of the known OpenAI names.
+        # The table uses plain text and "$ 5.50"-style values (space after $).
+        row_re = re.compile(
+            r"<tr>\s*<td>\s*([A-Za-z0-9.\- ]+?)\s*</td>"
+            r"\s*<td>\s*\$\s*([\d.]+)\s*</td>"  # input / 1M
+            r"\s*<td>\s*\$\s*([\d.]+)\s*</td>"  # cached output / 1M
+            r"\s*<td>\s*\$\s*([\d.]+)\s*</td>",  # output / 1M
+            re.IGNORECASE,
+        )
+
+        # Dedup: display names repeat across the per-region tables, but the prices
+        # are identical, so the first occurrence per model is authoritative.
+        seen_names: Set[str] = set()
+        pricing_data: List[Dict] = []
+
+        for match in row_re.finditer(html):
+            display_name = match.group(1).strip()
+            model_id = MANTLE_PRICING_NAMES.get(display_name)
+            if not model_id or display_name in seen_names:
+                continue
+            seen_names.add(display_name)
+
+            input_per_1m = Decimal(match.group(2))
+            cached_per_1m = Decimal(match.group(3))
+            output_per_1m = Decimal(match.group(4))
+
+            # Write one row per region the model can be invoked in, keyed by the
+            # same region resolve_mantle_region() will produce at billing time.
+            for region in MANTLE_MODEL_REGIONS.get(model_id, []):
+                pricing_data.append(
+                    {
+                        "model_id": model_id,
+                        "region": region,
+                        "input_price_per_token": input_per_1m / 1_000_000,
+                        "output_price_per_token": output_per_1m / 1_000_000,
+                        "cached_input_price_per_token": cached_per_1m / 1_000_000,
+                    }
+                )
+
         return pricing_data
 
     @staticmethod
@@ -853,15 +932,23 @@ class PricingUpdater:
                 result = await self.db.execute(stmt)
                 existing = result.scalar_one_or_none()
 
+                # Optional cached-input price (OpenAI mantle / Gemini-style rows).
+                # Bedrock API/scraper rows omit this key → column left untouched.
+                cached_price = data.get("cached_input_price_per_token")
+
                 if existing:
                     # Update existing record
                     existing.input_price_per_token = data["input_price_per_token"]
                     existing.output_price_per_token = data["output_price_per_token"]
+                    if cached_price is not None and hasattr(
+                        existing, "cached_input_price_per_token"
+                    ):
+                        existing.cached_input_price_per_token = cached_price
                     existing.source = source
                     existing.last_updated = now
                 else:
                     # Create new record
-                    new_pricing = ModelPricing(
+                    kwargs = dict(
                         model_id=data["model_id"],
                         region=data["region"],
                         input_price_per_token=data["input_price_per_token"],
@@ -871,6 +958,11 @@ class PricingUpdater:
                         last_updated=now,
                         created_at=now,
                     )
+                    if cached_price is not None and hasattr(
+                        ModelPricing, "cached_input_price_per_token"
+                    ):
+                        kwargs["cached_input_price_per_token"] = cached_price
+                    new_pricing = ModelPricing(**kwargs)
                     self.db.add(new_pricing)
 
                 updated_count += 1

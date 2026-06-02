@@ -71,11 +71,19 @@ class ModelPricing:
             ValueError: If model pricing cannot be determined
         """
         from app.services.gemini_client import is_gemini_model
+        from app.services.mantle_models import (
+            is_openai_mantle_model,
+            resolve_mantle_region,
+        )
 
         # Determine region
         if region is None:
             if is_gemini_model(model):
                 region = "global"
+            elif is_openai_mantle_model(model):
+                # GPT-5.5/5.4 are billed in the region they're routed to —
+                # matches the routing in mantle_client.py.
+                region = resolve_mantle_region(model)
             else:
                 from app.services.bedrock import BedrockClient
 
