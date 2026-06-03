@@ -220,7 +220,7 @@ const modelsStore = useModelsStore();
 
 const selectedToken = ref<string | null>(null);
 const selectedModel = ref<string | null>(null);
-const selectedSdk = ref<'openai' | 'anthropic' | 'gemini'>('openai');
+const selectedSdk = ref<'openai' | 'anthropic' | 'gemini' | 'responses'>('openai');
 const temperature = ref(0.7);
 const maxTokens = ref(2048);
 const userMessage = ref('');
@@ -237,16 +237,32 @@ const uploadedImages = ref<Array<{ base64: string; mimeType: string; name: strin
 // SDK options based on selected model
 // ---------------------------------------------------------------------------
 
+/** OpenAI GPT-5.5/5.4 served by AWS mantle — native protocol is the Responses API. */
+function isMantleModel(modelId: string): boolean {
+  return modelId === 'openai.gpt-5.5' || modelId === 'openai.gpt-5.4';
+}
+
 const sdkOptions = computed(() => {
   const model = selectedModel.value || '';
   if (!model) return [];
-  // Gemini SDK protocol only works with Gemini models (direct Google API proxy).
-  // OpenAI & Anthropic protocols work with all models (routed via Bedrock/Gemini on the backend).
+  // OpenAI & Anthropic protocols work with every model the proxy serves —
+  // Bedrock (Claude/Nova), Gemini, and mantle (GPT-5.5/5.4) all expose both
+  // the /v1/chat/completions and /v1/messages endpoints on the backend.
+  // The Gemini SDK protocol is the native Google API path (Gemini only).
+  // The Responses API is mantle's native protocol (GPT-5.5/5.4 only) and is the
+  // only path that exposes Responses-only features without lossy conversion.
   if (model.includes('gemini')) {
     return [
       { label: 'OpenAI', value: 'openai' },
       { label: 'Anthropic', value: 'anthropic' },
       { label: 'Gemini SDK', value: 'gemini' },
+    ];
+  }
+  if (isMantleModel(model)) {
+    return [
+      { label: 'Responses', value: 'responses' },
+      { label: 'OpenAI', value: 'openai' },
+      { label: 'Anthropic', value: 'anthropic' },
     ];
   }
   return [
@@ -255,13 +271,16 @@ const sdkOptions = computed(() => {
   ];
 });
 
-// Auto-set default SDK when model changes
+// Auto-set default SDK to each model's native protocol when the model changes.
 watch(selectedModel, (newModel) => {
   if (!newModel) return;
   if (newModel.includes('gemini')) {
     selectedSdk.value = 'gemini';
   } else if (newModel.includes('anthropic')) {
     selectedSdk.value = 'anthropic';
+  } else if (isMantleModel(newModel)) {
+    // mantle's native protocol is the Responses API.
+    selectedSdk.value = 'responses';
   } else {
     selectedSdk.value = 'openai';
   }
@@ -688,6 +707,92 @@ async function sendViaGemini(plainToken: string, assistantMsgIndex: number) {
 }
 
 // ---------------------------------------------------------------------------
+// Send via Responses API (/v1/responses) — mantle native, no conversion
+// ---------------------------------------------------------------------------
+
+/** Build native Responses API `input` from the conversation. */
+function getResponsesInput(): Array<Record<string, unknown>> {
+  return messages.value
+    .slice(0, -1)
+    .filter(m => m.content?.trim() || m.imageUrls?.length)
+    .map(m => {
+      const isAssistant = m.role === 'assistant';
+      const textType = isAssistant ? 'output_text' : 'input_text';
+      const parts: Array<Record<string, unknown>> = [];
+      if (m.imageUrls?.length && !isAssistant) {
+        for (const url of m.imageUrls) {
+          parts.push({ type: 'input_image', image_url: url });
+        }
+      }
+      if (m.content?.trim()) {
+        parts.push({ type: textType, text: m.content });
+      }
+      return { role: m.role, content: parts };
+    });
+}
+
+async function sendViaResponses(plainToken: string, assistantMsgIndex: number) {
+  const apiBaseUrl = getApiBaseUrl();
+
+  const chatResponse = await fetch(`${apiBaseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${plainToken}`,
+      'X-Requested-With': 'XMLHttpRequest',
+      'Cache-Control': 'no-cache',
+    },
+    body: JSON.stringify({
+      model: selectedModel.value,
+      input: getResponsesInput(),
+      stream: true,
+      ...(maxTokens.value !== null && { max_output_tokens: maxTokens.value }),
+      ...(supportsTemperature.value && temperature.value !== null && { temperature: temperature.value }),
+    }),
+  });
+
+  if (!chatResponse.ok) {
+    const error = await chatResponse.json().catch(() => ({}));
+    throw new Error((error as Record<string, string>).detail || chatResponse.statusText || `HTTP ${chatResponse.status}`);
+  }
+
+  const reader = chatResponse.body?.getReader();
+  if (!reader) throw new Error('Unable to read response stream');
+
+  loading.value = false;
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const dataStr = line.slice(6).trim();
+      if (!dataStr || dataStr === '[DONE]') continue;
+      try {
+        const parsed = JSON.parse(dataStr) as Record<string, unknown>;
+        // Native Responses SSE: text deltas arrive as response.output_text.delta
+        if (parsed.type === 'response.output_text.delta') {
+          const delta = parsed.delta;
+          if (typeof delta === 'string' && delta) {
+            typewriterQueue.value += delta;
+            if (!isTyping.value) startTypewriter(assistantMsgIndex);
+          }
+        }
+        // Future: image_generation_call results would surface here once mantle
+        // enables them — handled the same way as the Gemini inlineData path.
+      } catch { /* ignore parse errors */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main send function — dispatches to the correct SDK path
 // ---------------------------------------------------------------------------
 
@@ -733,6 +838,9 @@ async function sendMessage() {
         break;
       case 'gemini':
         await sendViaGemini(plainToken, assistantMsgIndex);
+        break;
+      case 'responses':
+        await sendViaResponses(plainToken, assistantMsgIndex);
         break;
       case 'openai':
       default:

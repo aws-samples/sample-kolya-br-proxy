@@ -33,6 +33,12 @@ from app.services.gemini_client import (
     extract_cached_tokens,
     extract_cached_tokens_from_chunk,
 )
+from app.services.mantle_client import (
+    MantleClient,
+    extract_cached_tokens as _mantle_extract_cached_tokens,
+    extract_cached_tokens_from_chunk as _mantle_extract_cached_tokens_from_chunk,
+)
+from app.services.mantle_models import is_openai_mantle_model
 from app.core.metrics import emit_request_metrics
 from app.services.pricing import ModelPricing
 from app.services.translator import RequestTranslator, ResponseTranslator
@@ -216,6 +222,15 @@ async def create_chat_completion(
         # Route Gemini models to Google API directly
         if _is_gemini_model(request_data.model):
             return await _handle_gemini_request(
+                request_data=request_data,
+                request_id=request_id,
+                token=token,
+                start_time=start_time,
+            )
+
+        # Route OpenAI GPT-5.5/5.4 (mantle) to the Responses API directly
+        if is_openai_mantle_model(request_data.model):
+            return await _handle_mantle_request(
                 request_data=request_data,
                 request_id=request_id,
                 token=token,
@@ -536,6 +551,181 @@ async def stream_gemini_completion(
     cache_info = f", cached={total_cached_tokens}" if total_cached_tokens else ""
     logger.info(
         f"Gemini streaming successful: request_id={request_id}, "
+        f"duration={round(duration, 3)}s, "
+        f"prompt={non_cached_prompt}, completion={total_completion_tokens}{cache_info}"
+    )
+
+
+async def _handle_mantle_request(
+    request_data: ChatCompletionRequest,
+    request_id: str,
+    token: APIToken,
+    start_time: float,
+):
+    """
+    Forward a chat completion request to AWS mantle (OpenAI GPT-5.5/5.4).
+
+    Converts the OpenAI ChatCompletions payload to the Responses API internally;
+    the request is routed (and SigV4-signed) to the model's region automatically.
+    """
+    payload = request_data.model_dump(exclude_none=True)
+
+    if request_data.stream:
+        return StreamingResponse(
+            stream_mantle_completion(
+                payload=payload,
+                request_id=request_id,
+                model=request_data.model,
+                token=token,
+                start_time=start_time,
+            ),
+            media_type="text/event-stream",
+        )
+
+    # Non-streaming
+    try:
+        response_data = await MantleClient.invoke(payload)
+    except httpx.HTTPStatusError as e:
+        logger.error(f"mantle API error: {e}")
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"mantle API error: status {e.response.status_code}",
+        )
+
+    # Extract usage including cached tokens for billing.
+    usage = response_data.get("usage", {})
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    completion_tokens = usage.get("completion_tokens", 0)
+    cached_tokens = _mantle_extract_cached_tokens(response_data)
+    # Responses reports input_tokens as the total including cached; bill only non-cached.
+    non_cached_prompt = max(0, prompt_tokens - cached_tokens)
+
+    background_tasks.create_task(
+        record_usage(
+            token_id=token.id,
+            user_id=token.user_id,
+            model=request_data.model,
+            request_id=request_id,
+            prompt_tokens=non_cached_prompt,
+            completion_tokens=completion_tokens,
+            cache_read_input_tokens=cached_tokens,
+        ),
+        task_name=f"record_usage_{request_id}",
+    )
+
+    duration = time.time() - start_time
+    cache_info = f", cached={cached_tokens}" if cached_tokens else ""
+    logger.info(
+        f"mantle completion successful: request_id={request_id}, "
+        f"duration={round(duration, 3)}s, "
+        f"prompt={non_cached_prompt}, completion={completion_tokens}{cache_info}"
+    )
+
+    return response_data
+
+
+async def stream_mantle_completion(
+    payload: dict,
+    request_id: str,
+    model: str,
+    token: APIToken,
+    start_time: float,
+) -> AsyncGenerator[str, None]:
+    """
+    Stream a mantle (GPT-5.5/5.4) completion via the Responses API.
+
+    MantleClient.invoke_stream yields OpenAI-format SSE chunks; we forward them
+    verbatim and extract usage from any chunk that carries a usage object.
+    """
+    import json as _json
+
+    settings = get_settings()
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_cached_tokens = 0
+    last_heartbeat = time.time()
+
+    try:
+        async for chunk in MantleClient.invoke_stream(payload):
+            current_time = time.time()
+
+            # Send heartbeat if idle too long
+            if current_time - last_heartbeat > settings.STREAM_HEARTBEAT_INTERVAL:
+                yield ": heartbeat\n\n"
+                last_heartbeat = current_time
+
+            # Forward OpenAI-format SSE chunk produced by invoke_stream
+            yield chunk
+            last_heartbeat = current_time
+
+            # Extract usage for billing (appears on the final chunk)
+            for line in chunk.splitlines():
+                if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                    try:
+                        data = _json.loads(line[6:])
+                        usage = data.get("usage")
+                        if usage:
+                            total_prompt_tokens = usage.get(
+                                "prompt_tokens", total_prompt_tokens
+                            )
+                            total_completion_tokens = usage.get(
+                                "completion_tokens", total_completion_tokens
+                            )
+                            cached = _mantle_extract_cached_tokens_from_chunk(data)
+                            if cached is not None:
+                                total_cached_tokens = cached
+                    except Exception:
+                        pass
+
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"mantle stream error: model={model}, request_id={request_id}, "
+            f"status={e.response.status_code}",
+            exc_info=True,
+        )
+        error_response = ErrorResponse(
+            error=ErrorDetail(
+                message=f"mantle API error: status {e.response.status_code}",
+                type="server_error",
+                code=str(e.response.status_code),
+            )
+        )
+        yield f"data: {error_response.model_dump_json()}\n\n"
+    except Exception as e:
+        logger.error(
+            f"mantle streaming failed: model={model}, request_id={request_id}, error={e}",
+            exc_info=True,
+        )
+        error_response = ErrorResponse(
+            error=ErrorDetail(
+                message="Internal server error",
+                type="server_error",
+                code="internal_error",
+            )
+        )
+        yield f"data: {error_response.model_dump_json()}\n\n"
+
+    # Adjust prompt tokens to exclude cached
+    non_cached_prompt = max(0, total_prompt_tokens - total_cached_tokens)
+
+    # Record usage
+    background_tasks.create_task(
+        record_usage(
+            token_id=token.id,
+            user_id=token.user_id,
+            model=model,
+            request_id=request_id,
+            prompt_tokens=non_cached_prompt,
+            completion_tokens=total_completion_tokens,
+            cache_read_input_tokens=total_cached_tokens,
+        ),
+        task_name=f"record_usage_{request_id}",
+    )
+
+    duration = time.time() - start_time
+    cache_info = f", cached={total_cached_tokens}" if total_cached_tokens else ""
+    logger.info(
+        f"mantle streaming successful: request_id={request_id}, "
         f"duration={round(duration, 3)}s, "
         f"prompt={non_cached_prompt}, completion={total_completion_tokens}{cache_info}"
     )

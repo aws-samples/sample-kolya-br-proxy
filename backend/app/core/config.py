@@ -70,6 +70,13 @@ class Settings(BaseSettings):
         description="Google Cloud region for Vertex AI",
     )
 
+    # OpenAI-on-Bedrock (mantle) settings — GPT-5.5 / GPT-5.4 via Responses API
+    MANTLE_SIGV4_SERVICE: str = Field(
+        default="bedrock",
+        description="SigV4 service name used to sign mantle (OpenAI Responses API) requests. "
+        "Override to 'bedrock-runtime' / 'bedrock-mantle' if signing is rejected.",
+    )
+
     # AWS Bedrock settings
     BEDROCK_MAX_CONCURRENT_REQUESTS: int = Field(
         default=50,

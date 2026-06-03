@@ -1,13 +1,16 @@
 # Request Translation Pipeline
 
-How Kolya BR Proxy translates requests into upstream LLM API calls, and converts responses back. The proxy supports two client-facing API formats:
+How Kolya BR Proxy translates requests into upstream LLM API calls, and converts responses back. The proxy supports three client-facing API formats:
 
-- **OpenAI-compatible** (`POST /v1/chat/completions`) -- routes to AWS Bedrock (non-Gemini) or Google Gemini (model starts with `gemini-`)
-- **Anthropic Messages API** (`POST /v1/messages`) -- near-passthrough to Bedrock InvokeModel
+- **OpenAI-compatible** (`POST /v1/chat/completions`) -- routes to AWS Bedrock (default), Google Gemini (model starts with `gemini-`), or AWS mantle / OpenAI Responses API (model is `openai.gpt-5.5` / `openai.gpt-5.4`)
+- **Anthropic Messages API** (`POST /v1/messages`) -- near-passthrough to Bedrock InvokeModel; mantle models (`openai.gpt-5.5` / `openai.gpt-5.4`) are routed to the Responses API instead
+- **OpenAI Responses API** (`POST /v1/responses`) -- native passthrough to AWS mantle for OpenAI GPT-5.5/5.4 only; zero protocol conversion
 
 For Bedrock: Anthropic models use the InvokeModel API (native Messages API format), while non-Anthropic models (Nova, DeepSeek, Mistral, Llama, etc.) use the Converse API.
 
 For Gemini: `GeminiClient` uses the native `generateContent` / `streamGenerateContent` API; OpenAI ↔ Gemini conversion happens entirely within the client layer.
+
+For mantle (OpenAI GPT-5.5/5.4): `MantleClient` talks to the OpenAI Responses API served by AWS's "mantle" inference engine. Activation is an exact model-id match via `is_openai_mantle_model(model)`. Like Gemini, all translation happens inside the client, so `chat.py` always sees an OpenAI-format dict; the native `/v1/responses` endpoint bypasses translation entirely.
 
 ---
 
@@ -25,6 +28,7 @@ For Gemini: `GeminiClient` uses the native `generateContent` / `streamGenerateCo
 10. [Automatic Fixes](#10-automatic-fixes)
 11. [Unsupported Parameters](#11-unsupported-parameters)
 12. [Google Gemini Native API Path](#12-google-gemini-native-api-path)
+13. [OpenAI mantle (Responses API) Path](#13-openai-mantle-responses-api-path)
 
 ---
 
@@ -743,16 +747,134 @@ The following Gemini-specific features are not currently mapped:
 
 ---
 
+## 13. OpenAI mantle (Responses API) Path
+
+**File**: `backend/app/services/mantle_client.py`
+
+OpenAI **GPT-5.5** (`openai.gpt-5.5`, us-east-2 only) and **GPT-5.4** (`openai.gpt-5.4`, us-east-2 + us-west-2) are served by AWS's "mantle" inference engine through the **OpenAI Responses API**, not the boto3 `converse` / `invoke_model` paths. Activated when `is_openai_mantle_model(model)` returns `True` — an exact model-id match (a prefix match on `openai.` would wrongly capture the open-weight `openai.gpt-oss-*` models, which use the standard Bedrock Converse path). The mantle region registry and routing live in `mantle_models.py`; auth is SigV4 over the existing AWS credential chain (reused from `BedrockClient`), so no new bearer token is introduced.
+
+Like Gemini, all translation happens inside `MantleClient`; `chat.py` always sees an OpenAI-format dict, exactly as it does for Bedrock responses.
+
+### 13.1 Data Flow
+
+```mermaid
+sequenceDiagram
+    participant Chat as chat.py
+    participant MC as MantleClient
+    participant Mantle as AWS mantle (Responses API)
+
+    Chat->>MC: invoke(payload) / invoke_stream(payload)
+    Note over MC: payload is the raw OpenAI dict<br/>(model, messages, max_tokens, tools, …)
+
+    MC->>MC: _openai_to_responses(payload)
+    Note over MC: messages → input (system/developer → role developer)<br/>max_tokens → max_output_tokens<br/>tools → flattened function spec<br/>response_format → text.format<br/>reasoning.effort ← bedrock_additional_model_request_fields
+
+    MC->>MC: SigV4 sign (shared AWS creds)
+
+    alt Non-streaming
+        MC->>Mantle: POST /openai/v1/responses
+        Mantle-->>MC: Responses response (JSON)
+        MC->>MC: _responses_to_openai()
+        MC-->>Chat: OpenAI ChatCompletionResponse dict
+    else Streaming
+        MC->>Mantle: POST /openai/v1/responses (stream:true)
+        loop per named SSE event
+            Mantle-->>MC: event: response.output_text.delta<br/>data: {…}
+            MC->>MC: translate to chat.completion.chunk
+            MC-->>Chat: "data: {chat.completion.chunk}\n\n"
+        end
+        MC-->>Chat: "data: [DONE]\n\n"
+    end
+```
+
+### 13.2 Request Conversion (`_openai_to_responses`)
+
+OpenAI ChatCompletions → OpenAI Responses request body.
+
+| OpenAI | Responses | Notes |
+|---|---|---|
+| `messages[role=system]` | `input[{role:"developer", content}]` | System / developer messages map to role `developer` |
+| `messages[role=user]` | `input[{role:"user", content}]` | Text parts → `input_text`; multimodal preserved |
+| `messages[role=assistant]` | `input[{role:"assistant", content}]` | Text parts → `output_text`; `tool_calls` → `function_call` items |
+| `messages[role=tool]` | `input[{type:"function_call_output", call_id, output}]` | Keyed by `tool_call_id` |
+| `content: [{type:"image_url", image_url:{url:"data:…"}}]` | `content[{type:"input_image", image_url}]` | Data URL (or plain URL) passed through on `input_image` |
+| `max_tokens` | `max_output_tokens` | |
+| `temperature` | `temperature` | |
+| `top_p` | `top_p` | |
+| `tools[].function` | `tools[{type:"function", name, description, parameters}]` | Function spec flattened to the tool top level |
+| `tool_choice: "none"/"auto"/"required"` | `tool_choice` | Passed through unchanged |
+| `tool_choice: {type:"function", function:{name}}` | `tool_choice: {type:"function", name}` | Flattened |
+| `response_format: {type:"text"\|"json_object"}` | `text.format: {type}` | Passed through |
+| `response_format: {type:"json_schema", json_schema:{name, schema, strict, description}}` | `text.format: {type:"json_schema", name, schema, strict, description}` | Flattened from nested `json_schema` to top level |
+| `bedrock_additional_model_request_fields.reasoning.effort` | `reasoning: {effort}` | Reuses the existing Bedrock passthrough channel (no new schema field). mantle supports `none`/`low`/`medium`/`high`/`xhigh`; `minimal` is **not** supported |
+| `frequency_penalty`, `presence_penalty`, `n`, `logprobs`, `user`, `bedrock_*` (other) | **Silently ignored** | Not passed to mantle; no filtering needed in caller |
+
+### 13.3 Response Conversion (`_responses_to_openai`)
+
+OpenAI Responses → OpenAI ChatCompletions.
+
+| Responses | OpenAI | Notes |
+|---|---|---|
+| `output[type=message].content[output_text]` | `choices[0].message.content` | Concatenated if multiple text parts |
+| `output[type=function_call]` | `choices[0].message.tool_calls[]` | `arguments` carried as-is; missing `call_id` synthesized |
+| `output[type=reasoning]` | **Skipped** | Internal reasoning items not forwarded |
+| `status: "incomplete"` | `finish_reason: length` | Otherwise `stop`; overridden to `tool_calls` when tool calls present |
+| `usage.input_tokens` | `usage.prompt_tokens` | |
+| `usage.output_tokens` | `usage.completion_tokens` | |
+| `usage.total_tokens` | `usage.total_tokens` | Falls back to prompt + completion |
+| `usage.input_tokens_details.cached_tokens` | `usage.prompt_tokens_details.cached_tokens` | Only when > 0 |
+
+### 13.4 Streaming Conversion (`invoke_stream`)
+
+Unlike Gemini's single-JSON-per-line stream, the Responses API emits **named SSE events** (`event: <name>` + `data: {…}`). `invoke_stream` parses them and translates into OpenAI `chat.completion.chunk` SSE lines:
+
+| Responses event | OpenAI chunk delta |
+|---|---|
+| `response.output_text.delta` | `{content: <delta>}` |
+| `response.output_item.added` (function_call) | `{tool_calls:[{index, id, type:"function", function:{name, arguments:""}}]}` — opens a tool call |
+| `response.function_call_arguments.delta` | `{tool_calls:[{index, function:{arguments:<delta>}}]}` |
+| `response.completed` / `response.incomplete` | Empty delta + `finish_reason` (`tool_calls` / `length` / `stop`) + `usage` for billing |
+| `response.failed` / `error` | Empty delta + `finish_reason: stop` (error logged) |
+
+The terminal chunk carries `"usage"` so `stream_mantle_completion` can extract billing (`extract_cached_tokens_from_chunk`). The stream ends with `data: [DONE]`.
+
+### 13.5 Cached Token Billing
+
+`chat.py` calls `extract_cached_tokens()` / `extract_cached_tokens_from_chunk()` (defined in `mantle_client.py`) on the OpenAI-format response/chunk. These read `usage.prompt_tokens_details.cached_tokens`, set by `_build_usage()` from the Responses `input_tokens_details.cached_tokens`. Cached tokens are deducted from prompt tokens so cached input is not charged at the full input rate.
+
+### 13.6 Three Access Paths
+
+mantle models can be reached through three endpoints, with decreasing translation loss:
+
+| Endpoint | Translation | Loss |
+|---|---|---|
+| `/v1/chat/completions` | OpenAI ChatCompletions ↔ Responses (`invoke` / `invoke_stream`) | Lossy — only the mapped fields above survive |
+| `/v1/messages` | Anthropic ↔ Responses | Lossy — Anthropic `system` + `messages` are first flattened to OpenAI-style messages (`_anthropic_to_openai_messages`), then routed through `MantleClient.invoke`; only text content and `temperature` / `max_tokens` are forwarded |
+| `/v1/responses` | **None** — native passthrough (`responses_passthrough` / `responses_passthrough_stream`) | Lossless — body forwarded verbatim, SSE returned unchanged; only `response.completed` / `response.incomplete` events are sniffed for usage billing |
+
+The `/v1/responses` path (`backend/app/api/v1/endpoints/responses.py`) is the only one that exposes mantle's full capability surface and will transparently gain new mantle features the moment AWS enables them — no code change required. The request body is accepted as an open JSON object so unknown/new Responses fields pass straight through. It rejects non-mantle models with HTTP 400.
+
+### 13.7 mantle Capability Boundary
+
+mantle supports: text + vision input, function calling, custom tools, tool_search, namespace, MCP, reasoning effort, and structured output. It does **not** support: `image_generation`, `web_search`, `code_interpreter`, `file_search`, `computer_use_preview`.
+
+Because the ChatCompletions (`/v1/chat/completions`) and Anthropic (`/v1/messages`) paths translate to/from a narrower protocol, any Responses-only feature not in the §13.2 mapping table (built-in tools, custom tools, MCP, multimodal output, etc.) is dropped on those paths. Use `/v1/responses` to access them.
+
+---
+
 ## File Reference
 
 | File | Role in Translation |
 |---|---|
-| `api/v1/endpoints/chat.py` | OpenAI entry point; routes to Bedrock or Gemini; orchestrates stream/non-stream flow |
-| `api/anthropic/endpoints/messages.py` | Anthropic entry point; `x-api-key` auth; Anthropic SSE streaming |
+| `api/v1/endpoints/chat.py` | OpenAI entry point; routes to Bedrock, Gemini, or mantle; orchestrates stream/non-stream flow |
+| `api/v1/endpoints/responses.py` | OpenAI Responses API entry point (`/v1/responses`); native mantle passthrough, usage-only billing sniff |
+| `api/anthropic/endpoints/messages.py` | Anthropic entry point; `x-api-key` auth; Anthropic SSE streaming; routes mantle models to the Responses API |
 | `services/translator.py` | `RequestTranslator`: OpenAI → BedrockRequest; `ResponseTranslator`: BedrockResponse → OpenAI |
 | `services/anthropic_translator.py` | `AnthropicRequestTranslator`: Anthropic → BedrockRequest; `AnthropicResponseTranslator`: BedrockResponse → Anthropic |
 | `services/bedrock.py` | `_build_anthropic_body()`: BedrockRequest → Anthropic JSON (Anthropic models); `_build_converse_params()`: BedrockRequest → Converse API params (non-Anthropic); `_anthropic_event_to_bedrock()` / `_converse_stream_event_to_bedrock()`: stream event mapping |
 | `services/gemini_client.py` | `GeminiClient`: `invoke()` / `invoke_stream()` with full OpenAI ↔ Gemini native conversion; `extract_cached_tokens()` helpers |
+| `services/mantle_client.py` | `MantleClient`: `invoke()` / `invoke_stream()` with OpenAI ↔ Responses conversion; `responses_passthrough()` / `responses_passthrough_stream()` for native passthrough; SigV4 signing; `extract_cached_tokens()` helpers |
+| `services/mantle_models.py` | mantle model registry: `is_openai_mantle_model()`, `resolve_mantle_region()`, region map, base URL |
 | `schemas/openai.py` | OpenAI request/response Pydantic models |
 | `schemas/anthropic.py` | Anthropic Messages API request/response/streaming Pydantic models |
 | `schemas/bedrock.py` | Internal Bedrock Pydantic models (BedrockRequest, BedrockResponse, BedrockStreamEvent) |

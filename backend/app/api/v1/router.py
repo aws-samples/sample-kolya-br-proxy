@@ -5,12 +5,13 @@ All endpoints require API Token authentication.
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import chat, models
+from app.api.v1.endpoints import chat, models, responses
 
 gateway_router = APIRouter()
 
 # Include AI Gateway endpoint routers
 gateway_router.include_router(chat.router, tags=["chat"])
+gateway_router.include_router(responses.router, tags=["responses"])
 gateway_router.include_router(models.router, tags=["models"])
 
 
@@ -23,6 +24,7 @@ async def gateway_root():
         "compatible_with": ["OpenAI API v1", "Anthropic Messages API"],
         "endpoints": {
             "chat_completions": "/v1/chat/completions",
+            "responses": "/v1/responses",
             "messages": "/v1/messages",
             "models": "/v1/models",
         },

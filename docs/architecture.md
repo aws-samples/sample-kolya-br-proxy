@@ -1,6 +1,6 @@
 # Architecture
 
-Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway that provides both OpenAI-compatible and Anthropic Messages API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.) and Google Gemini models via the native generateContent API.
+Comprehensive architecture documentation for Kolya BR Proxy -- an AI Gateway that provides both OpenAI-compatible and Anthropic Messages API access to AWS Bedrock models (Claude, Nova, DeepSeek, Mistral, Llama, etc.), Google Gemini models via the native generateContent API, and OpenAI GPT-5.5 / GPT-5.4 models served by the AWS "mantle" inference engine via the OpenAI Responses API.
 
 ---
 
@@ -56,6 +56,10 @@ graph LR
         Gemini["Google Gemini API<br/>(generateContent native)"]
     end
 
+    subgraph Mantle_Services ["AWS mantle (OpenAI models)"]
+        Mantle["mantle Inference Engine<br/>(OpenAI Responses API)<br/>(GPT-5.5, GPT-5.4)"]
+    end
+
     OAI -->|"HTTPS /v1/chat/*"| ALB
     Anthropic_SDK -->|"HTTPS /v1/messages"| ALB
     Browser -->|"HTTPS /*"| ALB
@@ -65,6 +69,7 @@ graph LR
     Uvicorn --> FastAPI
     FastAPI -->|"InvokeModel /<br/>Converse API"| Bedrock
     FastAPI -->|"generateContent /<br/>streamGenerateContent"| Gemini
+    FastAPI -->|"SigV4 POST /responses<br/>(OpenAI Responses API)"| Mantle
     FastAPI -->|"SQLAlchemy async"| PG
     FastAPI -.->|"Distributed rate limiting"| Redis
 ```
@@ -83,6 +88,8 @@ graph LR
 | Background usage recording | `record_usage` runs as a background task to avoid blocking responses |
 | Gemini native API (not OpenAI compat) | Uses `generateContent` / `streamGenerateContent` directly; avoids Gemini's OpenAI-compat layer which rejects fields like `frequency_penalty` |
 | Gemini format conversion in client layer | `GeminiClient` converts OpenAI ↔ Gemini natively; `chat.py` sees uniform OpenAI format regardless of backend |
+| mantle reuses the Gemini provider pattern | OpenAI GPT-5.5/5.4 (served by AWS mantle) are intercepted by early routing + a dedicated `MantleClient` + pricing short-circuit **before** reaching `BedrockClient`, exactly like Gemini; this leaves the existing Claude/Nova/Gemini paths untouched. `is_openai_mantle_model()` does an exact match on `openai.gpt-5.5` / `openai.gpt-5.4` (avoiding false hits on open-source `gpt-oss`) |
+| mantle uses the OpenAI Responses API over SigV4 | mantle is reached at `https://bedrock-mantle.{region}.api.aws/openai/v1` via `POST /responses` (not boto3 converse/invoke_model). Requests are SigV4-signed (botocore `SigV4Auth`/`AWSRequest`, service name `bedrock`) reusing the existing AWS credential chain (EKS Pod IRSA, incl. SessionToken); `MantleClient` converts OpenAI ChatCompletions ↔ Responses natively |
 
 ---
 
@@ -134,6 +141,7 @@ graph TD
         AnthResTranslator["AnthropicResponseTranslator<br/>(Bedrock -> Anthropic)"]
         GeminiSvc["GeminiClient<br/>(OpenAI ↔ Gemini native conversion)"]
         GeminiPricing["GeminiPricingUpdater<br/>(3-tier price fetch)"]
+        MantleSvc["MantleClient<br/>(SigV4; OpenAI ↔ Responses conversion;<br/>native /responses passthrough)"]
         TokenSvc["TokenService<br/>(validate, CRUD)"]
         AuthSvc["AuthService<br/>(OAuth user creation)"]
         RefreshSvc["RefreshTokenService<br/>(token rotation)"]
@@ -685,11 +693,15 @@ sequenceDiagram
 
 ## 7. Request Processing Flow
 
-This section details the full lifecycle of gateway requests. The proxy supports three API paths:
+This section details the full lifecycle of gateway requests. The proxy supports these API paths:
 
-- **OpenAI path → AWS Bedrock** (`/v1/chat/completions`, non-Gemini models): Full translation between OpenAI and Bedrock formats
+- **OpenAI path → AWS Bedrock** (`/v1/chat/completions`, non-Gemini / non-mantle models): Full translation between OpenAI and Bedrock formats
 - **OpenAI path → Google Gemini** (`/v1/chat/completions`, `gemini-*` models): `GeminiClient` converts OpenAI ↔ Gemini native format; `chat.py` is format-agnostic
+- **OpenAI path → AWS mantle** (`/v1/chat/completions` and `/v1/messages`, `openai.gpt-5.5` / `openai.gpt-5.4`): `is_openai_mantle_model()` routes the request to `MantleClient`, which converts OpenAI ChatCompletions ↔ OpenAI Responses (lossy) and calls mantle's `POST /responses` over SigV4
+- **mantle native passthrough** (`/v1/responses`): zero-conversion OpenAI Responses API forwarded directly to mantle
 - **Anthropic path** (`/v1/messages`): Near-passthrough since Bedrock InvokeModel natively uses Anthropic Messages API format
+
+OpenAI GPT-5.5/5.4 can therefore be reached via three access paths: `/v1/chat/completions` (lossy conversion), `/v1/messages` (lossy conversion), and `/v1/responses` (native, zero conversion).
 
 ### 7.1 OpenAI Path Sequence Diagram
 
@@ -846,7 +858,46 @@ sequenceDiagram
 | `usageMetadata.candidatesTokenCount` | `usage.completion_tokens` |
 | `usageMetadata.cachedContentTokenCount` | `usage.prompt_tokens_details.cached_tokens` |
 
-### 7.3 Anthropic Path Sequence Diagram
+### 7.3 mantle / Responses Path Sequence Diagram
+
+When the requested model matches `openai.gpt-5.5` / `openai.gpt-5.4` (exact match via `is_openai_mantle_model()`), `chat.py` (and `messages.py`) routes to `MantleClient` **before** `BedrockClient` is touched. `MantleClient` SigV4-signs the request (service `bedrock`, reusing the EKS Pod IRSA credential chain incl. SessionToken), resolves the region via `resolve_mantle_region()` (GPT-5.5 → `us-east-2` only; GPT-5.4 → `us-east-2` + `us-west-2`), and calls mantle's OpenAI Responses API. The `/v1/responses` endpoint forwards natively with zero conversion.
+
+```mermaid
+sequenceDiagram
+    participant Client as OpenAI Client
+    participant Chat as chat.py / responses.py
+    participant MC as MantleClient
+    participant Mantle as AWS mantle<br/>(bedrock-mantle.{region}.api.aws)
+
+    Client->>Chat: POST /v1/chat/completions<br/>model: "openai.gpt-5.5"
+    Chat->>Chat: is_openai_mantle_model() → true
+    Chat->>Chat: Quota + model access check
+    Chat->>MC: resolve_mantle_region(model)
+
+    alt ChatCompletions conversion (/v1/chat/completions, /v1/messages)
+        Chat->>MC: invoke / invoke_stream(payload)
+        MC->>MC: _openai_to_responses()<br/>system→developer role, max_tokens→max_output_tokens<br/>image→input_image, response_format→text.format<br/>reasoning.effort
+        MC->>MC: SigV4 sign (SigV4Auth/AWSRequest, service=bedrock)
+        MC->>Mantle: POST /openai/v1/responses (stream:true)
+        loop Named SSE events
+            Mantle-->>MC: response.output_text.delta / response.completed
+            MC->>MC: _responses_to_openai()<br/>→ chat.completion(.chunk) format
+            MC-->>Chat: OpenAI dict / SSE string
+        end
+        Chat-->>Client: JSON / SSE stream
+    else Native passthrough (/v1/responses)
+        Chat->>MC: responses_passthrough / responses_passthrough_stream(body)
+        MC->>MC: SigV4 sign (no conversion)
+        MC->>Mantle: POST /openai/v1/responses
+        Mantle-->>MC: Responses payload / named SSE events
+        MC-->>Chat: raw Responses payload / SSE
+        Chat-->>Client: native Responses response
+    end
+
+    Chat->>Chat: background: record_usage(...)
+```
+
+### 7.4 Anthropic Path Sequence Diagram
 
 The Anthropic path is a near-passthrough: since Bedrock's InvokeModel API natively accepts Anthropic Messages API format, minimal translation is needed. Key differences from the OpenAI path:
 
@@ -907,12 +958,13 @@ sequenceDiagram
     Msg->>BG: background: record_usage(...)
 ```
 
-### 7.4 Request/Response Translation Summary
+### 7.5 Request/Response Translation Summary
 
 | Path | Translation | Notes |
 |---|---|---|
 | **OpenAI → Bedrock** | Three-phase (OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI) | Full translation; tool calls, images, Bedrock extensions |
 | **OpenAI → Gemini** | `GeminiClient` internal conversion (OpenAI → Gemini GenerateContentRequest / back) | Native `generateContent` API; no OpenAI-compat layer |
+| **OpenAI → mantle** | `MantleClient` internal conversion (OpenAI ChatCompletions ↔ OpenAI Responses) | SigV4 to `POST /responses`; lossy. Native `/v1/responses` is zero-conversion passthrough |
 | **Anthropic → Bedrock** | Near-passthrough (`invoke_model`) | Minimal translation; preserves `cache_control`, thinking blocks |
 
 For non-Anthropic Bedrock models (Nova, DeepSeek, Mistral, Llama, etc.), the Bedrock path uses the Converse API via `converse`/`converse_stream`.

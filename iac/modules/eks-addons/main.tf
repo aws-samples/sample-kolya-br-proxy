@@ -100,6 +100,17 @@ resource "aws_iam_policy" "backend_bedrock" {
         Resource = "*"
       },
       {
+        # OpenAI GPT-5.5/5.4 served by the AWS "mantle" inference engine use a
+        # distinct "bedrock-mantle" IAM service prefix that "bedrock:*" does not
+        # cover, so it must be granted explicitly.
+        Sid    = "MantleOpenAIModels"
+        Effect = "Allow"
+        Action = [
+          "bedrock-mantle:*"
+        ]
+        Resource = "*"
+      },
+      {
         Effect = "Allow"
         Action = [
           "cognito-idp:AdminCreateUser",

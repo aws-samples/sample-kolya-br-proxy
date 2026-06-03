@@ -6,6 +6,7 @@ Kolya BR Proxy 提供四组 API：
 |------|------|----------|------|
 | Gateway API (OpenAI) | `/v1` | `Authorization: Bearer` | OpenAI 兼容的聊天补全 |
 | Gateway API (Anthropic) | `/v1` | `x-api-key` 请求头 | Anthropic Messages API 兼容 |
+| Gateway API (Responses) | `/v1` | `Authorization: Bearer` | 原生 OpenAI Responses API 透传（mantle / GPT-5.5 / GPT-5.4） |
 | Admin API | `/admin` | Bearer JWT | 用户管理、令牌、用量、审计 |
 | Health API | `/health` | 无 | 负载均衡器探针 |
 
@@ -427,6 +428,126 @@ export CLAUDE_MODEL="us.anthropic.claude-sonnet-4-5-20250514-v1:0"
 }
 ```
 
+> **动态列出的模型**：除 Bedrock 模型外，**Gemini 模型**（配置了 `GEMINI_API_KEY` 时）和 **OpenAI GPT-5.5 / GPT-5.4**（由 AWS "mantle" 推理引擎提供，`provider: openai-mantle`）也会动态出现。mantle 模型来自静态注册表注入，因为它们无法通过 Bedrock 的 `list-foundation-models` / `list-inference-profiles` API 发现。
+
+---
+
+## 1c. Gateway API（OpenAI Responses API —— mantle 透传）
+
+OpenAI **GPT-5.5**（`openai.gpt-5.5`）和 **GPT-5.4**（`openai.gpt-5.4`）由 AWS "mantle" 推理引擎通过原生 **OpenAI Responses API** 提供（`provider: openai-mantle`）。这两个模型可通过三条路径访问：
+
+| 路径 | 模式 |
+|------|------|
+| `POST /v1/chat/completions` | OpenAI Chat Completions，与 Responses 格式相互转换 |
+| `POST /v1/messages` | Anthropic Messages，与 Responses 格式相互转换 |
+| `POST /v1/responses` | **原生 Responses 透传** —— 完整的 mantle 能力，无有损转换 |
+
+chat/messages 两条路径会与 Responses 格式相互转换，因此会"扁平化"掉 Responses 独有的特性（内置工具、多模态输出等）。`/v1/responses` 端点将原生 Responses 请求体原样转发，并返回原生响应，使用 Responses API 的客户端可获得完整的 mantle 能力。
+
+### POST /v1/responses
+
+使用原生 OpenAI Responses API 创建模型响应。该端点**仅限 mantle 模型**：只接受 GPT-5.5 / GPT-5.4（通过 `is_openai_mantle_model` 校验）。其他任何模型返回 **400**，提示类似 `Model '...' is not available on the Responses API`。
+
+需要与其他 gateway 端点一致的 `Authorization: Bearer kbr_<token>` 鉴权、Token 配额校验以及按 Token 的模型访问权限校验。
+
+**请求体**：一个**开放 JSON 对象** —— 原样转发给 mantle。未知/新增的 Responses 字段会直接透传（无严格 schema）。常见的原生 Responses 字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `model` | string | *必填* —— 必须是 mantle 模型（`openai.gpt-5.5` 或 `openai.gpt-5.4`） |
+| `input` | array | 输入项数组；每项含 `role` 及 `content` parts 数组（`input_text`、`output_text`、`input_image`） |
+| `stream` | boolean | 启用原生 Responses SSE 流式输出（默认 `false`） |
+| `max_output_tokens` | integer | 最大输出 token 数 |
+| `temperature` | float | 采样温度 |
+| `reasoning` | object | 可选的推理配置，如 `{"effort": "medium"}` |
+| `tools` | array | 可选的工具定义 |
+| `text` | object | 可选的输出配置，如 `{"format": {...}}`（结构化输出） |
+
+**计费**：基于响应中的 `usage` 对象。mantle 返回 `usage.input_tokens`（含 cached tokens）和 `usage.output_tokens`；`usage.input_tokens_details.cached_tokens` 单独计费。代理将 `(input_tokens - cached_tokens)` 计为 prompt，`output_tokens` 计为 completion，`cached_tokens` 按缓存读取费率计费。
+
+#### 非流式示例
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer kbr_your_token_here" \
+  -d '{
+    "model": "openai.gpt-5.5",
+    "input": [
+      {
+        "role": "user",
+        "content": [{"type": "input_text", "text": "Hello!"}]
+      }
+    ],
+    "max_output_tokens": 256
+  }'
+```
+
+**响应**（原生 Responses JSON，原样返回）：
+
+```json
+{
+  "id": "resp_abc123...",
+  "object": "response",
+  "model": "openai.gpt-5.5",
+  "status": "completed",
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {"type": "output_text", "text": "Hello! How can I help you?"}
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 8,
+    "input_tokens_details": {"cached_tokens": 0}
+  }
+}
+```
+
+#### 流式示例
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer kbr_your_token_here" \
+  -d '{
+    "model": "openai.gpt-5.5",
+    "input": [
+      {"role": "user", "content": [{"type": "input_text", "text": "Hello!"}]}
+    ],
+    "stream": true
+  }'
+```
+
+**流式响应**（SSE `text/event-stream`，原生 Responses 具名事件，原样透传）：
+
+```
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Hello"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"!"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_...","status":"completed","output":[...],"usage":{"input_tokens":10,"output_tokens":8,"input_tokens_details":{"cached_tokens":0}}}}
+```
+
+代理将 mantle 的 SSE 字节原样透传，并从 `response.completed` / `response.incomplete` 事件中读取 `usage` 对象用于计费。期间会发送心跳注释（`: heartbeat`）以保持空闲连接。
+
+#### 错误响应
+
+状态码与 `/v1/chat/completions` 相同。此外，当请求的模型不是 mantle 模型时返回 **400**：
+
+```json
+{
+  "detail": "Model 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' is not available on the Responses API. This endpoint serves OpenAI GPT-5.5/5.4 (mantle) only; use /v1/chat/completions for other models."
+}
+```
+
 ---
 
 ## 2. Admin API
@@ -742,6 +863,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 - **Inference profiles** — 部署区域可用的推理配置（如 `us.anthropic.claude-sonnet-4-6`、`global.anthropic.claude-sonnet-4-5-20250929-v1:0`）
 - **Foundation models** — 仅在 fallback 区域可用的基础模型（如 `zai.glm-5`、`deepseek.v3.2`）— 标记为 `is_fallback: true`
 - **Gemini 模型**（如果配置了 `GEMINI_API_KEY`）— 动态追加
+- **OpenAI GPT-5.5 / GPT-5.4**（`provider: openai-mantle`）— 从静态注册表动态追加，因为它们由 AWS "mantle" 推理引擎提供，无法通过 Bedrock 的 `list-foundation-models` / `list-inference-profiles` API 发现（`openai.gpt-5.5` 仅在 `us-east-2` 可用；`openai.gpt-5.4` 在 `us-east-2` 和 `us-west-2` 可用）
 
 仅显示从部署区域实际可调用的模型。例如，如果部署在 `us-west-1`，而 `global.anthropic.claude-sonnet-4-20250514-v1:0` 在该区域不可用，则不会出现在列表中。
 

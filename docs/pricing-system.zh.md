@@ -5,7 +5,7 @@
 本系统从多个数据源动态获取模型价格，并自动更新到数据库。价格数据用于计算 API 调用成本。
 
 系统包含两个独立的定价子系统并行运行：
-- **AWS Bedrock 定价** — 覆盖所有通过 AWS Bedrock 调用的模型
+- **AWS Bedrock 定价** — 覆盖所有通过 AWS Bedrock 调用的模型。同时也覆盖经 AWS "mantle" 推理引擎提供的 OpenAI GPT-5.5/5.4，价格从同一个 AWS 定价页面抓取（详见下文 **OpenAI mantle 定价**）。
 - **Google Gemini 定价** — 覆盖通过 Gemini API 直接调用的模型（存储时 `region="global"`）
 
 ---
@@ -16,11 +16,11 @@
 
 | 字段 | 说明 |
 |------|------|
-| `model_id` | 模型标识符（如 `amazon.nova-lite-v1:0`、`gemini-2.5-pro`） |
-| `region` | AWS 区域、跨区域前缀（`us.`、`global.`），Gemini 模型为 `"global"` |
+| `model_id` | 模型标识符（如 `amazon.nova-lite-v1:0`、`gemini-2.5-pro`、`openai.gpt-5.5`） |
+| `region` | AWS 区域、跨区域前缀（`us.`、`global.`），Gemini 模型为 `"global"`。mantle 模型使用不带前缀的普通 AWS 区域（如 `us-east-2`、`us-west-2`） |
 | `input_price_per_token` | 输入 token 单价（USD） |
 | `output_price_per_token` | 输出 token 单价（USD） |
-| `cached_input_price_per_token` | 上下文缓存读取价格（USD），不支持则为 NULL |
+| `cached_input_price_per_token` | 上下文缓存读取价格（USD），不支持则为 NULL。Gemini 缓存价格与 mantle 的 cached output 价格复用此列 |
 | `currency` | 货币（USD） |
 | `source` | 数据来源，见下表 |
 | `last_updated` | 最后更新时间 |
@@ -32,6 +32,7 @@
 |----|------|
 | `api` | AWS Price List API |
 | `aws-scraper` | AWS Bedrock 定价页面爬虫 |
+| `scraper` | OpenAI mantle（GPT-5.5/5.4）从 AWS 定价页面抓取的条目 — 与 Bedrock 抓取同标签，因为来自同一页面 |
 | `gemini-scraper` | Gemini 三级策略（统一标签） |
 
 ---
@@ -79,7 +80,7 @@ API 数据始终优先，爬虫数据仅填补空缺。
 }
 ```
 
-### 支持的厂商（共 19 个）
+### 支持的厂商（共 20 个）
 
 | 厂商 | Price List API | 页面爬虫 | 备注 |
 |------|:-:|:-:|------|
@@ -96,6 +97,7 @@ API 数据始终优先，爬虫数据仅填补空缺。
 | Moonshot AI | 是 | — | Kimi K2 Thinking |
 | NVIDIA | 是 | — | Nemotron Nano 2、3 |
 | OpenAI | 是 | 是 | gpt-oss-20b、gpt-oss-120b |
+| OpenAI (mantle) | — | 是 | 经 AWS "mantle" 推理引擎提供的 GPT-5.5、GPT-5.4 — 详见下文 **OpenAI mantle 定价** |
 | Qwen | 是 | 是 | Qwen3、Qwen3 Coder、Qwen3 VL |
 | Stability AI | — | — | 图像生成（按图计价） |
 | TwelveLabs | — | — | 视频理解（按秒计价） |
@@ -151,6 +153,53 @@ Gemini pricing tier-1 (Google):           17 个模型
 Gemini pricing tier-2 (LiteLLM):          新增 17 个模型
 Gemini pricing tier-3 (static legacy):    新增 3 个模型
 Gemini pricing saved:                      共 37 个模型
+```
+
+---
+
+## OpenAI mantle 定价
+
+OpenAI **GPT-5.5** 和 **GPT-5.4** 经 AWS "mantle" 推理引擎提供，价格与 Bedrock 模型在**同一个 AWS 定价页面**上发布。因此它不是一条独立的获取管线，而是在**现有 AWS 定价爬虫内部新增的增量分支** —— 完全不改动现有的 `data-pricing-markup` 解析路径。
+
+厂商标记：`openai-mantle`。source 标签：`scraper`（与 AWS Bedrock 抓取完全相同，因为数据来自同一个页面）。
+
+### 模型与价格
+
+价格为每 1M tokens（input / cached output / output）：
+
+| 模型 | `model_id` | 输入 $/1M | cached output $/1M | 输出 $/1M | 区域 |
+|------|-----------|----------|--------------------|----------|------|
+| GPT-5.5 | `openai.gpt-5.5` | $5.50 | $0.55 | $33.00 | 仅 `us-east-2` |
+| GPT-5.4 | `openai.gpt-5.4` | $2.75 | $0.275 | $16.50 | `us-east-2`、`us-west-2` |
+
+### 获取策略
+
+- **数据源：** 复用 Bedrock 抓取已经获取的 `https://aws.amazon.com/bedrock/pricing/` HTML —— 不发起额外请求。
+- **新增分支：** `backend/app/services/pricing_updater.py` 中的 `_scrape_openai_text_pricing(html)`。纯增量实现，现有基于 markup 的解析路径保持不变。
+- **定位：** 含表头 `"Price per 1M input tokens"` 的纯文本 `<table>`。该表有 4 列：`OpenAI models | input | cached output | output`，值形如 `$ 5.50`。
+- **解析：** 逐行解析，模型名称经 `MANTLE_PRICING_NAMES` 映射表映射到 `model_id`。
+
+### 入库
+
+- **按模型所在区域各写一条** —— `gpt-5.4` 写入 `us-east-2` 和 `us-west-2` 两条；`gpt-5.5` 仅写入 `us-east-2`。区域取自模型的可用区域列表，**而非** `settings.AWS_REGION`。
+- **单位换算：** 单价 = `$/1M ÷ 1e6`。
+- **cached output 价格**写入 `cached_input_price_per_token` 列（与 Gemini 复用同一列）。
+- **source 标签：** `scraper`。
+
+### 区域推断
+
+`pricing.py` 中的区域推断对 mantle 模型**短路**：`resolve_mantle_region(model)` 在本地 `AWS_REGION` 处于模型可用区域列表时返回本地区域，否则返回首选区域。该区域与写入价格时使用的区域一致，因此 `calculate_cost()` 始终能查到匹配的价格行，不会抛出 `ValueError`。
+
+### 安全 / 互不干扰
+
+- **`update_all_pricing` 的 api_model_ids 过滤**不会误删 mantle 行：mantle 模型不在 Price List API 中、也没有 geo 前缀，因此落在该过滤器的删除集合之外。
+- **`cleanup_stale_cross_region_entries`** 只删除带 geo 前缀的条目；mantle 行无前缀，因此不受影响。
+
+### 典型运行结果
+
+```
+AWS pricing update completed: 77 models updated from api+aws-scraper, 0 failed
+OpenAI mantle pricing (scraper): 2 models → 3 region rows (gpt-5.5: us-east-2; gpt-5.4: us-east-2, us-west-2)
 ```
 
 ---
@@ -420,6 +469,7 @@ Pricing database is empty, fetching initial pricing data from AWS...
 Initial pricing data loaded: 77 models from api+aws-scraper
 Starting AWS pricing update task...
 AWS pricing update completed: 77 models updated from api+aws-scraper, 0 failed
+OpenAI mantle pricing (scraper): 2 models → 3 region rows (gpt-5.5: us-east-2; gpt-5.4: us-east-2, us-west-2)
 ```
 
 **Gemini 定价：**
@@ -504,6 +554,8 @@ Gemini 价格更新爬取公开的 Google 定价页面，无需 `GEMINI_API_KEY`
 ### 动态区域解析（定价）
 
 `ModelPricing.calculate_cost()` 通过 `BedrockClient.resolve_model()` 动态确定定价区域。这确保了路由到 fallback 区域的模型（如 `zai.glm-5` → `us-west-2`）使用数据库中正确区域的价格。
+
+对于 OpenAI mantle 模型（`openai.gpt-5.5`、`openai.gpt-5.4`），该区域推断被 `resolve_mantle_region(model)` **短路**：当本地 `AWS_REGION` 处于模型可用区域列表时返回本地区域，否则返回模型的首选区域。由于这与写入价格时使用的区域一致，查价始终成功。
 
 ### 自定义调度时间
 

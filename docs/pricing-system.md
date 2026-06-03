@@ -5,7 +5,7 @@
 This system implements dynamic fetching of model pricing from multiple sources and automatic database updates. Pricing data is used to calculate API call costs.
 
 Two independent pricing subsystems run in parallel:
-- **AWS Bedrock pricing** — for all models accessed via AWS Bedrock
+- **AWS Bedrock pricing** — for all models accessed via AWS Bedrock. This also covers OpenAI GPT-5.5/5.4 served through the AWS "mantle" inference engine, scraped from the same AWS pricing page (see **OpenAI mantle Pricing** below).
 - **Google Gemini pricing** — for models accessed directly via the Gemini API (stored with `region="global"`)
 
 ---
@@ -16,11 +16,11 @@ Stores model pricing information:
 
 | Column | Description |
 |--------|-------------|
-| `model_id` | Model identifier (e.g. `amazon.nova-lite-v1:0`, `gemini-2.5-pro`) |
-| `region` | AWS region, cross-region prefix (`us.`, `global.`), or `"global"` for Gemini |
+| `model_id` | Model identifier (e.g. `amazon.nova-lite-v1:0`, `gemini-2.5-pro`, `openai.gpt-5.5`) |
+| `region` | AWS region, cross-region prefix (`us.`, `global.`), or `"global"` for Gemini. mantle models use plain AWS regions (e.g. `us-east-2`, `us-west-2`) with no prefix |
 | `input_price_per_token` | Input token unit price (USD) |
 | `output_price_per_token` | Output token unit price (USD) |
-| `cached_input_price_per_token` | Context cache read price (USD), NULL if not supported |
+| `cached_input_price_per_token` | Context cache read price (USD), NULL if not supported. Reused by Gemini caching price and by mantle's cached-output price |
 | `currency` | Currency (USD) |
 | `source` | Data source — see values below |
 | `last_updated` | Last update timestamp |
@@ -32,6 +32,7 @@ Stores model pricing information:
 |-------|---------|
 | `api` | AWS Price List API |
 | `aws-scraper` | AWS Bedrock pricing page scraper |
+| `scraper` | OpenAI mantle (GPT-5.5/5.4) entries from the AWS pricing page — same label as the Bedrock scrape because it is the same page |
 | `gemini-scraper` | Any of the three Gemini pricing tiers (unified label) |
 
 ---
@@ -80,7 +81,7 @@ This ensures API data always takes priority and scraped data only fills in the g
 }
 ```
 
-### Supported Providers (19 total)
+### Supported Providers (20 total)
 
 | Provider | Price List API | Page Scraper | Notes |
 |----------|:-:|:-:|-------|
@@ -97,6 +98,7 @@ This ensures API data always takes priority and scraped data only fills in the g
 | Moonshot AI | Yes | — | Kimi K2 Thinking |
 | NVIDIA | Yes | — | Nemotron Nano 2, 3 |
 | OpenAI | Yes | Yes | gpt-oss-20b, gpt-oss-120b |
+| OpenAI (mantle) | — | Yes | GPT-5.5, GPT-5.4 via the AWS "mantle" inference engine — see **OpenAI mantle Pricing** below |
 | Qwen | Yes | Yes | Qwen3, Qwen3 Coder, Qwen3 VL |
 | Stability AI | — | — | Image generation (per-image pricing) |
 | TwelveLabs | — | — | Video understanding (per-second pricing) |
@@ -152,6 +154,53 @@ Gemini pricing tier-1 (Google):           17 models
 Gemini pricing tier-2 (LiteLLM):          17 new models added
 Gemini pricing tier-3 (static legacy):     3 models added
 Gemini pricing saved:                      37 models total
+```
+
+---
+
+## OpenAI mantle Pricing
+
+OpenAI **GPT-5.5** and **GPT-5.4** are served through the AWS "mantle" inference engine and are priced on the **same AWS pricing page** as Bedrock models. Rather than a separate fetch pipeline, mantle pricing is an **incremental branch inside the existing AWS pricing scraper** — it does not touch the existing `data-pricing-markup` parsing path.
+
+Provider tag: `openai-mantle`. Source label: `scraper` (identical to the AWS Bedrock scrape, because the data comes from the same page).
+
+### Models and Pricing
+
+Prices are per 1M tokens (input / cached output / output):
+
+| Model | `model_id` | Input $/1M | Cached output $/1M | Output $/1M | Regions |
+|-------|-----------|-----------|--------------------|-------------|---------|
+| GPT-5.5 | `openai.gpt-5.5` | $5.50 | $0.55 | $33.00 | `us-east-2` only |
+| GPT-5.4 | `openai.gpt-5.4` | $2.75 | $0.275 | $16.50 | `us-east-2`, `us-west-2` |
+
+### Fetch Strategy
+
+- **Source:** the same `https://aws.amazon.com/bedrock/pricing/` HTML already fetched for the Bedrock scrape — no extra request.
+- **New branch:** `_scrape_openai_text_pricing(html)` in `backend/app/services/pricing_updater.py`. It is purely additive; the existing markup-based parsing path is unchanged.
+- **Locator:** a plain-text `<table>` containing the header `"Price per 1M input tokens"`. The table has 4 columns: `OpenAI models | input | cached output | output`, with values formatted like `$ 5.50`.
+- **Parsing:** each row is parsed and the model name is mapped to a `model_id` via the `MANTLE_PRICING_NAMES` mapping.
+
+### Storage
+
+- **One row per region the model is available in** — `gpt-5.4` is written for both `us-east-2` and `us-west-2`; `gpt-5.5` is written for `us-east-2` only. The region comes from the model's availability list, **not** from `settings.AWS_REGION`.
+- **Unit conversion:** unit price = `$ per 1M ÷ 1e6`.
+- **Cached output price** is written into the `cached_input_price_per_token` column (the same column Gemini reuses for caching price).
+- **Source label:** `scraper`.
+
+### Region Inference
+
+The region inference in `pricing.py` is **short-circuited for mantle models**: `resolve_mantle_region(model)` returns the local `AWS_REGION` if it is in the model's availability list, otherwise the preferred region. This is the same region used at write time, so `calculate_cost()` always finds a matching price row and never raises `ValueError`.
+
+### Safety / Non-interference
+
+- **`update_all_pricing` API-id filter** does not delete mantle rows: mantle models are not in the Price List API and have no geo prefix, so they fall outside the filter's delete set.
+- **`cleanup_stale_cross_region_entries`** only removes entries that carry a geo prefix; mantle rows have no prefix and are therefore untouched.
+
+### Typical Run Results
+
+```
+AWS pricing update completed: 77 models updated from api+aws-scraper, 0 failed
+OpenAI mantle pricing (scraper): 2 models → 3 region rows (gpt-5.5: us-east-2; gpt-5.4: us-east-2, us-west-2)
 ```
 
 ---
@@ -433,6 +482,7 @@ Initial pricing data loaded: 77 models from api+aws-scraper
 Pricing database already contains 218 records
 Starting AWS pricing update task...
 AWS pricing update completed: 77 models updated from api+aws-scraper, 0 failed
+OpenAI mantle pricing (scraper): 2 models → 3 region rows (gpt-5.5: us-east-2; gpt-5.4: us-east-2, us-west-2)
 ```
 
 **Gemini pricing:**
@@ -520,6 +570,8 @@ No extra configuration needed. Gemini pricing runs regardless of `GEMINI_API_KEY
 ### Dynamic Region Resolution for Pricing
 
 When calculating cost, the `ModelPricing.calculate_cost()` method determines the pricing region dynamically via `BedrockClient.resolve_model()`. This ensures that models routed to the fallback region (e.g. `zai.glm-5` → `us-west-2`) look up prices under the correct region in the database.
+
+For OpenAI mantle models (`openai.gpt-5.5`, `openai.gpt-5.4`) this region inference is **short-circuited** by `resolve_mantle_region(model)`, which returns the local `AWS_REGION` when it is in the model's availability list, otherwise the model's preferred region. Because this matches the region used when the price was written, the lookup always succeeds.
 
 ### Customize Scheduler Times
 

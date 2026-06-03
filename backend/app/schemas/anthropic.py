@@ -4,10 +4,37 @@ Anthropic Messages API compatible request/response schemas.
 
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # --- Request schemas ---
+
+
+def _extract_text(content: Any) -> str:
+    """Flatten Anthropic content (str or list of text blocks) into plain text.
+
+    Used to hoist ``system`` messages — which may carry either a bare string or
+    a list of ``{"type": "text", "text": ...}`` blocks — into the top-level
+    ``system`` field. Non-text blocks are ignored.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type", "text") == "text" and block.get("text"):
+                    texts.append(block["text"])
+            elif isinstance(block, str):
+                texts.append(block)
+            else:
+                text = getattr(block, "text", None)
+                if text:
+                    texts.append(text)
+        return "\n".join(texts)
+    return str(content)
 
 
 class AnthropicTextContent(BaseModel):
@@ -82,9 +109,17 @@ AnthropicContentBlock = Union[
 
 
 class AnthropicMessage(BaseModel):
-    """Message in Anthropic format."""
+    """Message in Anthropic format.
 
-    role: Literal["user", "assistant"]
+    The Anthropic spec only allows ``user``/``assistant`` here, but some clients
+    (notably Claude Code) inject a ``system`` message into the ``messages`` array
+    instead of the top-level ``system`` field. ``role`` accepts ``system`` so
+    those requests parse; ``AnthropicMessagesRequest`` then hoists any such
+    messages into the top-level ``system`` field before validation completes, so
+    downstream code never sees a ``system`` role in ``messages``.
+    """
+
+    role: Literal["user", "assistant", "system"]
     content: Union[str, List[AnthropicContentBlock]]
 
 
@@ -130,6 +165,42 @@ class AnthropicMessagesRequest(BaseModel):
     disable_parallel_tool_use: Optional[bool] = None
     metadata: Optional[Dict[str, Any]] = None
     thinking: Optional[AnthropicThinkingConfig] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _hoist_system_messages(cls, data: Any) -> Any:
+        """Move any ``system`` role messages into the top-level ``system`` field.
+
+        Some clients (e.g. Claude Code) put a ``system`` message inside the
+        ``messages`` array rather than the top-level ``system`` field, which the
+        Anthropic spec disallows. To stay compatible, pull those out, prepend
+        their text to ``system``, and leave ``messages`` with only
+        ``user``/``assistant`` entries — transparent to all downstream logic.
+        """
+        if not isinstance(data, dict):
+            return data
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return data
+
+        system_texts: List[str] = []
+        kept: List[Any] = []
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                system_texts.append(_extract_text(msg.get("content")))
+            else:
+                kept.append(msg)
+        if not system_texts:
+            return data
+
+        # Prepend hoisted system text to any existing top-level system content.
+        existing = data.get("system")
+        parts = [t for t in system_texts if t]
+        if existing:
+            parts.append(_extract_text(existing))
+        data["system"] = "\n\n".join(p for p in parts if p)
+        data["messages"] = kept
+        return data
 
 
 # --- Response schemas ---
