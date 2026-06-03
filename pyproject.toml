@@ -22,7 +22,7 @@ dependencies = [
     "aioboto3>=13.0.0",
     "aiobotocore>=2.11.0",
     # Authentication and security
-    "PyJWT>=2.8.0",
+    "PyJWT>=2.13.0",  # 2.13.0 fixes PYSEC-2026-175/177/178/179
     "passlib[bcrypt]>=1.7.4",
     "bcrypt>=3.2.0,<4.0.0",
     "python-multipart>=0.0.27",
