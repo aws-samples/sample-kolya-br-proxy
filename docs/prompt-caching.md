@@ -225,16 +225,24 @@ assistant.content: [
 
 The proxy searches backward from the end of content for the first non-thinking block and places `cache_control` on it. Although the breakpoint is on the text block, both thinking blocks are still cached as part of the prefix.
 
-### Pre-existing Breakpoints & Budget
+### Inline `cache_control` Markers Are Not Preserved
 
-If the request already contains `cache_control` markers (e.g., set by the client), those count against the budget of 4. Pre-existing markers also have their TTL upgraded to match the server configuration.
+> **Important**: `cache_control` markers placed **inline** by the client — i.e. inside individual `messages`/`system`/`tools` content blocks (the way Claude Code and the Anthropic SDK set breakpoints) — are **dropped during request translation** and do **not** reach Bedrock.
+>
+> Both request paths translate the incoming body into the internal `BedrockRequest` model, whose `BedrockContentPart`, `BedrockTool`, and `system` (a plain string) carry **no** `cache_control` field. The proxy then injects its own breakpoints (see strategy above). The net effect: **the gateway, not the client, controls where breakpoints go** for Anthropic models.
 
-**Example**: Client pre-set 2 breakpoints, server TTL configured as `1h`:
+This means the client's own breakpoint placement (e.g. Claude Code's strategy) has no effect end-to-end. If auto-injection is enabled, the proxy's `tools[-1] → system[-1] → last-assistant` strategy is what actually runs; if disabled, no caching happens at all. To control caching, use the configuration options below — not inline markers.
+
+### Pre-existing Breakpoints & Budget (`bedrock_prompt_caching` only)
+
+There is exactly one way to pass caching configuration through to Bedrock untouched: the dedicated **`bedrock_prompt_caching`** body field (OpenAI path). Its value is merged into the outgoing body verbatim (`body.update(prompt_caching)`), so any `cache_control` it contains survives. **Only** breakpoints supplied this way are detected by `_body_has_cache_control` — inline markers (above) are already gone by this point and are never detected.
+
+When `bedrock_prompt_caching` supplies breakpoints, they count against the budget of 4, have their TTL upgraded to the server configuration, and suppress auto-injection up to the remaining budget:
 
 ```
-On arrival:
-  tools[-1]:  {"cache_control": {"type": "ephemeral"}}          ← client pre-set (5m)
-  system[-1]: {"cache_control": {"type": "ephemeral"}}          ← client pre-set (5m)
+On arrival (via bedrock_prompt_caching):
+  tools[-1]:  {"cache_control": {"type": "ephemeral"}}          ← supplied (5m)
+  system[-1]: {"cache_control": {"type": "ephemeral"}}          ← supplied (5m)
 
 After proxy processing:
   tools[-1]:  {"cache_control": {"type": "ephemeral", "ttl": "1h"}}  ← TTL upgraded
@@ -554,7 +562,7 @@ INFO  Streaming chat completion successful: request_id=chatcmpl-xxx, duration=5.
 | `Prompt cache:` appears but `cache_write=0` | Content below Bedrock's **token** minimum (1024 for Sonnet) | Make the system prompt longer (8000+ chars to safely exceed 1024 tokens) |
 | `cache_write` on first request but no `cache_read` on second | Cache TTL expired or content changed between requests | Send second request within TTL window; ensure content is identical. Consider `KBR_PROMPT_CACHE_TTL=1h` for longer sessions |
 | `cache_write` appears but `cache_read` never does | Model may not support caching, or region limitation | Verify model and region support prompt caching in AWS docs |
-| Neither `cache_write` nor `cache_read` in log | Injection skipped because client sent manual `cache_control` | Check if `bedrock_prompt_caching` is set in request body |
+| Neither `cache_write` nor `cache_read` in log | Auto-injection disabled, or `bedrock_prompt_caching` supplied breakpoints that all missed (inline `cache_control` markers do **not** suppress injection — they are dropped in translation) | Verify `should_inject` in the debug log; if `bedrock_prompt_caching` is set, check its breakpoint positions |
 
 ### Debug Logging
 
@@ -570,7 +578,9 @@ This shows the exact decision chain: per-request override → server default →
 
 ### Interaction with Manual Prompt Caching
 
-If the client already sets `cache_control` markers via `bedrock_prompt_caching` (pass-through), the auto-injection is skipped entirely. This avoids conflicts — the client is assumed to manage caching itself.
+If breakpoints are supplied via the **`bedrock_prompt_caching`** body field (the only pass-through channel — see [Pre-existing Breakpoints & Budget](#pre-existing-breakpoints--budget-bedrock_prompt_caching-only)), auto-injection is suppressed up to the remaining budget, on the assumption that the client is managing caching itself.
+
+Note this does **not** apply to inline `cache_control` markers inside message/system/tool blocks (e.g. those set by Claude Code or the Anthropic SDK): those are stripped during translation, never detected, and therefore never suppress auto-injection.
 
 ### Scope
 

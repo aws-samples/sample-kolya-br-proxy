@@ -689,7 +689,7 @@ sequenceDiagram
 - **OpenAI 路径 → Google Gemini**（`/v1/chat/completions`，`gemini-*` 模型）：`GeminiClient` 在内部完成 OpenAI ↔ Gemini 原生格式转换；`chat.py` 格式无感知
 - **OpenAI 路径 → AWS mantle**（`/v1/chat/completions` 和 `/v1/messages`，`openai.gpt-5.5` / `openai.gpt-5.4`）：`is_openai_mantle_model()` 将请求路由到 `MantleClient`，由其完成 OpenAI ChatCompletions ↔ OpenAI Responses 转换（有损），并通过 SigV4 调用 mantle 的 `POST /responses`
 - **mantle 原生透传**（`/v1/responses`）：零转换的 OpenAI Responses API，直接转发给 mantle
-- **Anthropic 路径**（`/v1/messages`）：近乎直通，因为 Bedrock InvokeModel 原生使用 Anthropic Messages API 格式
+- **Anthropic 路径**（`/v1/messages`）：属翻译而非真正直通。**格式**接近——Bedrock InvokeModel 原生使用 Anthropic Messages API 格式——但请求仍经 `to_bedrock` → `BedrockRequest` 映射，而该模型无 `cache_control` 字段，故 inline 缓存断点被丢弃（改由代理自行注入）。`to_bedrock_with_passthrough` 存在但当前未接入。
 
 因此 OpenAI GPT-5.5/5.4 有三条访问路径：`/v1/chat/completions`（有损转换）、`/v1/messages`（有损转换）、`/v1/responses`（原生，零转换）。
 
@@ -859,7 +859,7 @@ sequenceDiagram
 
 ### 7.4 Anthropic 路径时序图
 
-Anthropic 路径是近乎直通的：由于 Bedrock 的 InvokeModel API 原生接受 Anthropic Messages API 格式，只需极少转换。与 OpenAI 路径的关键区别：
+Anthropic 路径**格式**接近原生：Bedrock 的 InvokeModel API 原生接受 Anthropic Messages API 格式，只需极少转换。但它仍是一次**翻译**（`to_bedrock` → `BedrockRequest`），并非字节级直通：内部模型不携带的字段——尤其是消息/system/tools 块里 inline 的 `cache_control` 标记——会被丢弃（详见 [Prompt Caching](prompt-caching.md)）。与 OpenAI 路径的关键区别：
 
 - 通过 `x-api-key` 头认证，而非 `Authorization: Bearer`
 - 响应中保留 thinking blocks（OpenAI 路径会跳过它们）
@@ -890,9 +890,9 @@ sequenceDiagram
 
     Msg->>Msg: 配额检查 + 模型访问检查<br/>（支持 Anthropic 短格式名称自动映射到 Bedrock ID）
 
-    Msg->>Translator: to_bedrock_with_passthrough(request)
-    Note over Translator: 近 1:1 映射，<br/>保留 cache_control
-    Translator-->>Msg: invoke_model 原始字典
+    Msg->>Translator: to_bedrock(request)
+    Note over Translator: 映射为 BedrockRequest；<br/>inline cache_control 被丢弃<br/>（schema 无此字段）
+    Translator-->>Msg: BedrockRequest
 
     alt Streaming (stream=true)
         Msg->>Bedrock: invoke_stream(model, request)
@@ -925,12 +925,12 @@ sequenceDiagram
 | **OpenAI → Bedrock** | 三阶段（OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI）| 完整转换；支持工具调用、图片、Bedrock 扩展字段 |
 | **OpenAI → Gemini** | `GeminiClient` 内部转换（OpenAI → Gemini GenerateContentRequest / 反向）| 原生 `generateContent` API；不经过 OpenAI 兼容层 |
 | **OpenAI → mantle** | `MantleClient` 内部转换（OpenAI ChatCompletions ↔ OpenAI Responses）| SigV4 调用 `POST /responses`；有损。原生 `/v1/responses` 为零转换透传 |
-| **Anthropic → Bedrock** | 近乎直通（`invoke_model`）| 最小转换；保留 `cache_control`、thinking blocks |
+| **Anthropic → Bedrock** | 经 `to_bedrock` → `BedrockRequest` 翻译（`invoke_model`）| 格式接近原生，但属翻译而非直通：thinking blocks 保留；inline `cache_control` 标记被**丢弃**（`BedrockRequest` 无此字段），改由代理自行注入断点。`to_bedrock_with_passthrough` 存在但**未接入**。 |
 
 代理在客户端 API 格式和 Bedrock 之间执行转换：
 
 - **OpenAI 路径**：三阶段转换（OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI）。包括消息转换、工具调用映射、参数翻译和自动修正。
-- **Anthropic 路径**：近乎直通（Anthropic → 原始字典 → `invoke_model`）。由于 Bedrock 原生使用 Anthropic Messages API 格式处理 Claude 模型，只需极少转换。保留 `cache_control` 标记和 thinking blocks。
+- **Anthropic 路径**：经 `to_bedrock` → `BedrockRequest` 翻译（`invoke_model`）。由于 Bedrock 原生使用 Anthropic Messages API 格式处理 Claude 模型，**格式**接近原生、转换极少；thinking blocks 保留,但 inline `cache_control` 标记被**丢弃**（`BedrockRequest` 无此字段），改由代理自行注入断点。这是翻译而非字节级直通。
 
 对于非 Anthropic 模型（Nova、DeepSeek、Mistral、Llama 等），两条路径都通过 `converse`/`converse_stream` 使用 Converse API。
 

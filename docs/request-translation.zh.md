@@ -441,7 +441,7 @@ message_delta  ──▶  output_tokens  （在流接近结束时捕获）
 
 **文件**：`backend/app/api/anthropic/endpoints/messages.py`、`backend/app/services/anthropic_translator.py`
 
-当客户端使用 Anthropic Messages API（`POST /v1/messages`，通过 `x-api-key` 请求头认证）时，转换非常少，因为 Bedrock 的 InvokeModel API 对 Anthropic 模型原生使用 Messages API 格式。
+当客户端使用 Anthropic Messages API（`POST /v1/messages`，通过 `x-api-key` 请求头认证）时，转换非常少，因为 Bedrock 的 InvokeModel API 对 Anthropic 模型原生使用 Messages API 格式。注意"近乎直通"指的是**格式相似**,并非字节级直通:请求仍经 `to_bedrock` → `BedrockRequest` 映射,内部模型不携带的字段——尤其是 inline 的 `cache_control` 标记——会被丢弃。另有 `to_bedrock_with_passthrough` 辅助函数可做真正透传,但**当前未接入该端点**。
 
 ### 8.1 数据流
 
@@ -478,7 +478,7 @@ sequenceDiagram
 | `stop_reason` | 映射为 `finish_reason`（`end_turn` → `stop`） | 原样传递 |
 | 流式格式 | `data: {json}\n\n` + `data: [DONE]\n\n` | `event: type\ndata: {json}\n\n` |
 | 错误格式 | `{"error": {"message": "...", "type": "..."}}` | `{"type": "error", "error": {"type": "...", "message": "..."}}` |
-| `cache_control` | 通过 `bedrock_auto_cache` 或 `X-Bedrock-Auto-Cache` | 原生支持（直接传递） |
+| `cache_control` | 通过 `bedrock_auto_cache` / `X-Bedrock-Auto-Cache`；inline 标记在翻译中被丢弃 | 同样:inline `cache_control` 标记会被 `to_bedrock` **丢弃**（`BedrockRequest` 无此字段）。自动注入开启时由代理注入自己的断点。详见 [Prompt Caching](prompt-caching.md)。 |
 
 ### 8.3 Thinking 块透传
 

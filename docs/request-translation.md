@@ -416,7 +416,7 @@ message_delta  ──▶  output_tokens  (captured near stream end)
 
 **Files**: `backend/app/api/anthropic/endpoints/messages.py`, `backend/app/services/anthropic_translator.py`
 
-When clients use the Anthropic Messages API (`POST /v1/messages` with `x-api-key` header), the translation is minimal because Bedrock's InvokeModel API for Anthropic models natively uses the Messages API format.
+When clients use the Anthropic Messages API (`POST /v1/messages` with `x-api-key` header), the translation is minimal because Bedrock's InvokeModel API for Anthropic models natively uses the Messages API format. Note "near-passthrough" refers to the **format similarity**, not a byte passthrough: the request is still mapped through `to_bedrock` → `BedrockRequest`, so fields the internal model doesn't carry — notably inline `cache_control` markers — are dropped. A `to_bedrock_with_passthrough` helper exists for true passthrough but is **not currently wired into the endpoint**.
 
 ### 7.1 Data Flow
 
@@ -453,7 +453,7 @@ sequenceDiagram
 | `stop_reason` | Mapped to `finish_reason` (`end_turn` → `stop`) | Passed through as-is |
 | Streaming format | `data: {json}\n\n` + `data: [DONE]\n\n` | `event: type\ndata: {json}\n\n` |
 | Error format | `{"error": {"message": "...", "type": "..."}}` | `{"type": "error", "error": {"type": "...", "message": "..."}}` |
-| `cache_control` | Via `bedrock_auto_cache` or `X-Bedrock-Auto-Cache` | Native support (passed through directly) |
+| `cache_control` | Via `bedrock_auto_cache` / `X-Bedrock-Auto-Cache`; inline markers dropped in translation | Same: inline `cache_control` markers are **dropped** by `to_bedrock` (`BedrockRequest` has no such field). The proxy injects its own breakpoints when auto-cache is on. See [Prompt Caching](prompt-caching.md). |
 
 ### 7.3 Thinking Block Pass-through
 
