@@ -291,12 +291,15 @@ def _openai_to_responses(payload: Dict[str, Any]) -> Dict[str, Any]:
     if text_format is not None:
         body["text"] = {"format": text_format}
 
-    # reasoning.effort rides the existing bedrock_additional_model_request_fields
-    # passthrough channel so no new request schema field is needed.
-    extra = payload.get("bedrock_additional_model_request_fields") or {}
-    reasoning = extra.get("reasoning")
-    if isinstance(reasoning, dict) and reasoning.get("effort"):
-        body["reasoning"] = {"effort": reasoning["effort"]}
+    # reasoning_effort: standard OpenAI field, or via bedrock_additional_model_request_fields
+    effort = payload.get("reasoning_effort")
+    if not effort:
+        extra = payload.get("bedrock_additional_model_request_fields") or {}
+        reasoning = extra.get("reasoning")
+        if isinstance(reasoning, dict):
+            effort = reasoning.get("effort")
+    if effort:
+        body["reasoning"] = {"effort": effort}
 
     return body
 
