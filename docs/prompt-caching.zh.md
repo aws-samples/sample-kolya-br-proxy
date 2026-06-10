@@ -225,16 +225,24 @@ assistant.content: [
 
 代理从 content 末尾往回找第一个非 thinking block，在其上放置 `cache_control`。虽然断点在 text block 上，但两个 thinking block 作为前缀的一部分仍会被缓存。
 
-### 预存断点与预算
+### inline `cache_control` 标记不会被保留
 
-如果请求中已包含 `cache_control` 标记（如客户端自行设置），这些标记计入 4 个断点预算。已有标记的 TTL 会被升级到服务端配置的值。
+> **重要**：客户端打在 **inline** 位置的 `cache_control` 标记——即放在单个 `messages`/`system`/`tools` 内容块里的断点（Claude Code 和 Anthropic SDK 就是这么打断点的）——会在**请求翻译阶段被丢弃**,**不会**到达 Bedrock。
+>
+> 两条请求路径都会把入站 body 翻译成内部的 `BedrockRequest` 模型,而它的 `BedrockContentPart`、`BedrockTool` 以及 `system`（纯字符串）都**没有** `cache_control` 字段。随后代理注入自己的断点（见上文策略）。净效果:对 Anthropic 模型而言,**断点位置由网关决定,而非客户端**。
 
-**示例**：客户端预设了 2 个断点，服务端 TTL 配置为 `1h`：
+也就是说,客户端自己的断点布局（如 Claude Code 的策略）端到端不起作用。若自动注入开启,真正生效的是代理的 `tools[-1] → system[-1] → 末条 assistant` 策略;若关闭,则完全不缓存。要控制缓存,请用下面的配置项,而非 inline 标记。
+
+### 预存断点与预算（仅 `bedrock_prompt_caching`）
+
+只有一种方式能让缓存配置原样透传给 Bedrock:专用的 **`bedrock_prompt_caching`** body 字段（OpenAI 路径）。它的值会被原样合并进出站 body（`body.update(prompt_caching)`）,所以其中的 `cache_control` 得以保留。**只有**这种方式提供的断点才会被 `_body_has_cache_control` 检测到——inline 标记（见上）此时早已被剥离,永远检测不到。
+
+当 `bedrock_prompt_caching` 提供断点时,它们计入 4 个断点预算、TTL 会被升级到服务端配置值,并在剩余预算内抑制自动注入:
 
 ```
-请求到达时:
-  tools[-1]:  {"cache_control": {"type": "ephemeral"}}          ← 客户端预设 (5m)
-  system[-1]: {"cache_control": {"type": "ephemeral"}}          ← 客户端预设 (5m)
+请求到达时（经 bedrock_prompt_caching）:
+  tools[-1]:  {"cache_control": {"type": "ephemeral"}}          ← 提供 (5m)
+  system[-1]: {"cache_control": {"type": "ephemeral"}}          ← 提供 (5m)
 
 代理处理后:
   tools[-1]:  {"cache_control": {"type": "ephemeral", "ttl": "1h"}}  ← TTL 升级
@@ -554,7 +562,7 @@ INFO  Streaming chat completion successful: request_id=chatcmpl-xxx, duration=5.
 | 出现 `Prompt cache:` 但 `cache_write=0` | 内容低于 Bedrock 的 **token** 最低要求（Sonnet 需 1024） | 加长 system prompt（8000+ 字符以确保超过 1024 tokens） |
 | 首次 `cache_write` 正常但第二次无 `cache_read` | 缓存 TTL 过期或两次请求内容不一致 | 在 TTL 时间内发送第二次请求；确保内容完全相同。可设置 `KBR_PROMPT_CACHE_TTL=1h` 延长缓存 |
 | 有 `cache_write` 但始终无 `cache_read` | 模型或区域可能不支持缓存 | 查阅 AWS 文档确认模型和区域支持 prompt caching |
-| 日志中既无 `cache_write` 也无 `cache_read` | 客户端已手动设置 `cache_control`，自动注入被跳过 | 检查请求体中是否设置了 `bedrock_prompt_caching` |
+| 日志中既无 `cache_write` 也无 `cache_read` | 自动注入被关闭,或 `bedrock_prompt_caching` 提供的断点全部未命中（inline `cache_control` 标记**不会**抑制注入——它们在翻译阶段已被丢弃）| 查看 debug 日志中的 `should_inject`;若设置了 `bedrock_prompt_caching`,检查其断点位置 |
 
 ### Debug 日志
 
@@ -570,7 +578,9 @@ DEBUG  Prompt cache check: auto_cache=None, server_default=True, should_inject=T
 
 ### 与手动缓存配置的交互
 
-如果客户端已通过 `bedrock_prompt_caching`（透传）设置了 `cache_control` 标记，自动注入会被完全跳过，避免冲突 — 此时由客户端自行管理缓存。
+如果断点是通过 **`bedrock_prompt_caching`** body 字段（唯一的透传通道——见[预存断点与预算](#预存断点与预算仅-bedrock_prompt_caching)）提供的,自动注入会在剩余预算内被抑制,假定由客户端自行管理缓存。
+
+注意这**不**适用于消息/system/tools 块里 inline 的 `cache_control` 标记（如 Claude Code 或 Anthropic SDK 设置的那些）:它们在翻译阶段被剥离、从不被检测到,因此永远不会抑制自动注入。
 
 ### 适用范围
 

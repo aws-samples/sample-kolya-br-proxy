@@ -60,6 +60,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('pages/ActivityPage.vue'),
       },
       {
+        path: 'traces',
+        name: 'traces',
+        component: () => import('pages/TracesPage.vue'),
+      },
+      {
         path: 'admin-users',
         name: 'admin-users',
         component: () => import('pages/AdminUsersPage.vue'),

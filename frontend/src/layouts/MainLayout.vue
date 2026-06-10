@@ -204,6 +204,13 @@ const allMenuLinks = [
     to: '/activity',
   },
   {
+    title: 'Traces',
+    caption: 'Inspect request/response traces',
+    icon: 'travel_explore',
+    to: '/traces',
+    permission: 'view_usage',
+  },
+  {
     title: 'Admin Users',
     caption: 'Manage admin accounts',
     icon: 'admin_panel_settings',

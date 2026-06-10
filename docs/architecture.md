@@ -699,7 +699,7 @@ This section details the full lifecycle of gateway requests. The proxy supports 
 - **OpenAI path → Google Gemini** (`/v1/chat/completions`, `gemini-*` models): `GeminiClient` converts OpenAI ↔ Gemini native format; `chat.py` is format-agnostic
 - **OpenAI path → AWS mantle** (`/v1/chat/completions` and `/v1/messages`, `openai.gpt-5.5` / `openai.gpt-5.4`): `is_openai_mantle_model()` routes the request to `MantleClient`, which converts OpenAI ChatCompletions ↔ OpenAI Responses (lossy) and calls mantle's `POST /responses` over SigV4
 - **mantle native passthrough** (`/v1/responses`): zero-conversion OpenAI Responses API forwarded directly to mantle
-- **Anthropic path** (`/v1/messages`): Near-passthrough since Bedrock InvokeModel natively uses Anthropic Messages API format
+- **Anthropic path** (`/v1/messages`): Translated (not a true passthrough). The *format* is close — Bedrock InvokeModel natively uses Anthropic Messages API format — but the request is still mapped through `to_bedrock` → `BedrockRequest`, which has no `cache_control` field, so inline cache breakpoints are dropped (the proxy injects its own). `to_bedrock_with_passthrough` exists but is not currently wired in.
 
 OpenAI GPT-5.5/5.4 can therefore be reached via three access paths: `/v1/chat/completions` (lossy conversion), `/v1/messages` (lossy conversion), and `/v1/responses` (native, zero conversion).
 
@@ -899,7 +899,7 @@ sequenceDiagram
 
 ### 7.4 Anthropic Path Sequence Diagram
 
-The Anthropic path is a near-passthrough: since Bedrock's InvokeModel API natively accepts Anthropic Messages API format, minimal translation is needed. Key differences from the OpenAI path:
+The Anthropic path is close to the native format — Bedrock's InvokeModel API accepts Anthropic Messages API format — but it is still a **translation** (`to_bedrock` → `BedrockRequest`), not a byte passthrough: inline `cache_control` markers are dropped (see [Prompt Caching](prompt-caching.md)). Key differences from the OpenAI path:
 
 - Auth via `x-api-key` header instead of `Authorization: Bearer`
 - Thinking blocks are preserved in responses (OpenAI path skips them)
@@ -930,9 +930,9 @@ sequenceDiagram
 
     Msg->>Msg: Quota check + model access check<br/>(normalizes Anthropic short names to Bedrock IDs)
 
-    Msg->>Translator: to_bedrock_with_passthrough(request)
-    Note over Translator: Near 1:1 mapping,<br/>preserves cache_control
-    Translator-->>Msg: Raw dict for invoke_model
+    Msg->>Translator: to_bedrock(request)
+    Note over Translator: Maps to BedrockRequest;<br/>inline cache_control is DROPPED<br/>(schema has no such field)
+    Translator-->>Msg: BedrockRequest
 
     alt Streaming (stream=true)
         Msg->>Bedrock: invoke_stream(model, request)
@@ -965,7 +965,7 @@ sequenceDiagram
 | **OpenAI → Bedrock** | Three-phase (OpenAI → `BedrockRequest` → Bedrock API → `BedrockResponse` → OpenAI) | Full translation; tool calls, images, Bedrock extensions |
 | **OpenAI → Gemini** | `GeminiClient` internal conversion (OpenAI → Gemini GenerateContentRequest / back) | Native `generateContent` API; no OpenAI-compat layer |
 | **OpenAI → mantle** | `MantleClient` internal conversion (OpenAI ChatCompletions ↔ OpenAI Responses) | SigV4 to `POST /responses`; lossy. Native `/v1/responses` is zero-conversion passthrough |
-| **Anthropic → Bedrock** | Near-passthrough (`invoke_model`) | Minimal translation; preserves `cache_control`, thinking blocks |
+| **Anthropic → Bedrock** | Translated via `to_bedrock` → `BedrockRequest` (`invoke_model`) | Format is close to native, but it is a translation, not a passthrough: thinking blocks are preserved; inline `cache_control` markers are **dropped** (`BedrockRequest` has no such field). The proxy injects its own breakpoints. `to_bedrock_with_passthrough` exists but is **not wired in**. |
 
 For non-Anthropic Bedrock models (Nova, DeepSeek, Mistral, Llama, etc.), the Bedrock path uses the Converse API via `converse`/`converse_stream`.
 

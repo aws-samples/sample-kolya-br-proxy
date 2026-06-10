@@ -23,6 +23,10 @@ class Settings(BaseSettings):
 
     # Application settings
     DEBUG: bool = Field(default=False, description="Enable debug mode")
+    TRACE_ENABLED: bool = Field(
+        default=True,
+        description="Enable request trace recording (in-memory ring buffer)",
+    )
     PORT: int = Field(default=8000, description="Application port")
     ALLOWED_ORIGINS: str = Field(
         default="http://localhost:3000,http://localhost:8000",
