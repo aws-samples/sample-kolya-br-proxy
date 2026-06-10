@@ -2,6 +2,7 @@
 Anthropic Messages API compatible endpoint.
 """
 
+import json
 import logging
 import time
 import uuid
@@ -29,10 +30,55 @@ from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import is_gemini_model as _is_gemini_model
 from app.services.mantle_models import is_openai_mantle_model as _is_mantle_model
 from app.services.pricing import ModelPricing
+from app.services.trace_store import TraceRecord, TraceStore
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 background_tasks = BackgroundTaskManager()
+
+
+def _build_trace_request(
+    request_data: AnthropicMessagesRequest, request_id: str, token: "APIToken"
+) -> TraceRecord:
+    """Build a TraceRecord from the incoming request (response fields filled later)."""
+
+    def _serialize_system(sys):
+        if sys is None:
+            return None
+        if isinstance(sys, str):
+            return sys
+        return [b.model_dump() if hasattr(b, "model_dump") else b for b in sys]
+
+    def _serialize_messages(msgs):
+        out = []
+        for m in msgs:
+            content = m.content
+            if isinstance(content, list):
+                content = [
+                    b.model_dump() if hasattr(b, "model_dump") else b for b in content
+                ]
+            out.append({"role": m.role, "content": content})
+        return out
+
+    def _serialize_tools(tools):
+        if not tools:
+            return []
+        return [t.model_dump() if hasattr(t, "model_dump") else t for t in tools]
+
+    return TraceRecord(
+        request_id=request_id,
+        timestamp=time.time(),
+        model=request_data.model,
+        token_id=str(token.id),
+        token_name=token.name or "",
+        system=_serialize_system(request_data.system),
+        messages=_serialize_messages(request_data.messages),
+        tools=_serialize_tools(request_data.tools),
+        thinking=request_data.thinking.model_dump() if request_data.thinking else None,
+        max_tokens=request_data.max_tokens,
+        temperature=request_data.temperature,
+        stream=request_data.stream or False,
+    )
 
 
 @router.post("/messages")
@@ -170,6 +216,7 @@ async def create_message(
                     http_request=http_request,
                     cache_ttl=cache_ttl or get_settings().PROMPT_CACHE_TTL,
                     allowed_model_names=allowed_model_names,
+                    request_data=request_data,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -235,6 +282,21 @@ async def create_message(
             cache_read_tokens=cache_read_tokens,
         )
 
+        # Record trace
+        if TraceStore.is_enabled():
+            trace_rec = _build_trace_request(request_data, request_id, token)
+            trace_rec.duration_s = round(duration, 3)
+            trace_rec.stop_reason = anthropic_response.stop_reason or ""
+            trace_rec.input_tokens = anthropic_response.usage.input_tokens
+            trace_rec.output_tokens = anthropic_response.usage.output_tokens
+            trace_rec.cache_creation_input_tokens = cache_creation_tokens
+            trace_rec.cache_read_input_tokens = cache_read_tokens
+            trace_rec.response_content = [
+                b.model_dump() if hasattr(b, "model_dump") else b
+                for b in (anthropic_response.content or [])
+            ]
+            TraceStore.get_instance().add(trace_rec)
+
         return anthropic_response
 
     except HTTPException:
@@ -294,6 +356,7 @@ async def stream_anthropic_messages(
     http_request: Request = None,
     cache_ttl: str = None,
     allowed_model_names: list[str] | None = None,
+    request_data: AnthropicMessagesRequest | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream Anthropic Messages API responses.
@@ -313,6 +376,11 @@ async def stream_anthropic_messages(
     }
     last_heartbeat = time.time()
     client_disconnected = False
+    # Accumulate response content blocks for trace
+    trace_content_blocks: list[dict] = []
+    trace_current_block: dict | None = None
+    trace_chunks: list[str] = []
+    trace_stop_reason = ""
 
     # Compute fallback models for stream failover
     fb_models = get_fallback_models(allowed_model_names or [], model)
@@ -348,6 +416,48 @@ async def stream_anthropic_messages(
             # Measure time to first content token
             if ttft is None and event.type == "content_block_delta":
                 ttft = time.time() - start_time
+
+            # Accumulate content for trace
+            if event.type == "content_block_start" and event.content_block:
+                cb = event.content_block
+                trace_current_block = {"type": cb.type}
+                trace_chunks = []
+                if cb.type == "tool_use":
+                    trace_current_block["id"] = cb.id or ""
+                    trace_current_block["name"] = cb.name or ""
+            elif (
+                event.type == "content_block_delta"
+                and event.delta
+                and trace_current_block
+            ):
+                delta = event.delta
+                chunk = (
+                    delta.get("text")
+                    or delta.get("thinking")
+                    or delta.get("partial_json")
+                    or delta.get("signature")
+                    or ""
+                )
+                if chunk:
+                    trace_chunks.append(chunk)
+            elif event.type == "content_block_stop" and trace_current_block:
+                joined = "".join(trace_chunks)
+                btype = trace_current_block["type"]
+                if btype == "text":
+                    trace_current_block["text"] = joined
+                elif btype == "thinking":
+                    trace_current_block["thinking"] = joined
+                elif btype == "tool_use":
+                    try:
+                        trace_current_block["input"] = json.loads(joined or "{}")
+                    except (ValueError, TypeError):
+                        trace_current_block["input"] = joined
+                elif btype == "signature":
+                    trace_current_block["signature"] = joined
+                trace_content_blocks.append(trace_current_block)
+                trace_current_block = None
+            elif event.type == "message_delta" and event.delta:
+                trace_stop_reason = event.delta.get("stop_reason", "")
 
             # Convert Bedrock event to Anthropic SSE events
             sse_events = AnthropicResponseTranslator.bedrock_stream_to_anthropic_events(
@@ -410,6 +520,18 @@ async def stream_anthropic_messages(
             cache_write_tokens=total_cache_creation,
             cache_read_tokens=total_cache_read,
         )
+
+        # Record trace
+        if TraceStore.is_enabled() and request_data:
+            trace_rec = _build_trace_request(request_data, request_id, token)
+            trace_rec.duration_s = round(duration, 3)
+            trace_rec.stop_reason = trace_stop_reason
+            trace_rec.input_tokens = total_input
+            trace_rec.output_tokens = total_output
+            trace_rec.cache_creation_input_tokens = total_cache_creation
+            trace_rec.cache_read_input_tokens = total_cache_read
+            trace_rec.response_content = trace_content_blocks
+            TraceStore.get_instance().add(trace_rec)
 
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "Unknown")

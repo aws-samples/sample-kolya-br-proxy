@@ -14,6 +14,7 @@ from app.api.admin.endpoints import (
     models,
     teams,
     tokens,
+    traces,
     usage,
     users,
     pricing,
@@ -67,6 +68,9 @@ admin_router.include_router(
 admin_router.include_router(
     data_management.router, prefix="/data-management", tags=["admin-data-management"]
 )
+
+# Trace inspection (view_usage permission)
+admin_router.include_router(traces.router, prefix="/traces", tags=["admin-traces"])
 
 
 @admin_router.get("/")

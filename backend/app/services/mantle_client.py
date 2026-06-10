@@ -241,6 +241,13 @@ def _openai_tool_choice_to_responses(tool_choice: Any) -> Optional[Any]:
     return None
 
 
+_REASONING_MODEL_PATTERNS = ("gpt-5.5", "o1", "o3", "o4")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    return any(pat in model for pat in _REASONING_MODEL_PATTERNS)
+
+
 def _openai_to_responses(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a full OpenAI chat completion payload to a Responses request body.
 
@@ -266,9 +273,10 @@ def _openai_to_responses(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if payload.get("max_tokens") is not None:
         body["max_output_tokens"] = payload["max_tokens"]
-    if payload.get("temperature") is not None:
+    is_reasoning = _is_reasoning_model(body["model"])
+    if not is_reasoning and payload.get("temperature") is not None:
         body["temperature"] = payload["temperature"]
-    if payload.get("top_p") is not None:
+    if not is_reasoning and payload.get("top_p") is not None:
         body["top_p"] = payload["top_p"]
 
     tools = _openai_tools_to_responses(payload.get("tools"))
@@ -428,6 +436,20 @@ class MantleClient:
     # /v1/responses endpoint exposes mantle's full capability surface.
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _strip_unsupported_params(body: dict) -> dict:
+        """Remove parameters not supported by reasoning models."""
+        model = body.get("model", "")
+        if _is_reasoning_model(model):
+            for key in (
+                "temperature",
+                "top_p",
+                "frequency_penalty",
+                "presence_penalty",
+            ):
+                body.pop(key, None)
+        return body
+
     @classmethod
     async def responses_passthrough(cls, body: dict) -> dict:
         """Non-streaming native Responses request — body forwarded verbatim."""
@@ -435,6 +457,7 @@ class MantleClient:
         url, region = cls._endpoint(model)
         send_body = dict(body)
         send_body["stream"] = False
+        cls._strip_unsupported_params(send_body)
         body_bytes = json.dumps(send_body).encode("utf-8")
         headers = await _signed_headers("POST", url, body_bytes, region)
 
@@ -468,6 +491,7 @@ class MantleClient:
         url, region = cls._endpoint(model)
         send_body = dict(body)
         send_body["stream"] = True
+        cls._strip_unsupported_params(send_body)
         body_bytes = json.dumps(send_body).encode("utf-8")
         headers = await _signed_headers("POST", url, body_bytes, region)
         headers["Accept"] = "text/event-stream"
