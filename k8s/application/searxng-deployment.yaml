@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searxng
+  namespace: kbp
+  labels:
+    app: searxng
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: searxng
+  template:
+    metadata:
+      labels:
+        app: searxng
+    spec:
+      containers:
+      - name: searxng
+        image: searxng/searxng:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SEARXNG_BASE_URL
+          value: "http://searxng.kbp.svc.cluster.local:8080/"
+        - name: SEARXNG_PORT
+          value: "8080"
+        - name: BIND_ADDRESS
+          value: "0.0.0.0:8080"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/searxng/settings.yml
+          subPath: settings.yml
+          readOnly: false
+        - name: searxng-data
+          mountPath: /etc/searxng
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      initContainers:
+      - name: copy-config
+        image: busybox:1.36
+        command: ["sh", "-c", "cp /config/settings.yml /etc/searxng/settings.yml"]
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: searxng-data
+          mountPath: /etc/searxng
+      volumes:
+      - name: config
+        configMap:
+          name: searxng-config
+      - name: searxng-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: searxng
+  namespace: kbp
+  labels:
+    app: searxng
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: searxng
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: searxng-config
+  namespace: kbp
+data:
+  settings.yml: |
+    use_default_settings: true
+    server:
+      secret_key: "searxng-kbp-internal-2026"
+      bind_address: "0.0.0.0"
+      port: 8080
+      limiter: false
+      public_instance: false
+      method: "GET"
+    search:
+      safe_search: 0
+      autocomplete: ""
+      default_lang: ""
+      formats:
+        - html
+        - json
+    outgoing:
+      request_timeout: 10.0

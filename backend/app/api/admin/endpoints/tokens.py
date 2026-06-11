@@ -41,8 +41,14 @@ from app.services.token import TokenService
 router = APIRouter()
 
 
-ALLOWED_METADATA_KEYS = {"prompt_cache_enabled", "prompt_cache_ttl"}
+ALLOWED_METADATA_KEYS = {
+    "prompt_cache_enabled",
+    "prompt_cache_ttl",
+    "web_search_enabled",
+    "web_search_provider",
+}
 ALLOWED_CACHE_TTL_VALUES = {"5m", "1h"}
+ALLOWED_WEB_SEARCH_PROVIDERS = {"tavily", "searxng"}
 
 
 async def _invalidate_token_cache(token_hash: str) -> None:
@@ -77,6 +83,15 @@ def validate_token_metadata(meta: dict | None) -> dict | None:
         if meta["prompt_cache_ttl"] not in ALLOWED_CACHE_TTL_VALUES:
             raise ValueError(
                 f"prompt_cache_ttl must be one of {ALLOWED_CACHE_TTL_VALUES}"
+            )
+    if "web_search_enabled" in meta and not isinstance(
+        meta["web_search_enabled"], bool
+    ):
+        raise ValueError("web_search_enabled must be a boolean")
+    if "web_search_provider" in meta:
+        if meta["web_search_provider"] not in ALLOWED_WEB_SEARCH_PROVIDERS:
+            raise ValueError(
+                f"web_search_provider must be one of {ALLOWED_WEB_SEARCH_PROVIDERS}"
             )
     return meta
 

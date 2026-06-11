@@ -19,6 +19,7 @@ from app.core.database import get_db
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.schemas.anthropic import (
+    AnthropicMessage,
     AnthropicMessagesRequest,
 )
 from app.services.anthropic_translator import (
@@ -79,6 +80,180 @@ def _build_trace_request(
         temperature=request_data.temperature,
         stream=request_data.stream or False,
     )
+
+
+def _accumulate_usage(accumulated_usage: dict, usage) -> None:
+    """Add a BedrockResponse.usage into the running accumulated_usage dict."""
+    if not usage:
+        return
+    accumulated_usage["input_tokens"] += usage.input_tokens or 0
+    accumulated_usage["output_tokens"] += usage.output_tokens or 0
+    accumulated_usage["cache_creation_input_tokens"] += (
+        usage.cache_creation_input_tokens or 0
+    )
+    accumulated_usage["cache_read_input_tokens"] += usage.cache_read_input_tokens or 0
+
+
+def _bedrock_response_to_sse(
+    response, model: str, request_id: str, accumulated_usage: dict
+) -> list[str]:
+    """Convert a non-streaming BedrockResponse to Anthropic SSE event strings.
+
+    Used when the web search tool loop consumed a non-streaming response and
+    needs to emit it as SSE to the streaming client.
+    """
+    from app.services.anthropic_translator import AnthropicResponseTranslator
+
+    sse = AnthropicResponseTranslator.create_stream_event
+    events = []
+    usage = response.usage
+    input_tokens = (usage.input_tokens or 0) if usage else 0
+    output_tokens = (usage.output_tokens or 0) if usage else 0
+
+    events.append(
+        sse(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": request_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": model,
+                    "stop_reason": None,
+                    "usage": {
+                        "input_tokens": input_tokens
+                        + accumulated_usage.get("input_tokens", 0),
+                        "output_tokens": 0,
+                        "cache_creation_input_tokens": accumulated_usage.get(
+                            "cache_creation_input_tokens", 0
+                        ),
+                        "cache_read_input_tokens": accumulated_usage.get(
+                            "cache_read_input_tokens", 0
+                        ),
+                    },
+                },
+            },
+        )
+    )
+
+    for idx, block in enumerate(response.content or []):
+        if block.type == "text":
+            events.append(
+                sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+            )
+            if block.text:
+                events.append(
+                    sse(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": idx,
+                            "delta": {"type": "text_delta", "text": block.text},
+                        },
+                    )
+                )
+            events.append(
+                sse("content_block_stop", {"type": "content_block_stop", "index": idx})
+            )
+        elif block.type == "tool_use":
+            events.append(
+                sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": {},
+                        },
+                    },
+                )
+            )
+            input_json = json.dumps(block.input or {}, ensure_ascii=False)
+            events.append(
+                sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": input_json,
+                        },
+                    },
+                )
+            )
+            events.append(
+                sse("content_block_stop", {"type": "content_block_stop", "index": idx})
+            )
+        elif block.type == "thinking":
+            events.append(
+                sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": {"type": "thinking", "thinking": ""},
+                    },
+                )
+            )
+            if block.thinking:
+                events.append(
+                    sse(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": idx,
+                            "delta": {
+                                "type": "thinking_delta",
+                                "thinking": block.thinking,
+                            },
+                        },
+                    )
+                )
+            if block.signature:
+                events.append(
+                    sse(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": idx,
+                            "delta": {
+                                "type": "signature_delta",
+                                "signature": block.signature,
+                            },
+                        },
+                    )
+                )
+            events.append(
+                sse("content_block_stop", {"type": "content_block_stop", "index": idx})
+            )
+
+    events.append(
+        sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": response.stop_reason or "end_turn"},
+                "usage": {"output_tokens": output_tokens},
+            },
+        )
+    )
+
+    events.append(sse("message_stop", {"type": "message_stop"}))
+
+    return events
 
 
 @router.post("/messages")
@@ -186,16 +361,30 @@ async def create_message(
         # Apply token-level prompt cache settings
         auto_cache = None
         cache_ttl = None
+        web_search_enabled = False
+        web_search_provider = None
         if token.token_metadata:
             meta = token.token_metadata
             if "prompt_cache_enabled" in meta:
                 auto_cache = meta["prompt_cache_enabled"]
             if "prompt_cache_ttl" in meta:
                 cache_ttl = meta["prompt_cache_ttl"]
+            if meta.get("web_search_enabled"):
+                web_search_enabled = True
+                web_search_provider = meta.get("web_search_provider")
 
         bedrock_client = BedrockClient.get_instance()
 
         from app.services.anthropic_translator import AnthropicRequestTranslator
+        from app.services.builtin_tools import process_builtin_tools
+
+        # Process built-in tools (web_search, computer, etc.)
+        filtered_tools, has_web_search, web_search_max_uses = process_builtin_tools(
+            request_data.tools,
+            web_search_allowed=web_search_enabled,
+            web_search_provider=web_search_provider,
+        )
+        request_data.tools = filtered_tools
 
         # Build a BedrockRequest for the invoke pipeline
         bedrock_request = AnthropicRequestTranslator.to_bedrock(request_data)
@@ -217,6 +406,9 @@ async def create_message(
                     cache_ttl=cache_ttl or get_settings().PROMPT_CACHE_TTL,
                     allowed_model_names=allowed_model_names,
                     request_data=request_data,
+                    has_web_search=has_web_search,
+                    web_search_max_uses=web_search_max_uses,
+                    web_search_provider=web_search_provider,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -225,10 +417,56 @@ async def create_message(
                 },
             )
 
-        # Non-streaming response
+        # Non-streaming response with tool execution loop
+        from app.services.tool_execution import (
+            SERVER_EXECUTED_TOOLS,
+            build_continuation_messages,
+            execute_server_tools,
+            extract_tool_calls,
+            response_has_server_tool_use,
+            serialize_response_content,
+        )
+
         bedrock_response = await bedrock_client.invoke(
             request_data.model, bedrock_request
         )
+
+        # Tool execution loop for server-side tools (web_search)
+        search_count = 0
+        while (
+            has_web_search
+            and response_has_server_tool_use(bedrock_response)
+            and search_count < web_search_max_uses
+        ):
+            tool_calls = extract_tool_calls(bedrock_response)
+            server_calls = [c for c in tool_calls if c["name"] in SERVER_EXECUTED_TOOLS]
+            search_count += len(server_calls)
+
+            tool_results = await execute_server_tools(
+                server_calls, provider=web_search_provider
+            )
+            assistant_content = serialize_response_content(bedrock_response)
+
+            new_messages = build_continuation_messages(
+                request_data.messages, assistant_content, tool_results
+            )
+
+            request_data.messages = [
+                AnthropicMessage(**m) if isinstance(m, dict) else m
+                for m in new_messages
+            ]
+            bedrock_request = AnthropicRequestTranslator.to_bedrock(request_data)
+            bedrock_request.auto_cache = auto_cache
+            bedrock_request.cache_ttl = cache_ttl
+
+            logger.info(
+                f"Web search loop iteration {search_count}/{web_search_max_uses}, "
+                f"request_id={request_id}"
+            )
+
+            bedrock_response = await bedrock_client.invoke(
+                request_data.model, bedrock_request
+            )
 
         # Translate response
         anthropic_response = AnthropicResponseTranslator.bedrock_to_anthropic(
@@ -357,6 +595,9 @@ async def stream_anthropic_messages(
     cache_ttl: str = None,
     allowed_model_names: list[str] | None = None,
     request_data: AnthropicMessagesRequest | None = None,
+    has_web_search: bool = False,
+    web_search_max_uses: int = 5,
+    web_search_provider: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream Anthropic Messages API responses.
@@ -365,7 +606,19 @@ async def stream_anthropic_messages(
     event: {event_type}
     data: {json}
 
+    When web_search is enabled, intermediate tool-loop rounds use non-streaming
+    invocations. Only the final round (or first if no tool_use) is streamed.
     """
+    from app.services.anthropic_translator import AnthropicRequestTranslator
+    from app.services.tool_execution import (
+        build_continuation_messages,
+        execute_server_tools,
+        extract_tool_calls,
+        response_has_server_tool_use,
+        serialize_response_content,
+        SERVER_EXECUTED_TOOLS,
+    )
+
     settings = get_settings()
     ttft: float | None = None
     accumulated_usage = {
@@ -384,6 +637,143 @@ async def stream_anthropic_messages(
 
     # Compute fallback models for stream failover
     fb_models = get_fallback_models(allowed_model_names or [], model)
+
+    # --- Web search tool loop (non-streaming) ---
+    # When web_search is enabled, use non-streaming calls to detect and handle
+    # WebSearch tool_use server-side. The final response (text or client-tool)
+    # is serialized as SSE events instead of re-invoking in streaming mode.
+    if has_web_search and request_data:
+        search_count = 0
+        while search_count < web_search_max_uses:
+            bedrock_response = await bedrock_client.invoke(model, bedrock_request)
+
+            if not response_has_server_tool_use(bedrock_response):
+                break
+
+            tool_calls = extract_tool_calls(bedrock_response)
+            server_calls = [c for c in tool_calls if c["name"] in SERVER_EXECUTED_TOOLS]
+            search_count += len(server_calls)
+
+            _accumulate_usage(accumulated_usage, bedrock_response.usage)
+
+            tool_results = await execute_server_tools(
+                server_calls, provider=web_search_provider
+            )
+            assistant_content = serialize_response_content(bedrock_response)
+
+            new_messages = build_continuation_messages(
+                request_data.messages, assistant_content, tool_results
+            )
+            request_data.messages = [
+                AnthropicMessage(**m) if isinstance(m, dict) else m
+                for m in new_messages
+            ]
+            bedrock_request = AnthropicRequestTranslator.to_bedrock(request_data)
+            bedrock_request.auto_cache = None
+            bedrock_request.cache_ttl = cache_ttl
+
+            logger.info(
+                f"Stream web search loop iteration {search_count}/{web_search_max_uses}, "
+                f"request_id={request_id}"
+            )
+
+        if search_count > 0:
+            # Search was executed; stream the final response from updated messages
+            # (bedrock_request already updated with tool results)
+            pass
+        else:
+            # Model didn't call server tools on first try. Convert the non-streaming
+            # response to SSE events to avoid wasting the call.
+            for sse in _bedrock_response_to_sse(
+                bedrock_response, model, request_id, accumulated_usage
+            ):
+                yield sse
+
+            # Fill trace and usage from this response
+            _accumulate_usage(accumulated_usage, bedrock_response.usage)
+            trace_stop_reason = bedrock_response.stop_reason or ""
+            for block in bedrock_response.content or []:
+                if block.type == "text":
+                    trace_content_blocks.append(
+                        {"type": "text", "text": block.text or ""}
+                    )
+                elif block.type == "tool_use":
+                    trace_content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input or {},
+                        }
+                    )
+                elif block.type == "thinking":
+                    b = {"type": "thinking", "thinking": block.thinking or ""}
+                    if block.signature:
+                        b["signature"] = block.signature
+                    trace_content_blocks.append(b)
+
+            # Skip streaming — jump to recording usage/trace
+            # (reuse the same post-stream recording logic below)
+            total_input = accumulated_usage.get("input_tokens", 0)
+            total_output = accumulated_usage.get("output_tokens", 0)
+            total_cache_creation = accumulated_usage.get(
+                "cache_creation_input_tokens", 0
+            )
+            total_cache_read = accumulated_usage.get("cache_read_input_tokens", 0)
+
+            background_tasks.create_task(
+                record_usage(
+                    token_id=token.id,
+                    user_id=token.user_id,
+                    model=model,
+                    request_id=request_id,
+                    prompt_tokens=total_input,
+                    completion_tokens=total_output,
+                    cache_creation_input_tokens=total_cache_creation,
+                    cache_read_input_tokens=total_cache_read,
+                    cache_ttl=cache_ttl if total_cache_creation else None,
+                ),
+                task_name=f"record_usage_{request_id}",
+            )
+
+            duration = time.time() - start_time
+            cache_info = ""
+            if total_cache_creation:
+                cache_info += f", cache_write={total_cache_creation}"
+            if total_cache_read:
+                cache_info += f", cache_read={total_cache_read}"
+            logger.info(
+                f"Anthropic streaming successful: request_id={request_id}, "
+                f"duration={round(duration, 3)}s, "
+                f"input={total_input}, output={total_output}"
+                f"{cache_info}"
+            )
+
+            await emit_request_metrics(
+                endpoint="/v1/messages",
+                model=model,
+                duration_s=round(duration, 3),
+                input_tokens=total_input,
+                output_tokens=total_output,
+                status_code=200,
+                is_streaming=True,
+                ttft_s=round(duration, 3),
+                cache_write_tokens=total_cache_creation,
+                cache_read_tokens=total_cache_read,
+            )
+
+            if TraceStore.is_enabled() and request_data:
+                trace_rec = _build_trace_request(request_data, request_id, token)
+                trace_rec.duration_s = round(duration, 3)
+                trace_rec.stop_reason = trace_stop_reason
+                trace_rec.input_tokens = total_input
+                trace_rec.output_tokens = total_output
+                trace_rec.cache_creation_input_tokens = total_cache_creation
+                trace_rec.cache_read_input_tokens = total_cache_read
+                trace_rec.response_content = trace_content_blocks
+                TraceStore.get_instance().add(trace_rec)
+
+            return
 
     try:
         actual_model_emitted = False

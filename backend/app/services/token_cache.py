@@ -97,6 +97,7 @@ class CachedTokenService:
             ),
             "allowed_ips": token.allowed_ips,
             "is_active": token.is_active,
+            "token_metadata": token.token_metadata,
         }
         await self.cache.set(cache_key, token_data, expire=self.CACHE_TTL)
 
@@ -131,6 +132,7 @@ class CachedTokenService:
             )
             token.allowed_ips = cached_data["allowed_ips"]
             token.is_active = cached_data["is_active"]
+            token.token_metadata = cached_data.get("token_metadata")
 
             return token
         except Exception as e:

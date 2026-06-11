@@ -800,6 +800,9 @@ push_secrets_to_sm() {
     local cfg_gemini_api_key
     cfg_gemini_api_key=$(echo "$_sm_json" | jq -r '."gemini-api-key" // empty')
 
+    local cfg_tavily_api_key
+    cfg_tavily_api_key=$(echo "$_sm_json" | jq -r '."tavily-api-key" // empty')
+
     local cfg_frontend_cert_arn cfg_api_cert_arn
     cfg_frontend_cert_arn=$(echo "$_sm_json" | jq -r '."acm-certificate-frontend-arn" // empty')
     cfg_api_cert_arn=$(echo "$_sm_json" | jq -r '."acm-certificate-api-arn" // empty')
@@ -849,6 +852,7 @@ push_secrets_to_sm() {
       --arg account_id "$cfg_account_id" \
       --arg region "$cfg_region" \
       --arg gemini_api_key "$cfg_gemini_api_key" \
+      --arg tavily_api_key "$cfg_tavily_api_key" \
       '{
         "database-url": $db_url,
         "jwt-secret-key": $jwt,
@@ -865,7 +869,8 @@ push_secrets_to_sm() {
         "acm-certificate-api-arn": $api_cert_arn,
         "aws-account-id": $account_id,
         "aws-region": $region,
-        "gemini-api-key": $gemini_api_key
+        "gemini-api-key": $gemini_api_key,
+        "tavily-api-key": $tavily_api_key
       }')
 
     aws secretsmanager put-secret-value \
@@ -989,13 +994,23 @@ _configure_providers() {
     else
         print_warning "Google Gemini: Not configured"
     fi
+
+    local current_tavily
+    current_tavily=$(echo "$current_secret" | jq -r '."tavily-api-key" // empty')
+    if [[ -n "$current_tavily" ]]; then
+        print_success "Tavily Web Search: Configured (Key: ${current_tavily:0:8}...)"
+    else
+        print_warning "Tavily Web Search: Not configured (Claude web_search tool disabled)"
+    fi
     echo ""
 
     echo "  1) Add/Update Google Gemini API Key"
     echo "  2) Remove Google Gemini API Key"
-    echo "  3) Cancel"
+    echo "  3) Add/Update Tavily API Key (enables Claude web_search)"
+    echo "  4) Remove Tavily API Key"
+    echo "  5) Cancel"
     echo ""
-    read -p "Select (1-3): " provider_choice
+    read -p "Select (1-5): " provider_choice
 
     case $provider_choice in
         1)
@@ -1034,6 +1049,42 @@ _configure_providers() {
             print_success "Google Gemini API key removed"
             ;;
         3)
+            echo ""
+            print_info "Get your API key from: https://app.tavily.com/home"
+            print_info "Tavily enables Claude's built-in web_search tool via Bedrock."
+            echo ""
+            read -s -p "Tavily API Key: " tavily_key
+            echo ""
+
+            if [[ -z "$tavily_key" ]]; then
+                print_error "API key cannot be empty"
+                return 1
+            fi
+
+            local updated_secret
+            updated_secret=$(echo "$current_secret" | jq --arg key "$tavily_key" '."tavily-api-key" = $key')
+
+            aws secretsmanager put-secret-value \
+                --secret-id "$secret_name" \
+                --secret-string "$updated_secret" \
+                --region "$cfg_region" \
+                --no-cli-pager
+
+            print_success "Tavily API key configured! Claude web_search is now enabled."
+            ;;
+        4)
+            local updated_secret
+            updated_secret=$(echo "$current_secret" | jq '."tavily-api-key" = ""')
+
+            aws secretsmanager put-secret-value \
+                --secret-id "$secret_name" \
+                --secret-string "$updated_secret" \
+                --region "$cfg_region" \
+                --no-cli-pager
+
+            print_success "Tavily API key removed (web_search disabled)"
+            ;;
+        5)
             print_info "Cancelled"
             ;;
         *)
@@ -1317,6 +1368,14 @@ configure_view() {
         print_success "Google Gemini: Configured (Key: ${gemini_key:0:8}...)"
     else
         print_warning "Google Gemini: Not configured"
+    fi
+
+    local tavily_key
+    tavily_key=$(echo "$current_secret" | jq -r '."tavily-api-key" // empty')
+    if [[ -n "$tavily_key" ]]; then
+        print_success "Tavily Web Search: Configured (Key: ${tavily_key:0:8}...)"
+    else
+        print_warning "Tavily Web Search: Not configured (Claude web_search disabled)"
     fi
     echo ""
 
@@ -2181,7 +2240,7 @@ deploy_application() {
             # Backfill missing keys that ESO requires
             local needs_update=false
             local updated_secret="$existing_secret"
-            for key in "gemini-api-key"; do
+            for key in "gemini-api-key" "tavily-api-key"; do
                 if ! echo "$updated_secret" | jq -e --arg k "$key" 'has($k)' &>/dev/null; then
                     updated_secret=$(echo "$updated_secret" | jq --arg k "$key" '. + {($k): ""}')
                     needs_update=true

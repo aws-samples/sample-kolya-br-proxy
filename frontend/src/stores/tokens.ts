@@ -5,6 +5,8 @@ import { Notify } from 'quasar';
 export interface TokenMetadata {
   prompt_cache_enabled?: boolean;
   prompt_cache_ttl?: string;
+  web_search_enabled?: boolean;
+  web_search_provider?: string;
 }
 
 export interface APIToken {

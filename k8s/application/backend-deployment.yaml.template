@@ -114,6 +114,12 @@ spec:
               name: backend-secrets
               key: gemini-api-key
               optional: true
+        - name: KBR_TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: tavily-api-key
+              optional: true
         - name: NODE_IP
           valueFrom:
             fieldRef:

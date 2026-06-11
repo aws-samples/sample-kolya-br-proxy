@@ -390,11 +390,11 @@
       </q-card>
     </q-dialog>
 
-    <!-- Cache Settings Dialog -->
+    <!-- Token Settings Dialog -->
     <q-dialog v-model="showSettingsDialog">
       <q-card dark style="min-width: 400px">
         <q-card-section>
-          <div class="text-h6">Cache Settings</div>
+          <div class="text-h6">Token Settings</div>
         </q-card-section>
 
         <q-card-section class="q-pt-none">
@@ -403,9 +403,10 @@
           </div>
 
           <q-list dark dense>
+            <q-item-label header class="text-grey-5">Prompt Cache</q-item-label>
             <q-item>
               <q-item-section>
-                <q-item-label>Prompt Cache</q-item-label>
+                <q-item-label>Enable</q-item-label>
               </q-item-section>
               <q-item-section side>
                 <q-toggle v-model="settingsCacheEnabled" dark dense />
@@ -419,6 +420,33 @@
                 <q-option-group
                   v-model="settingsCacheTtl"
                   :options="cacheTtlOptions"
+                  type="radio"
+                  inline
+                  dark
+                  dense
+                />
+              </q-item-section>
+            </q-item>
+
+            <q-separator dark class="q-my-sm" />
+
+            <q-item-label header class="text-grey-5">Web Search</q-item-label>
+            <q-item>
+              <q-item-section>
+                <q-item-label>Enable</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-toggle v-model="settingsWebSearchEnabled" dark dense />
+              </q-item-section>
+            </q-item>
+            <q-item v-if="settingsWebSearchEnabled">
+              <q-item-section>
+                <q-item-label>Provider</q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-option-group
+                  v-model="settingsWebSearchProvider"
+                  :options="webSearchProviderOptions"
                   type="radio"
                   inline
                   dark
@@ -799,6 +827,8 @@ const showSettingsDialog = ref(false);
 const settingsToken = ref<APIToken | null>(null);
 const settingsCacheEnabled = ref(false);
 const settingsCacheTtl = ref('1h');
+const settingsWebSearchEnabled = ref(false);
+const settingsWebSearchProvider = ref('tavily');
 const savingSettings = ref(false);
 
 const showBatchCreateDialog = ref(false);
@@ -824,6 +854,11 @@ const availableModelOptions = computed(() =>
 const cacheTtlOptions = [
   { label: '5m', value: '5m' },
   { label: '1h', value: '1h' },
+];
+
+const webSearchProviderOptions = [
+  { label: 'Tavily', value: 'tavily' },
+  { label: 'SearXNG', value: 'searxng' },
 ];
 
 const newToken = ref({
@@ -936,6 +971,8 @@ function openSettings(token: APIToken) {
   settingsToken.value = token;
   settingsCacheEnabled.value = token.token_metadata?.prompt_cache_enabled ?? false;
   settingsCacheTtl.value = token.token_metadata?.prompt_cache_ttl || '1h';
+  settingsWebSearchEnabled.value = token.token_metadata?.web_search_enabled ?? false;
+  settingsWebSearchProvider.value = token.token_metadata?.web_search_provider || 'tavily';
   showSettingsDialog.value = true;
 }
 
@@ -946,7 +983,11 @@ async function saveSettings() {
     const metadata: TokenMetadata = {
       prompt_cache_enabled: settingsCacheEnabled.value,
       prompt_cache_ttl: settingsCacheTtl.value,
+      web_search_enabled: settingsWebSearchEnabled.value,
     };
+    if (settingsWebSearchEnabled.value) {
+      metadata.web_search_provider = settingsWebSearchProvider.value;
+    }
     const success = await tokensStore.updateToken(
       settingsToken.value.id,
       { token_metadata: metadata } as Partial<CreateTokenRequest>,

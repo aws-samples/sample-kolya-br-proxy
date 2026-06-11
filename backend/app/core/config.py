@@ -74,6 +74,13 @@ class Settings(BaseSettings):
         description="Google Cloud region for Vertex AI",
     )
 
+    # Web search — powers Anthropic built-in web_search tool
+    TAVILY_API_KEY: Optional[str] = Field(
+        default=None,
+        description="Tavily API key for web search. When set, the Anthropic "
+        "web_search built-in tool is executed server-side via Tavily.",
+    )
+
     # OpenAI-on-Bedrock (mantle) settings — GPT-5.5 / GPT-5.4 via Responses API
     MANTLE_SIGV4_SERVICE: str = Field(
         default="bedrock",

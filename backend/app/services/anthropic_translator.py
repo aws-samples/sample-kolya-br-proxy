@@ -149,18 +149,22 @@ class AnthropicRequestTranslator:
                 request.disable_parallel_tool_use
             )
 
-        # Convert tools
+        # Convert tools (skip any that lack name or input_schema — built-in
+        # tools should have been processed/filtered before reaching here)
         bedrock_tools = None
         if request.tools:
             bedrock_tools = [
                 BedrockTool(
                     name=tool.name,
                     description=tool.description or "",
-                    input_schema=tool.input_schema,
+                    input_schema=tool.input_schema or {"type": "object"},
                     strict=tool.strict,
                 )
                 for tool in request.tools
+                if tool.name and tool.input_schema is not None
             ]
+            if not bedrock_tools:
+                bedrock_tools = None
 
         bedrock_request = BedrockRequest(
             max_tokens=request.max_tokens,
@@ -231,10 +235,12 @@ class AnthropicRequestTranslator:
         if request.stop_sequences:
             body["stop_sequences"] = request.stop_sequences
 
-        # Tools
+        # Tools (skip built-in tools that lack input_schema)
         if request.tools:
             tools = []
             for tool in request.tools:
+                if not tool.name or tool.input_schema is None:
+                    continue
                 tool_dict = {
                     "name": tool.name,
                     "input_schema": tool.input_schema,
@@ -244,7 +250,8 @@ class AnthropicRequestTranslator:
                 if tool.cache_control:
                     tool_dict["cache_control"] = tool.cache_control
                 tools.append(tool_dict)
-            body["tools"] = tools
+            if tools:
+                body["tools"] = tools
 
         if request.tool_choice:
             body["tool_choice"] = request.tool_choice

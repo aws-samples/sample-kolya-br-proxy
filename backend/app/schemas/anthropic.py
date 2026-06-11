@@ -124,13 +124,22 @@ class AnthropicMessage(BaseModel):
 
 
 class AnthropicToolDefinition(BaseModel):
-    """Tool definition in Anthropic format."""
+    """Tool definition in Anthropic format.
 
-    name: str
+    Regular tools have ``input_schema``; built-in tools (web_search, computer,
+    text_editor, bash, code_execution) carry a ``type`` field instead and never
+    have ``input_schema``.
+    """
+
+    name: Optional[str] = None
+    type: Optional[str] = None
     description: Optional[str] = None
-    input_schema: Dict[str, Any]
+    input_schema: Optional[Dict[str, Any]] = None
     cache_control: Optional[Dict[str, str]] = None
     strict: Optional[bool] = None
+    max_uses: Optional[int] = None
+
+    model_config = {"extra": "allow"}
 
 
 class AnthropicSystemBlock(BaseModel):
