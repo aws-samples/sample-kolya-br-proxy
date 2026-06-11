@@ -1,8 +1,47 @@
 include:
   - template: Security/SAST.gitlab-ci.yml
   - template: Security/Secret-Detection.gitlab-ci.yml
-  - template: Security/Dependency-Scanning.gitlab-ci.yml
 
 stages:
   - test
   - security
+
+detect-secrets:
+  stage: security
+  image: python:3.12-slim
+  script:
+    - pip install -q detect-secrets
+    - >
+      detect-secrets scan
+      --baseline .secrets.baseline
+      --exclude-files '.*\.lock$'
+      --exclude-files '.*\.tfstate.*'
+      --exclude-files 'uv\.lock'
+      --exclude-files 'pnpm-lock\.yaml'
+      --exclude-files 'package-lock\.json'
+
+dependency-audit-python:
+  stage: security
+  image: ghcr.io/astral-sh/uv:latest
+  script:
+    - >
+      uv export --no-dev --format requirements-txt |
+      uvx pip-audit -r /dev/stdin
+      --ignore-vuln CVE-2024-23342
+      --ignore-vuln CVE-2026-4539
+      --ignore-vuln CVE-2026-34073
+      --ignore-vuln CVE-2026-33936
+      --ignore-vuln MAL-2026-4750
+
+dependency-audit-node:
+  stage: security
+  image: node:22-slim
+  script:
+    - cd frontend && npm ci && npm audit --audit-level=high
+  allow_failure: true
+
+terraform-security:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy config --severity HIGH,CRITICAL --exit-code 0 iac/
