@@ -1,27 +1,22 @@
 """Tests for built-in tool handling (web_search, computer, etc.)."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from app.schemas.anthropic import AnthropicToolDefinition
 from app.services.builtin_tools import (
-    BUILTIN_TOOL_TYPES,
-    UNSUPPORTED_BUILTIN_TYPES,
     is_builtin_tool,
     is_web_search_tool,
     process_builtin_tools,
 )
 from app.services.tool_execution import (
-    SERVER_EXECUTED_TOOLS,
     build_continuation_messages,
     execute_server_tools,
     extract_tool_calls,
     response_has_server_tool_use,
-    serialize_response_content,
 )
-from app.services.web_search import WEB_SEARCH_TOOL_DEFINITION
 
 
 class TestBuiltinToolDetection:

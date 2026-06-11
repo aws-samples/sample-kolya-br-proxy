@@ -3,7 +3,6 @@ Cognito Pre-Signup Lambda Trigger
 Validates email domain against whitelist before allowing user registration.
 """
 
-import json
 import os
 
 

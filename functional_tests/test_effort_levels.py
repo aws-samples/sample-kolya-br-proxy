@@ -15,7 +15,6 @@
   3. 响应时间
 """
 
-import json
 import time
 
 from openai import OpenAI
@@ -171,7 +170,7 @@ def print_result(label: str, result: dict, show_content: bool = True):
     print(f"    回复长度: {len(content)} 字符")
     if show_content:
         preview = content[:300].replace("\n", "\n    | ")
-        print(f"    内容预览:")
+        print("    内容预览:")
         print(f"    | {preview}")
         if len(content) > 300:
             print(f"    | ... (共 {len(content)} 字符)")

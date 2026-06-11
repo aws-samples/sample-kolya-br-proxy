@@ -43,7 +43,7 @@ def test_basic_chat():
             temperature=0.7
         )
 
-        print(f"✅ 成功!")
+        print("✅ 成功!")
         print(f"模型: {response.model}")
         print(f"回复: {response.choices[0].message.content}")
         print(f"Token使用: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}")
@@ -76,8 +76,8 @@ def test_with_thinking_in_body():
             }
         )
 
-        print(f"✅ 成功!")
-        print(f"使用参数: thinking=adaptive")
+        print("✅ 成功!")
+        print("使用参数: thinking=adaptive")
         print(f"回复: {response.choices[0].message.content[:200]}...")
         print(f"Token使用: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}")
 
@@ -107,8 +107,8 @@ def test_with_thinking_in_headers():
             }
         )
 
-        print(f"✅ 成功!")
-        print(f"使用Headers: thinking=adaptive")
+        print("✅ 成功!")
+        print("使用Headers: thinking=adaptive")
         print(f"回复: {response.choices[0].message.content}")
         print(f"Token使用: prompt={response.usage.prompt_tokens}, completion={response.usage.completion_tokens}")
 
@@ -132,7 +132,7 @@ def test_streaming():
             stream=True
         )
 
-        print(f"✅ 流式响应:")
+        print("✅ 流式响应:")
         print("-" * 60)
         for chunk in stream:
             if chunk.choices[0].delta.content:
@@ -166,7 +166,7 @@ def test_streaming_with_thinking():
             }
         )
 
-        print(f"✅ 流式响应 (thinking=adaptive):")
+        print("✅ 流式响应 (thinking=adaptive):")
         print("-" * 60)
         for chunk in stream:
             if chunk.choices[0].delta.content:
