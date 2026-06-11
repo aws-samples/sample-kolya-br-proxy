@@ -31,21 +31,15 @@ class TestBuiltinToolDetection:
         assert is_builtin_tool(tool)
 
     def test_is_not_builtin_tool_regular(self):
-        tool = AnthropicToolDefinition(
-            name="my_func", input_schema={"type": "object"}
-        )
+        tool = AnthropicToolDefinition(name="my_func", input_schema={"type": "object"})
         assert not is_builtin_tool(tool)
 
     def test_is_web_search_tool(self):
-        tool = AnthropicToolDefinition(
-            type="web_search_20250305", name="web_search"
-        )
+        tool = AnthropicToolDefinition(type="web_search_20250305", name="web_search")
         assert is_web_search_tool(tool)
 
     def test_is_web_search_tool_older_version(self):
-        tool = AnthropicToolDefinition(
-            type="web_search_20250115", name="web_search"
-        )
+        tool = AnthropicToolDefinition(type="web_search_20250115", name="web_search")
         assert is_web_search_tool(tool)
 
     def test_is_not_web_search_tool(self):
@@ -61,7 +55,9 @@ class TestProcessBuiltinTools:
                 type="web_search_20250305", name="web_search", max_uses=3
             ),
         ]
-        filtered, has_ws, max_uses = process_builtin_tools(tools, web_search_allowed=True)
+        filtered, has_ws, max_uses = process_builtin_tools(
+            tools, web_search_allowed=True
+        )
         assert has_ws is True
         assert max_uses == 3
         assert len(filtered) == 1
@@ -76,7 +72,9 @@ class TestProcessBuiltinTools:
                 type="web_search_20250305", name="web_search", max_uses=5
             ),
         ]
-        filtered, has_ws, max_uses = process_builtin_tools(tools, web_search_allowed=True)
+        filtered, has_ws, max_uses = process_builtin_tools(
+            tools, web_search_allowed=True
+        )
         assert has_ws is False
         assert filtered is None  # No tools remain
 
@@ -86,7 +84,9 @@ class TestProcessBuiltinTools:
                 type="web_search_20250305", name="web_search", max_uses=5
             ),
         ]
-        filtered, has_ws, max_uses = process_builtin_tools(tools, web_search_allowed=False)
+        filtered, has_ws, max_uses = process_builtin_tools(
+            tools, web_search_allowed=False
+        )
         assert has_ws is False
         assert filtered is None
 
@@ -94,9 +94,7 @@ class TestProcessBuiltinTools:
         tools = [
             AnthropicToolDefinition(type="computer_20250124", name="computer"),
             AnthropicToolDefinition(type="bash_20250124", name="bash"),
-            AnthropicToolDefinition(
-                name="keep_me", input_schema={"type": "object"}
-            ),
+            AnthropicToolDefinition(name="keep_me", input_schema={"type": "object"}),
         ]
         filtered, has_ws, _ = process_builtin_tools(tools)
         assert has_ws is False
@@ -114,7 +112,9 @@ class TestProcessBuiltinTools:
                 name="custom", description="desc", input_schema={"type": "object"}
             ),
         ]
-        filtered, has_ws, max_uses = process_builtin_tools(tools, web_search_allowed=True)
+        filtered, has_ws, max_uses = process_builtin_tools(
+            tools, web_search_allowed=True
+        )
         assert has_ws is True
         assert max_uses == 8
         assert len(filtered) == 2
@@ -129,9 +129,7 @@ class TestProcessBuiltinTools:
 
     def test_default_max_uses(self):
         tools = [
-            AnthropicToolDefinition(
-                type="web_search_20250305", name="web_search"
-            ),
+            AnthropicToolDefinition(type="web_search_20250305", name="web_search"),
         ]
         with patch(
             "app.services.builtin_tools.is_web_search_configured", return_value=True
@@ -162,7 +160,13 @@ class TestToolExecution:
                 "results": mock_result["results"],
             }
 
-            tool_calls = [{"id": "call_123", "name": "web_search", "input": {"query": "what is python"}}]
+            tool_calls = [
+                {
+                    "id": "call_123",
+                    "name": "web_search",
+                    "input": {"query": "what is python"},
+                }
+            ]
             results = await execute_server_tools(tool_calls)
 
             assert len(results) == 1
@@ -201,7 +205,9 @@ class TestResponseInspection:
 
     def test_response_has_server_tool_use_true(self):
         blocks = [
-            self._make_block("tool_use", name="web_search", id="c1", input={"query": "q"}),
+            self._make_block(
+                "tool_use", name="web_search", id="c1", input={"query": "q"}
+            ),
         ]
         resp = self._make_response("tool_use", blocks)
         assert response_has_server_tool_use(resp)
@@ -242,13 +248,20 @@ class TestContinuationMessages:
         ]
         assistant_content = [
             {"type": "text", "text": "Let me search."},
-            {"type": "tool_use", "id": "c1", "name": "web_search", "input": {"query": "python"}},
+            {
+                "type": "tool_use",
+                "id": "c1",
+                "name": "web_search",
+                "input": {"query": "python"},
+            },
         ]
         tool_results = [
             {"type": "tool_result", "tool_use_id": "c1", "content": '{"results": []}'},
         ]
 
-        messages = build_continuation_messages(original, assistant_content, tool_results)
+        messages = build_continuation_messages(
+            original, assistant_content, tool_results
+        )
         assert len(messages) == 3
         assert messages[0] == {"role": "user", "content": "search for python"}
         assert messages[1]["role"] == "assistant"
