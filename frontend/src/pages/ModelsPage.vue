@@ -158,7 +158,7 @@
             v-model="selectedAwsModels"
             :options="filteredAwsModels"
             option-label="friendly_name"
-            option-value="friendly_name"
+            option-value="model_id"
             :label="selectedProvider === 'google' ? 'Select Gemini Model(s)' : 'Select Model(s) from AWS Bedrock'"
             outlined
             dense
