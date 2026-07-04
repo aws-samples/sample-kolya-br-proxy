@@ -27,6 +27,11 @@ class UsageRecord(Base):
     __table_args__ = (
         Index("ix_usage_records_user_id_created_at", "user_id", "created_at"),
         Index("ix_usage_records_token_id_created_at", "token_id", "created_at"),
+        Index("ix_usage_records_record_type_created_at", "record_type", "created_at"),
+        Index("ix_usage_records_model_created_at", "model", "created_at"),
+        Index(
+            "ix_usage_records_token_model_created_at", "token_id", "model", "created_at"
+        ),
     )
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
