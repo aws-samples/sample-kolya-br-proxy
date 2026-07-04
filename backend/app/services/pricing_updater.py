@@ -715,7 +715,7 @@ class PricingUpdater:
                 prefix = ""
 
             for match in row_pattern.finditer(markup):
-                model_name = match.group(1).strip()
+                model_name = match.group(1).strip().rstrip("*").strip()
                 input_ref = match.group(2)
                 output_ref = match.group(3)
 
@@ -1032,7 +1032,13 @@ class PricingUpdater:
         #    "Claude 3 Haiku (200K)"), or for cross-region prefix variants.
         model_mapping = {
             # ── Anthropic Claude ──────────────────────────────────
+            # Claude 5.x
+            "Claude Sonnet 5": "anthropic.claude-sonnet-5-v1",
+            "Claude Fable 5": "anthropic.claude-fable-5-v1",
+            "Claude Mythos 5": "anthropic.claude-mythos-5-v1",
             # Claude 4.x
+            "Claude Opus 4.8": "anthropic.claude-opus-4-8-v1",
+            "Claude Opus 4.7": "anthropic.claude-opus-4-7-v1",
             "Claude Opus 4.6": "anthropic.claude-opus-4-6-v1",
             "Claude Sonnet 4.6": "anthropic.claude-sonnet-4-6",
             "Claude Haiku 4.5": "anthropic.claude-haiku-4-5-20251001-v1:0",
