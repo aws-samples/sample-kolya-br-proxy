@@ -22,7 +22,9 @@ MARKER_TTL = {"type": "ephemeral", "ttl": "1h"}
 MARKER = {"type": "ephemeral"}
 
 TTL_MODEL = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"  # Claude 4.5 supports ttl
-NO_TTL_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0"  # Claude 4 does not
+# Legacy Claude 3.x predates the extended 1h TTL — see the denylist in
+# BedrockClient._model_supports_cache_ttl. (Claude 4 / 4.x DO support it.)
+NO_TTL_MODEL = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 
 LONG_TEXT = "x" * 5000
 
@@ -214,7 +216,7 @@ def test_ttl_1h_has_ttl_field_supported_model():
 
 
 def test_ttl_1h_no_ttl_field_unsupported_model():
-    """With TTL=1h on Claude 4 model, marker should NOT include ttl field."""
+    """With TTL=1h on legacy Claude 3.x model, marker should NOT include ttl field."""
     body = {"system": "prompt", "messages": []}
     _inject(body, ttl="1h", model_id=NO_TTL_MODEL)
     assert "ttl" not in body["system"][0]["cache_control"]
