@@ -91,9 +91,25 @@ class ModelPricing:
                 # the model runs — matches the routing in bedrock.py.
                 _, region = BedrockClient.get_instance().resolve_model(model)
 
-        # Determine cache write multiplier (Bedrock only)
+        # Determine cache write multiplier (Bedrock only).
+        #
+        # The extended 1h TTL (2.0x write price) is only actually applied at
+        # Bedrock for models that support the ``ttl`` field in cache_control.
+        # For legacy/unsupported models the proxy strips the ttl and Bedrock
+        # writes a 5m cache billed at 1.25x — see
+        # ``BedrockClient._model_supports_cache_ttl`` /
+        # ``_inject_cache_control``. Gate the billing multiplier on the SAME
+        # predicate so the cost we record always matches what AWS charges;
+        # otherwise a 1h cache_ttl on an unsupported model over-bills the 0.75x
+        # difference on every cache-write token.
+        effective_write_ttl = cache_ttl or "5m"
+        if effective_write_ttl != "5m":
+            from app.services.bedrock import BedrockClient
+
+            if not BedrockClient._model_supports_cache_ttl(model):
+                effective_write_ttl = "5m"
         write_multiplier = self.CACHE_WRITE_MULTIPLIER.get(
-            cache_ttl or "5m", Decimal("1.25")
+            effective_write_ttl, self.CACHE_WRITE_MULTIPLIER["5m"]
         )
 
         # Try to get pricing from database

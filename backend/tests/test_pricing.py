@@ -686,3 +686,75 @@ class TestPricingIntegration:
         )
         # Expected: (1000 * 0.000003) + (500 * 0.000015) = 0.003 + 0.0075 = 0.0105
         assert cost == Decimal("0.0105")
+
+
+class TestCacheWriteMultiplier:
+    """Cache-write multiplier must match the TTL actually applied at Bedrock.
+
+    Per Anthropic's docs the extended 1h TTL (2.0x write) is supported by all
+    active Claude models on Bedrock, so a 1h cache_ttl bills 2.0x for them.
+    Legacy Claude families (Claude 3.x and older) do not support the ``ttl``
+    field: the proxy strips it and Bedrock writes a 5m cache billed at 1.25x,
+    so billing must fall back to 1.25x for them. Billing is gated on the same
+    predicate the request pipeline uses (``_model_supports_cache_ttl``),
+    otherwise a 1h cache_ttl on an unsupported model over-bills the 0.75x
+    difference on every cache-write token (see the hotspot over-billing
+    incident that stemmed from a stale model allowlist).
+    """
+
+    INPUT_PRICE = Decimal("0.000005")
+
+    async def _seed(self, db_session, model_id):
+        updater = PricingUpdater(db_session)
+        await updater._save_pricing_data(
+            [
+                {
+                    "model_id": model_id,
+                    "region": "us-west-2",
+                    "input_price_per_token": self.INPUT_PRICE,
+                    "output_price_per_token": Decimal("0.000025"),
+                }
+            ],
+            "api",
+        )
+
+    async def _write_multiplier(self, db_session, model_id, cache_ttl):
+        """Return the effective cache-write multiplier calculate_cost applied."""
+        cw = 100_000
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=0,
+            completion_tokens=0,
+            cache_creation_input_tokens=cw,
+            cache_read_input_tokens=0,
+            cache_ttl=cache_ttl,
+            region="us-west-2",
+        )
+        return cost / (Decimal(cw) * self.INPUT_PRICE)
+
+    @pytest.mark.asyncio
+    async def test_legacy_model_1h_billed_as_5m(self, db_session):
+        # Claude 3.x does NOT support the 1h ttl field -> must bill 1.25x
+        model = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+        await self._seed(db_session, model)
+        for ttl in ("1h", "5m", None):
+            mult = await self._write_multiplier(db_session, model, ttl)
+            assert mult == Decimal("1.25"), f"ttl={ttl} should bill 1.25x, got {mult}"
+
+    @pytest.mark.asyncio
+    async def test_active_models_honor_1h_ttl(self, db_session):
+        # All active Claude models (incl. Opus 4.8) support 1h -> 1h bills 2.0x,
+        # 5m bills 1.25x. Opus 4.8 is the model behind the hotspot incident.
+        for model in (
+            "global.anthropic.claude-opus-4-8",
+            "global.anthropic.claude-opus-4-5-20251101-v1:0",
+            "global.anthropic.claude-sonnet-4-6",
+            "global.anthropic.claude-fable-5",
+        ):
+            await self._seed(db_session, model)
+            assert await self._write_multiplier(db_session, model, "1h") == Decimal(
+                "2.0"
+            ), f"{model} 1h should bill 2.0x"
+            assert await self._write_multiplier(db_session, model, "5m") == Decimal(
+                "1.25"
+            ), f"{model} 5m should bill 1.25x"
