@@ -24,26 +24,6 @@ import pytest
 from app.schemas.bedrock import BedrockStreamEvent, BedrockUsage
 
 
-@pytest.fixture(autouse=True)
-def _settings_env(monkeypatch):
-    """Provide the required settings env vars so get_settings() works in CI.
-
-    Settings is a pydantic BaseSettings with DATABASE_URL / JWT_SECRET_KEY as
-    required fields; locally a .env satisfies them, but CI has neither. The
-    streaming handlers and record_usage call get_settings() (lru_cached), so
-    set dummy-but-valid values and clear the cache around each test.
-    """
-    from app.core.config import get_settings
-
-    monkeypatch.setenv(
-        "DATABASE_URL", "postgresql+asyncpg://user:pass@localhost:5432/test"
-    )
-    monkeypatch.setenv("JWT_SECRET_KEY", "x" * 32)  # pragma: allowlist secret
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
