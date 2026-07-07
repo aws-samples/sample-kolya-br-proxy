@@ -828,30 +828,42 @@ class BedrockClient:
 
     # ------------------------------------------------------------------
 
-    # Models that support the extended 1-hour cache TTL.
-    # Only Claude 4.5 family models support ``ttl`` in ``cache_control``;
-    # older/newer families (Claude 4, etc.) reject it with
+    # Legacy Claude families that do NOT support the extended 1-hour cache TTL
+    # (the ``ttl`` field in ``cache_control``) and reject it with
     # ``Extra inputs are not permitted``.
-    _EXTENDED_TTL_MODEL_PATTERNS = (
-        "claude-opus-4-5",
-        "claude-sonnet-4-5",
-        "claude-haiku-4-5",
+    #
+    # Per Anthropic's prompt caching docs, the 1h cache duration is available on
+    # Amazon Bedrock for all *active* Claude models (Opus 4.5/4.6/4.7/4.8,
+    # Sonnet 4.5/4.6/5, Haiku 4.5, Fable 5, Mythos 5, ...). We therefore default
+    # to *supported* and only exclude the pre-extended-TTL legacy families
+    # below. This denylist replaces a former allowlist that went stale and
+    # silently down-graded newer models (e.g. Opus 4.8) to a 5m cache.
+    # https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching
+    _NO_EXTENDED_TTL_PATTERNS = (
+        "claude-3",  # Claude 3 / 3.5 / 3.7
+        "claude-v2",
+        "claude-instant",
     )
 
     @classmethod
     def _model_supports_cache_ttl(cls, model_id: str | None) -> bool:
-        """Check if a model supports the extended ``ttl`` field in cache_control."""
-        if not model_id:
+        """Check if a model supports the extended ``ttl`` field in cache_control.
+
+        Returns True for all active Anthropic models and False for non-Anthropic
+        models and the legacy Claude families that predate extended TTL.
+        """
+        if not model_id or not cls.is_anthropic_model(model_id):
             return False
-        return any(pat in model_id for pat in cls._EXTENDED_TTL_MODEL_PATTERNS)
+        return not any(pat in model_id for pat in cls._NO_EXTENDED_TTL_PATTERNS)
 
     @staticmethod
     def _new_cache_marker(ttl: str | None = None, model_id: str | None = None) -> dict:
         """Create a cache_control marker with configured TTL.
 
-        The ``ttl`` field is only supported by Claude 4.5 family models.
-        For unsupported models the field must be omitted, otherwise Bedrock
-        returns ``Extra inputs are not permitted``.
+        The ``ttl`` field is supported by all active Claude models (see
+        ``_model_supports_cache_ttl``). For legacy/non-Claude models the field
+        must be omitted, otherwise Bedrock returns
+        ``Extra inputs are not permitted``.
         """
         cache_ttl = ttl or get_settings().PROMPT_CACHE_TTL
         marker: dict = {"type": "ephemeral"}
