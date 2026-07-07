@@ -58,7 +58,9 @@
     "overrides": {
       "esbuild": ">=0.28.1",
       "flatted": ">=3.4.2",
-      "picomatch": ">=4.0.4"
+      "picomatch": ">=4.0.4",
+      "js-yaml": ">=4.2.0 <5",
+      "@babel/core": ">=7.29.6 <8"
     }
   },
   "devDependencies": {
