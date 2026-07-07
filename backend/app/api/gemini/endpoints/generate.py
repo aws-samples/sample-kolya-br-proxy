@@ -10,6 +10,7 @@ import json
 import logging
 import time
 import uuid
+from decimal import Decimal
 from typing import AsyncGenerator, Dict
 
 import httpx
@@ -108,13 +109,24 @@ async def _record_usage(
 
     async for db in _get_db():
         try:
+            # Missing pricing → record tokens with cost_usd=0 + note instead of
+            # dropping the usage, so it stays auditable and back-fillable.
+            note = None
             pricing_service = ModelPricing(db=db)
-            cost_usd = await pricing_service.calculate_cost(
-                model=model,
-                prompt_tokens=non_cached_prompt,
-                completion_tokens=completion_tokens,
-                cache_read_input_tokens=cached_tokens,
-            )
+            try:
+                cost_usd = await pricing_service.calculate_cost(
+                    model=model,
+                    prompt_tokens=non_cached_prompt,
+                    completion_tokens=completion_tokens,
+                    cache_read_input_tokens=cached_tokens,
+                )
+            except ValueError as e:
+                cost_usd = Decimal("0.0000")
+                note = "pricing_missing"
+                logger.error(
+                    f"Pricing not available for model {model}, "
+                    f"recording usage with cost_usd=0: {e}"
+                )
 
             usage_record = UsageRecord(
                 user_id=token.user_id,
@@ -126,6 +138,7 @@ async def _record_usage(
                 cache_read_input_tokens=cached_tokens,
                 cost_usd=cost_usd,
                 request_id=request_id,
+                note=note,
             )
             db.add(usage_record)
             await db.commit()
@@ -143,9 +156,6 @@ async def _record_usage(
                 "Gemini usage recorded",
                 extra={"request_id": request_id, "cost_usd": round(cost_usd, 6)},
             )
-        except ValueError as e:
-            logger.error(f"Pricing not available for model {model}: {e}")
-            await db.rollback()
         except Exception as e:
             logger.error(f"Failed to record Gemini usage: {e}", exc_info=True)
             await db.rollback()
@@ -318,6 +328,25 @@ async def _stream_proxy(
     prompt_tokens = 0
     completion_tokens = 0
     cached_tokens = 0
+    usage_recorded = False
+
+    def _record():
+        """Record usage once, on any exit path (incl. client disconnect)."""
+        nonlocal usage_recorded
+        if usage_recorded or not (prompt_tokens or completion_tokens):
+            return
+        usage_recorded = True
+        background_tasks.create_task(
+            _record_usage(
+                token=token,
+                model=model_name,
+                request_id=request_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+            ),
+            task_name=f"gemini_usage_{request_id}",
+        )
 
     try:
         async with httpx.AsyncClient(timeout=3600) as client:
@@ -366,19 +395,10 @@ async def _stream_proxy(
             exc_info=True,
         )
         yield 'data: {"error": {"message": "Internal server error"}}\n\n'
-
-    # Record usage
-    background_tasks.create_task(
-        _record_usage(
-            token=token,
-            model=model_name,
-            request_id=request_id,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cached_tokens=cached_tokens,
-        ),
-        task_name=f"gemini_usage_{request_id}",
-    )
+    finally:
+        # Record usage on every exit path — normal completion, client
+        # disconnect, or a mid-stream error after Google produced tokens.
+        _record()
 
     duration = time.time() - start_time
     cache_info = f", cached={cached_tokens}" if cached_tokens else ""

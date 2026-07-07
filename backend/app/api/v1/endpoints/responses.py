@@ -193,6 +193,26 @@ async def _stream_responses(
     usage = {"non_cached_prompt": 0, "completion": 0, "cached": 0}
     buffer = ""
     last_heartbeat = time.time()
+    usage_recorded = False
+
+    def _record():
+        """Record usage once, on any exit path (incl. client disconnect)."""
+        nonlocal usage_recorded
+        if usage_recorded or not (usage["non_cached_prompt"] or usage["completion"]):
+            return
+        usage_recorded = True
+        background_tasks.create_task(
+            record_usage(
+                token_id=token.id,
+                user_id=token.user_id,
+                model=model,
+                request_id=request_id,
+                prompt_tokens=usage["non_cached_prompt"],
+                completion_tokens=usage["completion"],
+                cache_read_input_tokens=usage["cached"],
+            ),
+            task_name=f"record_usage_{request_id}",
+        )
 
     try:
         async for raw in MantleClient.responses_passthrough_stream(body):
@@ -255,20 +275,10 @@ async def _stream_responses(
         }
         yield f"event: error\ndata: {json.dumps(err)}\n\n".encode("utf-8")
         return
-
-    # Record usage after the stream completes
-    background_tasks.create_task(
-        record_usage(
-            token_id=token.id,
-            user_id=token.user_id,
-            model=model,
-            request_id=request_id,
-            prompt_tokens=usage["non_cached_prompt"],
-            completion_tokens=usage["completion"],
-            cache_read_input_tokens=usage["cached"],
-        ),
-        task_name=f"record_usage_{request_id}",
-    )
+    finally:
+        # Record usage on every exit path — normal completion, client
+        # disconnect, or a mid-stream error after tokens were produced.
+        _record()
 
     duration = time.time() - start_time
     cache_info = f", cached={usage['cached']}" if usage["cached"] else ""

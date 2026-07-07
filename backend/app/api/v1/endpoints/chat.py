@@ -5,6 +5,7 @@ OpenAI-compatible chat completions endpoint.
 import logging
 import time
 import uuid
+from decimal import Decimal
 from typing import AsyncGenerator
 
 from botocore.exceptions import ClientError
@@ -769,6 +770,38 @@ async def stream_chat_completion(
     total_cache_read_tokens = 0
     last_heartbeat = time.time()
     client_disconnected = False
+    usage_recorded = False
+
+    def _record_stream_usage():
+        """Record usage once, from the tokens seen so far.
+
+        Runs from ``finally`` so tokens are still accounted when the stream
+        aborts mid-way (client disconnect or an exception after Bedrock has
+        already produced — and been charged for — tokens). Idempotent via the
+        ``usage_recorded`` guard so the normal and error paths don't double
+        count.
+        """
+        nonlocal usage_recorded
+        if usage_recorded:
+            return
+        if not (total_input_tokens or total_output_tokens):
+            # Nothing consumed (e.g. failure before message_start) → skip.
+            return
+        usage_recorded = True
+        background_tasks.create_task(
+            record_usage(
+                token_id=token.id,
+                user_id=token.user_id,
+                model=model,
+                request_id=request_id,
+                prompt_tokens=total_input_tokens,
+                completion_tokens=total_output_tokens,
+                cache_creation_input_tokens=total_cache_creation_tokens,
+                cache_read_input_tokens=total_cache_read_tokens,
+                cache_ttl=cache_ttl if total_cache_creation_tokens else None,
+            ),
+            task_name=f"record_usage_{request_id}",
+        )
 
     # Track tool use state for streaming
     tool_use_blocks = {}  # {index: {"id": ..., "name": ..., "input": ""}}
@@ -931,22 +964,6 @@ async def stream_chat_completion(
             # Send done marker
             yield ResponseTranslator.create_stream_done()
 
-        # Record usage for tokens already consumed (even if client disconnected)
-        background_tasks.create_task(
-            record_usage(
-                token_id=token.id,
-                user_id=token.user_id,
-                model=model,
-                request_id=request_id,
-                prompt_tokens=total_input_tokens,
-                completion_tokens=total_output_tokens,
-                cache_creation_input_tokens=total_cache_creation_tokens,
-                cache_read_input_tokens=total_cache_read_tokens,
-                cache_ttl=cache_ttl if total_cache_creation_tokens else None,
-            ),
-            task_name=f"record_usage_{request_id}",
-        )
-
         duration = time.time() - start_time
         cache_info = ""
         if total_cache_creation_tokens:
@@ -1012,6 +1029,12 @@ async def stream_chat_completion(
             )
         )
         yield f"data: {error_response.model_dump_json()}\n\n"
+    finally:
+        # Record usage for tokens already consumed on every exit path —
+        # normal completion, client disconnect, or a mid-stream error after
+        # Bedrock produced tokens. Idempotent, so the success path (which also
+        # reaches here) records exactly once.
+        _record_stream_usage()
 
 
 async def record_usage(
@@ -1042,16 +1065,29 @@ async def record_usage(
     # Create new db session for background task
     async for db in get_db():
         try:
-            # Calculate cost using actual model pricing from database
+            # Calculate cost using actual model pricing from the database.
+            # If pricing is missing (e.g. a new model without a price row), do
+            # NOT drop the usage — record the token counts with cost_usd=0 and a
+            # note so the tokens stay auditable and the cost can be back-filled.
+            note = None
             pricing_service = ModelPricing(db=db)
-            cost_usd = await pricing_service.calculate_cost(
-                model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cache_creation_input_tokens=cache_creation_input_tokens,
-                cache_read_input_tokens=cache_read_input_tokens,
-                cache_ttl=cache_ttl,
-            )
+            try:
+                cost_usd = await pricing_service.calculate_cost(
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                    cache_read_input_tokens=cache_read_input_tokens,
+                    cache_ttl=cache_ttl,
+                )
+            except ValueError as e:
+                cost_usd = Decimal("0.0000")
+                note = "pricing_missing"
+                logger.error(
+                    f"Pricing not available for model {model}, "
+                    f"recording usage with cost_usd=0: {e}",
+                    extra={"request_id": request_id, "model": model},
+                )
 
             # Create usage record
             usage_record = UsageRecord(
@@ -1068,6 +1104,7 @@ async def record_usage(
                 cache_read_input_tokens=cache_read_input_tokens,
                 cost_usd=cost_usd,
                 request_id=request_id,
+                note=note,
             )
 
             db.add(usage_record)
@@ -1088,13 +1125,6 @@ async def record_usage(
                     "cost_usd": round(cost_usd, 6),
                 },
             )
-        except ValueError as e:
-            # If pricing not found, log error
-            logger.error(
-                f"Pricing not available for model {model}: {e}",
-                extra={"request_id": request_id, "model": model},
-            )
-            await db.rollback()
         except Exception as e:
             logger.error(f"Failed to record usage: {e}", exc_info=True)
             await db.rollback()

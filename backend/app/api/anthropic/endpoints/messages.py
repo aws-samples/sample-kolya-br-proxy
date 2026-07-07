@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from decimal import Decimal
 from typing import AsyncGenerator
 
 from botocore.exceptions import ClientError
@@ -376,6 +377,43 @@ async def stream_anthropic_messages(
     }
     last_heartbeat = time.time()
     client_disconnected = False
+    usage_recorded = False
+
+    def _record_stream_usage():
+        """Record usage once, from the tokens accumulated so far.
+
+        Runs from ``finally`` so tokens are still accounted when the stream
+        aborts mid-way (client disconnect or an exception after Bedrock has
+        already produced — and been charged for — tokens). Idempotent via the
+        ``usage_recorded`` guard so the normal and error paths don't double
+        count.
+        """
+        nonlocal usage_recorded
+        if usage_recorded:
+            return
+        total_input = accumulated_usage.get("input_tokens", 0)
+        total_output = accumulated_usage.get("output_tokens", 0)
+        total_cache_creation = accumulated_usage.get("cache_creation_input_tokens", 0)
+        total_cache_read = accumulated_usage.get("cache_read_input_tokens", 0)
+        if not (total_input or total_output):
+            # Nothing consumed (e.g. failure before message_start) → skip.
+            return
+        usage_recorded = True
+        background_tasks.create_task(
+            record_usage(
+                token_id=token.id,
+                user_id=token.user_id,
+                model=model,
+                request_id=request_id,
+                prompt_tokens=total_input,
+                completion_tokens=total_output,
+                cache_creation_input_tokens=total_cache_creation,
+                cache_read_input_tokens=total_cache_read,
+                cache_ttl=cache_ttl if total_cache_creation else None,
+            ),
+            task_name=f"record_usage_{request_id}",
+        )
+
     # Accumulate response content blocks for trace
     trace_content_blocks: list[dict] = []
     trace_current_block: dict | None = None
@@ -471,26 +509,13 @@ async def stream_anthropic_messages(
                 yield sse_event
                 last_heartbeat = current_time
 
-        # Record usage
+        # Usage is recorded in the finally block (idempotent) so mid-stream
+        # aborts still account already-consumed tokens. These totals are read
+        # here for logging / metrics / trace.
         total_input = accumulated_usage.get("input_tokens", 0)
         total_output = accumulated_usage.get("output_tokens", 0)
         total_cache_creation = accumulated_usage.get("cache_creation_input_tokens", 0)
         total_cache_read = accumulated_usage.get("cache_read_input_tokens", 0)
-
-        background_tasks.create_task(
-            record_usage(
-                token_id=token.id,
-                user_id=token.user_id,
-                model=model,
-                request_id=request_id,
-                prompt_tokens=total_input,
-                completion_tokens=total_output,
-                cache_creation_input_tokens=total_cache_creation,
-                cache_read_input_tokens=total_cache_read,
-                cache_ttl=cache_ttl if total_cache_creation else None,
-            ),
-            task_name=f"record_usage_{request_id}",
-        )
 
         duration = time.time() - start_time
         cache_info = ""
@@ -577,6 +602,11 @@ async def stream_anthropic_messages(
             "error": {"type": "server_error", "message": "Internal server error"},
         }
         yield f"event: error\ndata: {_json.dumps(error_data)}\n\n"
+    finally:
+        # Record usage for tokens already consumed on every exit path —
+        # normal completion, client disconnect, or a mid-stream error after
+        # Bedrock produced tokens. Idempotent, so the success path records once.
+        _record_stream_usage()
 
 
 async def record_usage(
@@ -595,15 +625,28 @@ async def record_usage(
 
     async for db in get_db():
         try:
+            # If pricing is missing (e.g. a new model without a price row), do
+            # NOT drop the usage — record the token counts with cost_usd=0 and a
+            # note so the tokens stay auditable and the cost can be back-filled.
+            note = None
             pricing_service = ModelPricing(db=db)
-            cost_usd = await pricing_service.calculate_cost(
-                model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                cache_creation_input_tokens=cache_creation_input_tokens,
-                cache_read_input_tokens=cache_read_input_tokens,
-                cache_ttl=cache_ttl,
-            )
+            try:
+                cost_usd = await pricing_service.calculate_cost(
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                    cache_read_input_tokens=cache_read_input_tokens,
+                    cache_ttl=cache_ttl,
+                )
+            except ValueError as e:
+                cost_usd = Decimal("0.0000")
+                note = "pricing_missing"
+                logger.error(
+                    f"Pricing not available for model {model}, "
+                    f"recording usage with cost_usd=0: {e}",
+                    extra={"request_id": request_id, "model": model},
+                )
 
             usage_record = UsageRecord(
                 user_id=user_id,
@@ -619,6 +662,7 @@ async def record_usage(
                 cache_read_input_tokens=cache_read_input_tokens,
                 cost_usd=cost_usd,
                 request_id=request_id,
+                note=note,
             )
 
             db.add(usage_record)
@@ -639,12 +683,6 @@ async def record_usage(
                     "cost_usd": round(cost_usd, 6),
                 },
             )
-        except ValueError as e:
-            logger.error(
-                f"Pricing not available for model {model}: {e}",
-                extra={"request_id": request_id, "model": model},
-            )
-            await db.rollback()
         except Exception as e:
             logger.error(f"Failed to record usage: {e}", exc_info=True)
             await db.rollback()
