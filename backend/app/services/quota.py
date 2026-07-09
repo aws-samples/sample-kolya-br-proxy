@@ -44,12 +44,17 @@ async def enforce_quota(token: APIToken, db: AsyncSession) -> None:
         effective_policy = team_membership.team.monthly_reset_policy
         effective_start = team_membership.team.monthly_budget_start
         daily_limit_enabled = team_membership.team.daily_limit_enabled
+        # Team members are ALWAYS subject to their allocation, even when it is
+        # $0 — an allocation of 0 means "no budget", so every request must be
+        # blocked. Never treat a team allocation as "unlimited".
+        has_monthly = effective_monthly is not None
     else:
         effective_monthly = token.monthly_quota_usd
         effective_policy = token.monthly_reset_policy
         effective_start = token.monthly_quota_start
-
-    has_monthly = effective_monthly is not None and effective_monthly > 0
+        # For personal tokens, monthly_quota_usd is optional: None/0 means the
+        # token simply has no monthly limit.
+        has_monthly = effective_monthly is not None and effective_monthly > 0
 
     if not has_lifetime and not has_monthly:
         return
