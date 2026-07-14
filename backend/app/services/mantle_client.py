@@ -241,7 +241,7 @@ def _openai_tool_choice_to_responses(tool_choice: Any) -> Optional[Any]:
     return None
 
 
-_REASONING_MODEL_PATTERNS = ("gpt-5.5", "o1", "o3", "o4")
+_REASONING_MODEL_PATTERNS = ("gpt-5.6", "gpt-5.5", "o1", "o3", "o4")
 
 
 def _is_reasoning_model(model: str) -> bool:

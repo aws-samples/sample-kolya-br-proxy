@@ -55,6 +55,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await bedrock.refresh_profile_cache()
     logger.info("Inference profile cache populated")
 
+    # Discover mantle (OpenAI GPT-5.x) models BEFORE pricing init so the first
+    # pricing run matches rows for newly launched models. Non-fatal: falls back
+    # to the static registry in mantle_models.py.
+    from app.services.mantle_models import refresh_mantle_registry
+
+    try:
+        mantle_registry = await refresh_mantle_registry()
+        logger.info(f"Mantle model registry ready: {len(mantle_registry)} models")
+    except Exception as e:
+        logger.warning(f"Mantle model discovery failed (using static registry): {e}")
+
     # Initialize pricing data if database is empty
     from app.core.database import async_session_maker
     from app.services.pricing_updater import PricingUpdater
