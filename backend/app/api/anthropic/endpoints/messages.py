@@ -175,7 +175,7 @@ async def create_message(
                 start_time=start_time,
             )
 
-        # Route OpenAI GPT-5.5/5.4 (mantle) to the Responses API
+        # Route mantle-served OpenAI models to the Responses API
         if _is_mantle_model(request_data.model):
             return await _handle_mantle_via_anthropic(
                 request_data=request_data,
@@ -959,7 +959,7 @@ async def _stream_gemini_as_anthropic(
 
 
 # ---------------------------------------------------------------------------
-# OpenAI GPT-5.5/5.4 (mantle) routing via Anthropic Messages endpoint
+# Mantle (OpenAI) routing via Anthropic Messages endpoint
 # ---------------------------------------------------------------------------
 
 
@@ -1004,7 +1004,7 @@ async def _handle_mantle_via_anthropic(
     start_time: float,
 ):
     """
-    Forward a GPT-5.5/5.4 (mantle) request received on the Anthropic endpoint.
+    Forward a mantle (OpenAI) request received on the Anthropic endpoint.
 
     Converts Anthropic-format messages to OpenAI-style messages, calls the
     MantleClient (which translates to the Responses API and signs with SigV4),
@@ -1107,7 +1107,7 @@ async def _stream_mantle_as_anthropic(
     start_time: float,
 ) -> AsyncGenerator[str, None]:
     """
-    Stream a mantle (GPT-5.5/5.4) response converted to Anthropic SSE format.
+    Stream a mantle (OpenAI) response converted to Anthropic SSE format.
 
     MantleClient.invoke_stream yields OpenAI-format SSE chunks; we convert each
     to Anthropic streaming events (mirrors the Gemini streaming bridge).

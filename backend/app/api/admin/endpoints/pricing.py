@@ -31,15 +31,6 @@ async def update_pricing(
         Update statistics
     """
     try:
-        # Refresh the mantle (OpenAI) model registry first so pricing rows for
-        # newly launched models can be matched in this same update.
-        from app.services.mantle_models import refresh_mantle_registry
-
-        try:
-            await refresh_mantle_registry()
-        except Exception as e:
-            logger.warning(f"Mantle model discovery failed (non-fatal): {e}")
-
         updater = PricingUpdater(db)
         stats = await updater.update_all_pricing()
 

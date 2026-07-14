@@ -3,6 +3,7 @@ FastAPI application entry point for Kolya BR Proxy.
 AI Gateway service providing OpenAI-compatible access to AWS Bedrock Claude models.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -52,19 +53,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     bedrock = BedrockClient.get_instance()
     logger.info("BedrockClient initialized")
 
-    await bedrock.refresh_profile_cache()
-    logger.info("Inference profile cache populated")
-
-    # Discover mantle (OpenAI GPT-5.x) models BEFORE pricing init so the first
-    # pricing run matches rows for newly launched models. Non-fatal: falls back
-    # to the static registry in mantle_models.py.
+    # Mantle (OpenAI GPT-5.x) model discovery runs concurrently with the
+    # profile cache refresh — both are independent network I/O.  Discovery
+    # never raises (falls back to the static registry); pricing runs also
+    # refresh it themselves, this just warms routing before first traffic.
     from app.services.mantle_models import refresh_mantle_registry
 
-    try:
-        mantle_registry = await refresh_mantle_registry()
-        logger.info(f"Mantle model registry ready: {len(mantle_registry)} models")
-    except Exception as e:
-        logger.warning(f"Mantle model discovery failed (using static registry): {e}")
+    _, mantle_registry = await asyncio.gather(
+        bedrock.refresh_profile_cache(), refresh_mantle_registry()
+    )
+    logger.info(
+        f"Inference profile cache populated; "
+        f"mantle registry ready ({len(mantle_registry)} models)"
+    )
 
     # Initialize pricing data if database is empty
     from app.core.database import async_session_maker

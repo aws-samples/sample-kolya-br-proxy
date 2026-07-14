@@ -81,7 +81,7 @@ class ModelPricing:
             if is_gemini_model(model):
                 region = "global"
             elif is_openai_mantle_model(model):
-                # GPT-5.5/5.4 are billed in the region they're routed to —
+                # mantle models are billed in the region they're routed to —
                 # matches the routing in mantle_client.py.
                 region = resolve_mantle_region(model)
             else:

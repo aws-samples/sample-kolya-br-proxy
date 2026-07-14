@@ -45,19 +45,6 @@ async def refresh_profile_cache_task():
         logger.error(f"Profile cache refresh task failed: {e}", exc_info=True)
 
 
-async def refresh_mantle_registry_task():
-    """Background task to discover mantle (OpenAI) models via ListModels."""
-    logger.info("Starting mantle model discovery task...")
-
-    try:
-        from app.services.mantle_models import refresh_mantle_registry
-
-        registry = await refresh_mantle_registry()
-        logger.info(f"Mantle model discovery completed: {len(registry)} models")
-    except Exception as e:
-        logger.error(f"Mantle model discovery task failed: {e}", exc_info=True)
-
-
 async def update_gemini_pricing_task():
     """Background task to update Google Gemini model pricing."""
     logger.info("Starting Gemini pricing update task...")
@@ -94,17 +81,8 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # Mantle model discovery MUST run BEFORE the AWS pricing update so newly
-    # discovered models get their pricing-page rows matched in the same cycle.
-    scheduler.add_job(
-        refresh_mantle_registry_task,
-        trigger=CronTrigger(hour=1, minute=55),
-        id="refresh_mantle_registry",
-        name="Discover mantle (OpenAI) models via ListModels",
-        replace_existing=True,
-    )
-
     # Schedule AWS pricing update daily at 2:00 AM UTC
+    # (mantle model discovery runs inside update_all_pricing itself)
     scheduler.add_job(
         update_pricing_task,
         trigger=CronTrigger(hour=2, minute=0),
@@ -124,8 +102,7 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "Scheduler started (profile cache: 1:50, mantle discovery: 1:55, "
-        "AWS pricing: 2:00, Gemini: 2:30 UTC)"
+        "Scheduler started (profile cache: 1:50, AWS pricing: 2:00, Gemini: 2:30 UTC)"
     )
 
 

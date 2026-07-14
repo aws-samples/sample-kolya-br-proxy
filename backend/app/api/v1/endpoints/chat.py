@@ -229,7 +229,7 @@ async def create_chat_completion(
                 start_time=start_time,
             )
 
-        # Route OpenAI GPT-5.5/5.4 (mantle) to the Responses API directly
+        # Route mantle-served OpenAI models to the Responses API directly
         if is_openai_mantle_model(request_data.model):
             return await _handle_mantle_request(
                 request_data=request_data,
@@ -564,7 +564,7 @@ async def _handle_mantle_request(
     start_time: float,
 ):
     """
-    Forward a chat completion request to AWS mantle (OpenAI GPT-5.5/5.4).
+    Forward a chat completion request to AWS mantle (OpenAI models).
 
     Converts the OpenAI ChatCompletions payload to the Responses API internally;
     the request is routed (and SigV4-signed) to the model's region automatically.
@@ -633,7 +633,7 @@ async def stream_mantle_completion(
     start_time: float,
 ) -> AsyncGenerator[str, None]:
     """
-    Stream a mantle (GPT-5.5/5.4) completion via the Responses API.
+    Stream a mantle (OpenAI) completion via the Responses API.
 
     MantleClient.invoke_stream yields OpenAI-format SSE chunks; we forward them
     verbatim and extract usage from any chunk that carries a usage object.
