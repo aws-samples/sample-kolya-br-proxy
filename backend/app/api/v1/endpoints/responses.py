@@ -1,7 +1,7 @@
 """
 OpenAI Responses API endpoint (native passthrough for AWS mantle).
 
-GPT-5.5 / GPT-5.4 are served by AWS's "mantle" inference engine through the
+Mantle-served OpenAI models (see the mantle_models registry) go through the
 **OpenAI Responses API**. The OpenAI-compatible ``/v1/chat/completions`` and the
 Anthropic ``/v1/messages`` endpoints translate to/from the Responses format,
 which necessarily flattens Responses-only features (built-in tools, multimodal
@@ -36,7 +36,10 @@ from app.models.model import Model
 from app.models.token import APIToken
 from app.services.background_tasks import BackgroundTaskManager
 from app.services.mantle_client import MantleClient
-from app.services.mantle_models import is_openai_mantle_model
+from app.services.mantle_models import (
+    get_mantle_model_regions,
+    is_openai_mantle_model,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -68,7 +71,7 @@ async def create_response(
     """
     Create a model response (OpenAI Responses API, native passthrough).
 
-    Only mantle-served models (GPT-5.5/5.4) are accepted here — other models do
+    Only mantle-served models (see mantle_models registry) are accepted — others do
     not have a Responses API backend. The request body is forwarded to mantle
     verbatim and the native response is returned unchanged.
     """
@@ -102,7 +105,7 @@ async def create_response(
             status_code=400,
             detail=(
                 f"Model '{model}' is not available on the Responses API. "
-                "This endpoint serves OpenAI GPT-5.6/5.5/5.4 (mantle) only; "
+                f"Available models: {sorted(get_mantle_model_regions())}; "
                 "use /v1/chat/completions for other models."
             ),
         )

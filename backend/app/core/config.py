@@ -74,7 +74,7 @@ class Settings(BaseSettings):
         description="Google Cloud region for Vertex AI",
     )
 
-    # OpenAI-on-Bedrock (mantle) settings — GPT-5.6/5.5/5.4 via Responses API
+    # OpenAI-on-Bedrock (mantle) settings — GPT-5.x via Responses API
     MANTLE_SIGV4_SERVICE: str = Field(
         default="bedrock",
         description="SigV4 service name used to sign mantle (OpenAI Responses API) requests. "
@@ -245,34 +245,27 @@ class Settings(BaseSettings):
         "Empty string disables model degradation.",
     )
 
+    @staticmethod
+    def _csv_list(value: str) -> List[str]:
+        """Parse a comma-separated setting into a list (strips stray quotes)."""
+        cleaned = (value or "").strip('"').strip("'")
+        return [item.strip() for item in cleaned.split(",") if item.strip()]
+
     def get_mantle_discovery_regions(self) -> List[str]:
         """Get mantle ListModels probe regions as a list."""
-        regions = (self.MANTLE_DISCOVERY_REGIONS or "").strip('"').strip("'")
-        return [r.strip() for r in regions.split(",") if r.strip()]
+        return self._csv_list(self.MANTLE_DISCOVERY_REGIONS)
 
     def get_allowed_origins(self) -> List[str]:
         """Get CORS allowed origins as a list."""
-        if not self.ALLOWED_ORIGINS or self.ALLOWED_ORIGINS == "":
-            return ["*"]
-        # Remove quotes if present
-        origins = self.ALLOWED_ORIGINS.strip('"').strip("'")
-        return [origin.strip() for origin in origins.split(",") if origin.strip()]
+        return self._csv_list(self.ALLOWED_ORIGINS) or ["*"]
 
     def get_microsoft_redirect_uris(self) -> List[str]:
         """Get allowed Microsoft OAuth redirect URIs as a list."""
-        if not self.MICROSOFT_REDIRECT_URIS:
-            return []
-        # Remove quotes if present
-        uris = self.MICROSOFT_REDIRECT_URIS.strip('"').strip("'")
-        return [uri.strip() for uri in uris.split(",") if uri.strip()]
+        return self._csv_list(self.MICROSOFT_REDIRECT_URIS)
 
     def get_cognito_redirect_uris(self) -> List[str]:
         """Get allowed Cognito OAuth redirect URIs as a list."""
-        if not self.COGNITO_REDIRECT_URIS:
-            return []
-        # Remove quotes if present
-        uris = self.COGNITO_REDIRECT_URIS.strip('"').strip("'")
-        return [uri.strip() for uri in uris.split(",") if uri.strip()]
+        return self._csv_list(self.COGNITO_REDIRECT_URIS)
 
     @validator("LOG_LEVEL")
     def validate_log_level(cls, v):

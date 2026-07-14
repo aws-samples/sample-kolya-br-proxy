@@ -29,6 +29,7 @@ from app.models.model_pricing import ModelPricing
 from app.services.mantle_models import (
     get_mantle_model_regions,
     mantle_pricing_name_to_id,
+    refresh_mantle_registry,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,9 +63,14 @@ class PricingUpdater:
             "region": settings.AWS_REGION,
         }
 
-        # 0. Build dynamic model name → model ID mapping from Bedrock API
-        # This auto-discovers new models so the static mapping table stays minimal
+        # 0. Discover models so pricing rows can be matched below.
+        # Bedrock: dynamic model name → ID mapping keeps the static table minimal.
+        # Mantle (OpenAI): refresh the registry so newly launched models get
+        # their pricing-page rows matched in this same run — owning the ordering
+        # here means every pricing trigger (scheduler, admin, startup) gets a
+        # fresh registry without call-site coordination.
         PricingUpdater._dynamic_mapping_cache = self._build_dynamic_mapping()
+        await refresh_mantle_registry()
 
         # Track all base model IDs that already have pricing (from any source)
         found_model_ids: Set[str] = set()
@@ -806,7 +812,7 @@ class PricingUpdater:
             f"for region {target_region}"
         )
 
-        # OpenAI GPT-5.5/5.4 (mantle) live in a separate plain-text table on the
+        # OpenAI (mantle) models live in a separate plain-text table on the
         # same page — not in the data-pricing-markup sections handled above.
         # Fully additive: appends per-region rows without touching anything above.
         try:
@@ -823,7 +829,7 @@ class PricingUpdater:
         return pricing_data
 
     def _scrape_openai_text_pricing(self, html: str) -> List[Dict]:
-        """Parse the OpenAI (GPT-5.6/5.5/5.4) plain-text pricing table.
+        """Parse the OpenAI (mantle) plain-text pricing table.
 
         These models are served by AWS mantle and do not appear in the
         ``data-pricing-markup`` sections or the Price List API.  On the pricing
@@ -855,39 +861,46 @@ class PricingUpdater:
         # "$ 5.50" / "$5.00" / "$3.125&nbsp;" — space and trailing entities vary.
         money_re = re.compile(r"\$\s*([\d.]+)")
 
+        registry = get_mantle_model_regions()
+
         # Dedup: display names repeat across the per-region tables, but the prices
         # are identical, so the first occurrence per model is authoritative.
         seen_names: Set[str] = set()
         pricing_data: List[Dict] = []
 
         for row_match in row_re.finditer(html):
+            # Cheap pre-filter before cell extraction: mantle model display
+            # names all carry a version digit-dot pattern ("GPT-5.6 Sol").
+            if not re.search(r"\d\.\d", row_match.group(1)):
+                continue
             cells = [c.strip() for c in cell_re.findall(row_match.group(1))]
             if len(cells) not in (4, 5):
                 continue
             display_name = cells[0]
-            if not display_name.startswith("GPT-") or display_name in seen_names:
-                continue
-            model_id = mantle_pricing_name_to_id(display_name)
-            if not model_id:
-                # Row for a model the registry doesn't know — likely a brand-new
-                # launch discovery hasn't picked up yet.  Loud so operators see it.
-                logger.warning(
-                    f"OpenAI pricing row '{display_name}' has no matching mantle "
-                    f"registry entry; skipping (model not yet discovered?)"
-                )
-                seen_names.add(display_name)
-                continue
-
-            prices = [money_re.search(c) for c in cells[1:]]
-            if len(cells) == 5:
-                # input | cache write (may be "-") | cache read | output
-                input_m, _write_m, cached_m, output_m = prices
-            else:
-                # legacy: input | cache read | output
-                input_m, cached_m, output_m = prices
-            if not (input_m and cached_m and output_m):
+            if display_name in seen_names:
                 continue
             seen_names.add(display_name)
+            model_id = mantle_pricing_name_to_id(display_name)
+            if not model_id:
+                if display_name.startswith("GPT-"):
+                    # OpenAI-looking row the registry doesn't know — likely a
+                    # brand-new launch discovery hasn't picked up yet.  Loud so
+                    # operators see it.
+                    logger.warning(
+                        f"OpenAI pricing row '{display_name}' has no matching "
+                        f"mantle registry entry; skipping (not yet discovered?)"
+                    )
+                continue
+
+            # 5-column rows (since GPT-5.6) insert a cache-write cell after the
+            # input price; it has no DB column (calculate_cost bills writes at
+            # input × 1.25, matching the published prices), so drop it and both
+            # layouts reduce to: input | cache read | output.
+            if len(cells) == 5:
+                cells.pop(2)
+            input_m, cached_m, output_m = (money_re.search(c) for c in cells[1:])
+            if not (input_m and cached_m and output_m):
+                continue
 
             input_per_1m = Decimal(input_m.group(1))
             cached_per_1m = Decimal(cached_m.group(1))
@@ -895,7 +908,7 @@ class PricingUpdater:
 
             # Write one row per region the model can be invoked in, keyed by the
             # same region resolve_mantle_region() will produce at billing time.
-            for region in get_mantle_model_regions().get(model_id, []):
+            for region in registry.get(model_id, []):
                 pricing_data.append(
                     {
                         "model_id": model_id,

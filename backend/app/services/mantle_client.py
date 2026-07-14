@@ -1,7 +1,7 @@
 """
 OpenAI-on-Bedrock (mantle) API client service.
 
-GPT-5.5 / GPT-5.4 are served by AWS's "mantle" inference engine through the
+Mantle-served OpenAI models (see the mantle_models registry) go through the
 **OpenAI Responses API** (``https://bedrock-mantle.{region}.api.aws/openai/v1``
 → ``/responses``), not through the boto3 ``converse`` / ``invoke_model`` paths.
 
@@ -21,49 +21,10 @@ import uuid
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
-
-from app.core.config import get_settings
 from app.services.mantle_models import MANTLE_BASE_URL, resolve_mantle_region
+from app.services.mantle_signing import signed_headers
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# SigV4 signing
-# ---------------------------------------------------------------------------
-
-
-async def _signed_headers(
-    method: str, url: str, body_bytes: bytes, region: str
-) -> Dict[str, str]:
-    """Return SigV4-signed headers for a mantle request.
-
-    Credentials come from the shared BedrockClient aioboto3 session (reuses the
-    EKS Pod IRSA/STS chain, including a SessionToken → ``X-Amz-Security-Token``).
-    In aiobotocore both ``get_credentials`` and ``get_frozen_credentials`` are
-    coroutines and must be awaited (unlike sync botocore).
-
-    The signature is computed over the EXACT *body_bytes* that will be sent.
-    """
-    from app.services.bedrock import BedrockClient
-
-    session = BedrockClient.get_instance().session
-    creds = await session.get_credentials()
-    if creds is None:
-        raise RuntimeError("No AWS credentials available to sign mantle request")
-    frozen = await creds.get_frozen_credentials()
-
-    service = get_settings().MANTLE_SIGV4_SERVICE
-    aws_req = AWSRequest(
-        method=method,
-        url=url,
-        data=body_bytes,
-        headers={"Content-Type": "application/json"},
-    )
-    SigV4Auth(frozen, service, region).add_auth(aws_req)
-    return dict(aws_req.headers)
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +202,11 @@ def _openai_tool_choice_to_responses(tool_choice: Any) -> Optional[Any]:
     return None
 
 
-_REASONING_MODEL_PATTERNS = ("gpt-5.6", "gpt-5.5", "o1", "o3", "o4")
+# Model families whose mantle-served members are reasoning models (reject
+# temperature/top_p).  Family prefixes rather than exact versions so
+# auto-discovered future releases (e.g. gpt-5.7) are classified without a code
+# change.  gpt-5.4 included: it is version-gated the same way by AWS.
+_REASONING_MODEL_PATTERNS = ("gpt-5.", "gpt-6.", "o1", "o3", "o4")
 
 
 def _is_reasoning_model(model: str) -> bool:
@@ -420,7 +385,7 @@ def extract_cached_tokens_from_chunk(data: dict) -> Optional[int]:
 
 
 class MantleClient:
-    """Client for the OpenAI Responses API served by AWS mantle (GPT-5.5/5.4)."""
+    """Client for the OpenAI Responses API served by AWS mantle."""
 
     @staticmethod
     def _endpoint(model: str) -> Tuple[str, str]:
@@ -462,7 +427,7 @@ class MantleClient:
         send_body["stream"] = False
         cls._strip_unsupported_params(send_body)
         body_bytes = json.dumps(send_body).encode("utf-8")
-        headers = await _signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers("POST", url, body_bytes, region)
 
         async with httpx.AsyncClient(timeout=3600) as client:
             resp = await client.post(url, headers=headers, content=body_bytes)
@@ -496,7 +461,7 @@ class MantleClient:
         send_body["stream"] = True
         cls._strip_unsupported_params(send_body)
         body_bytes = json.dumps(send_body).encode("utf-8")
-        headers = await _signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers("POST", url, body_bytes, region)
         headers["Accept"] = "text/event-stream"
 
         async with httpx.AsyncClient(timeout=3600) as client:
@@ -523,7 +488,7 @@ class MantleClient:
         body = _openai_to_responses(payload)
         body["stream"] = False
         body_bytes = json.dumps(body).encode("utf-8")
-        headers = await _signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers("POST", url, body_bytes, region)
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
 
         async with httpx.AsyncClient(timeout=3600) as client:
@@ -558,7 +523,7 @@ class MantleClient:
         body = _openai_to_responses(payload)
         body["stream"] = True
         body_bytes = json.dumps(body).encode("utf-8")
-        headers = await _signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers("POST", url, body_bytes, region)
         headers["Accept"] = "text/event-stream"
 
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"

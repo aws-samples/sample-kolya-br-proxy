@@ -165,7 +165,7 @@ async def list_aws_available_models(
             except Exception as e:
                 logger.warning(f"Failed to fetch Gemini models (non-fatal): {e}")
 
-        # Inject OpenAI GPT-5.5/5.4 (mantle) — not discoverable via Bedrock APIs
+        # Inject mantle-served OpenAI models — not discoverable via Bedrock APIs
         mantle_models = get_mantle_models()
         models.extend(mantle_models)
         logger.info(f"Added {len(mantle_models)} mantle models to available list")
