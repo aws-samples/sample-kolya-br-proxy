@@ -74,11 +74,18 @@ class Settings(BaseSettings):
         description="Google Cloud region for Vertex AI",
     )
 
-    # OpenAI-on-Bedrock (mantle) settings — GPT-5.5 / GPT-5.4 via Responses API
+    # OpenAI-on-Bedrock (mantle) settings — GPT-5.6/5.5/5.4 via Responses API
     MANTLE_SIGV4_SERVICE: str = Field(
         default="bedrock",
         description="SigV4 service name used to sign mantle (OpenAI Responses API) requests. "
         "Override to 'bedrock-runtime' / 'bedrock-mantle' if signing is rejected.",
+    )
+    MANTLE_DISCOVERY_REGIONS: str = Field(
+        default="us-east-1,us-east-2,us-west-2",
+        description="Comma-separated regions probed by mantle model discovery "
+        "(bedrock-mantle:ListModels). Order matters: the first region a model "
+        "is found in becomes its preferred routing region. Empty disables "
+        "discovery (static registry only).",
     )
 
     # AWS Bedrock settings
@@ -237,6 +244,11 @@ class Settings(BaseSettings):
         "Example: 'anthropic.claude-opus-4-0-20250514-v1:0,anthropic.claude-sonnet-4-20250514-v1:0'. "
         "Empty string disables model degradation.",
     )
+
+    def get_mantle_discovery_regions(self) -> List[str]:
+        """Get mantle ListModels probe regions as a list."""
+        regions = (self.MANTLE_DISCOVERY_REGIONS or "").strip('"').strip("'")
+        return [r.strip() for r in regions.split(",") if r.strip()]
 
     def get_allowed_origins(self) -> List[str]:
         """Get CORS allowed origins as a list."""

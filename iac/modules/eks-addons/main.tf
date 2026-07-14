@@ -100,9 +100,11 @@ resource "aws_iam_policy" "backend_bedrock" {
         Resource = "*"
       },
       {
-        # OpenAI GPT-5.5/5.4 served by the AWS "mantle" inference engine use a
-        # distinct "bedrock-mantle" IAM service prefix that "bedrock:*" does not
-        # cover, so it must be granted explicitly.
+        # OpenAI GPT-5.x models served by the AWS "mantle" inference engine use
+        # a distinct "bedrock-mantle" IAM service prefix that "bedrock:*" does
+        # not cover, so it must be granted explicitly. Covers both inference
+        # (InvokeModel) and model discovery (ListModels, used by the backend's
+        # mantle registry refresh task).
         Sid    = "MantleOpenAIModels"
         Effect = "Allow"
         Action = [

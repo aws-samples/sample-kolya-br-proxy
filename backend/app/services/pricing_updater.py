@@ -26,7 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.config import get_settings
 from app.models.model_pricing import ModelPricing
-from app.services.mantle_models import MANTLE_MODEL_REGIONS, MANTLE_PRICING_NAMES
+from app.services.mantle_models import (
+    get_mantle_model_regions,
+    mantle_pricing_name_to_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -820,56 +823,79 @@ class PricingUpdater:
         return pricing_data
 
     def _scrape_openai_text_pricing(self, html: str) -> List[Dict]:
-        """Parse the OpenAI (GPT-5.5/5.4) plain-text pricing table.
+        """Parse the OpenAI (GPT-5.6/5.5/5.4) plain-text pricing table.
 
         These models are served by AWS mantle and do not appear in the
         ``data-pricing-markup`` sections or the Price List API.  On the pricing
-        page they sit in an ordinary ``<table>`` with four columns::
+        page they sit in an ordinary ``<table>``; since the GPT-5.6 launch the
+        table has five columns::
 
-            OpenAI models | Price per 1M input tokens
-                          | Price per 1M cached output tokens
-                          | Price per 1M output tokens
+            OpenAI models | input | cache write | cache read | output   (per 1M)
+
+        where "cache write" is "-" for models without an explicit write price
+        (GPT-5.5/5.4).  Older 4-column rows (no cache-write column) still appear
+        further down the page and are parsed for backward compatibility.
 
         Prices are identical across the model's regions, so rather than parse the
         per-region table headers we map each display name via
-        ``MANTLE_PRICING_NAMES`` and write one row per region from
-        ``MANTLE_MODEL_REGIONS`` — keeping the pricing region keys exactly aligned
-        with ``resolve_mantle_region`` (used by calculate_cost) so every model in
-        the list can always look up a price.
+        ``mantle_pricing_name_to_id`` (normalized against the live registry, so
+        discovered models match without a hand-maintained name table) and write
+        one row per region from the registry — keeping the pricing region keys
+        exactly aligned with ``resolve_mantle_region`` (used by calculate_cost)
+        so every model in the list can always look up a price.
 
-        The "cached output" price is stored in ``cached_input_price_per_token``
-        (the same column Gemini's implicit cache uses), so calculate_cost reads it
-        back uniformly.
+        The cache-read price is stored in ``cached_input_price_per_token`` (the
+        same column Gemini's implicit cache uses).  The cache-write price has no
+        DB column; calculate_cost bills writes at input × 1.25, which matches the
+        published mantle write prices exactly (e.g. GPT-5.6 Sol: 5.00 × 1.25 =
+        6.25).
         """
-        # Locate every <tr> whose first cell is one of the known OpenAI names.
-        # The table uses plain text and "$ 5.50"-style values (space after $).
-        row_re = re.compile(
-            r"<tr>\s*<td>\s*([A-Za-z0-9.\- ]+?)\s*</td>"
-            r"\s*<td>\s*\$\s*([\d.]+)\s*</td>"  # input / 1M
-            r"\s*<td>\s*\$\s*([\d.]+)\s*</td>"  # cached output / 1M
-            r"\s*<td>\s*\$\s*([\d.]+)\s*</td>",  # output / 1M
-            re.IGNORECASE,
-        )
+        row_re = re.compile(r"<tr>\s*(.*?)\s*</tr>", re.IGNORECASE | re.DOTALL)
+        cell_re = re.compile(r"<td>\s*(.*?)\s*</td>", re.IGNORECASE | re.DOTALL)
+        # "$ 5.50" / "$5.00" / "$3.125&nbsp;" — space and trailing entities vary.
+        money_re = re.compile(r"\$\s*([\d.]+)")
 
         # Dedup: display names repeat across the per-region tables, but the prices
         # are identical, so the first occurrence per model is authoritative.
         seen_names: Set[str] = set()
         pricing_data: List[Dict] = []
 
-        for match in row_re.finditer(html):
-            display_name = match.group(1).strip()
-            model_id = MANTLE_PRICING_NAMES.get(display_name)
-            if not model_id or display_name in seen_names:
+        for row_match in row_re.finditer(html):
+            cells = [c.strip() for c in cell_re.findall(row_match.group(1))]
+            if len(cells) not in (4, 5):
+                continue
+            display_name = cells[0]
+            if not display_name.startswith("GPT-") or display_name in seen_names:
+                continue
+            model_id = mantle_pricing_name_to_id(display_name)
+            if not model_id:
+                # Row for a model the registry doesn't know — likely a brand-new
+                # launch discovery hasn't picked up yet.  Loud so operators see it.
+                logger.warning(
+                    f"OpenAI pricing row '{display_name}' has no matching mantle "
+                    f"registry entry; skipping (model not yet discovered?)"
+                )
+                seen_names.add(display_name)
+                continue
+
+            prices = [money_re.search(c) for c in cells[1:]]
+            if len(cells) == 5:
+                # input | cache write (may be "-") | cache read | output
+                input_m, _write_m, cached_m, output_m = prices
+            else:
+                # legacy: input | cache read | output
+                input_m, cached_m, output_m = prices
+            if not (input_m and cached_m and output_m):
                 continue
             seen_names.add(display_name)
 
-            input_per_1m = Decimal(match.group(2))
-            cached_per_1m = Decimal(match.group(3))
-            output_per_1m = Decimal(match.group(4))
+            input_per_1m = Decimal(input_m.group(1))
+            cached_per_1m = Decimal(cached_m.group(1))
+            output_per_1m = Decimal(output_m.group(1))
 
             # Write one row per region the model can be invoked in, keyed by the
             # same region resolve_mantle_region() will produce at billing time.
-            for region in MANTLE_MODEL_REGIONS.get(model_id, []):
+            for region in get_mantle_model_regions().get(model_id, []):
                 pricing_data.append(
                     {
                         "model_id": model_id,

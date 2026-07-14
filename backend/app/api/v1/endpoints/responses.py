@@ -102,7 +102,7 @@ async def create_response(
             status_code=400,
             detail=(
                 f"Model '{model}' is not available on the Responses API. "
-                "This endpoint serves OpenAI GPT-5.5/5.4 (mantle) only; "
+                "This endpoint serves OpenAI GPT-5.6/5.5/5.4 (mantle) only; "
                 "use /v1/chat/completions for other models."
             ),
         )
