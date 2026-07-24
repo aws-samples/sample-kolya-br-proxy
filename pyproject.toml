@@ -74,7 +74,7 @@ dev = [
     "semgrep>=1.156.0",
     "virtualenv>=20.36.1",
     "filelock>=3.20.3",
-    "pyasn1>=0.6.3",
+    "pyasn1>=0.6.4",
     # Benchmark
     "locust>=2.29.0",
 ]
