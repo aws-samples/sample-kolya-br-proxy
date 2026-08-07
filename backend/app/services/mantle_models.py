@@ -217,6 +217,22 @@ def is_openai_mantle_model(model_id: str) -> bool:
     return model_id in _model_regions
 
 
+def resolve_mantle_model_id(model_id: str) -> Optional[str]:
+    """Resolve a client-supplied model name to its canonical registry ID.
+
+    Accepts both the canonical ``openai.``-prefixed ID and the bare form
+    clients commonly send (``gpt-5.6-luna`` → ``openai.gpt-5.6-luna``), so the
+    Responses endpoint tolerates either spelling.  Returns the canonical ID, or
+    None when the model is not mantle-served.
+    """
+    if model_id in _model_regions:
+        return model_id
+    prefixed = f"openai.{model_id}"
+    if prefixed in _model_regions:
+        return prefixed
+    return None
+
+
 def resolve_mantle_region(model_id: str) -> str:
     """Pick the region to route *model_id* to.
 

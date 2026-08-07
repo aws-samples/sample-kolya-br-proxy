@@ -465,7 +465,7 @@ Requires the same `Authorization: Bearer kbr_<token>` auth, token quota enforcem
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model` | string | *required* -- must be a mantle model (`openai.gpt-5.5` or `openai.gpt-5.4`) |
+| `model` | string | *required* -- must be a mantle model (e.g. `openai.gpt-5.6-luna`). The bare name without the `openai.` prefix (`gpt-5.6-luna`) is also accepted and normalized. |
 | `input` | array | Input items; each has a `role` and a `content` array of parts (`input_text`, `output_text`, `input_image`) |
 | `stream` | boolean | Enable native Responses SSE streaming (default `false`) |
 | `max_output_tokens` | integer | Maximum output tokens to generate |

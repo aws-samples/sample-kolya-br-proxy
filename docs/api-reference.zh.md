@@ -454,7 +454,7 @@ chat/messages 两条路径会与 Responses 格式相互转换，因此会"扁平
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `model` | string | *必填* —— 必须是 mantle 模型（`openai.gpt-5.5` 或 `openai.gpt-5.4`） |
+| `model` | string | *必填* —— 必须是 mantle 模型（如 `openai.gpt-5.6-luna`）。也接受省略 `openai.` 前缀的裸名（`gpt-5.6-luna`），会自动归一化 |
 | `input` | array | 输入项数组；每项含 `role` 及 `content` parts 数组（`input_text`、`output_text`、`input_image`） |
 | `stream` | boolean | 启用原生 Responses SSE 流式输出（默认 `false`） |
 | `max_output_tokens` | integer | 最大输出 token 数 |

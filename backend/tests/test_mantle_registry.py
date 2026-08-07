@@ -49,6 +49,23 @@ class TestRegistryMerge:
         assert not mm.is_openai_mantle_model("openai.gpt-oss-120b")
 
 
+class TestResolveModelId:
+    def test_canonical_id_passes_through(self):
+        assert (
+            mm.resolve_mantle_model_id("openai.gpt-5.6-luna") == "openai.gpt-5.6-luna"
+        )
+
+    def test_bare_name_gets_prefixed(self):
+        assert mm.resolve_mantle_model_id("gpt-5.6-luna") == "openai.gpt-5.6-luna"
+
+    def test_unknown_model_returns_none(self):
+        assert mm.resolve_mantle_model_id("gpt-4o") is None
+
+    def test_bare_gpt_oss_not_resolved(self):
+        # gpt-oss runs the converse path, not the Responses API — never mantle.
+        assert mm.resolve_mantle_model_id("gpt-oss-120b") is None
+
+
 class TestDisplayNames:
     @pytest.mark.parametrize(
         "model_id,expected",
