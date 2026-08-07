@@ -38,7 +38,7 @@ from app.services.background_tasks import BackgroundTaskManager
 from app.services.mantle_client import MantleClient
 from app.services.mantle_models import (
     get_mantle_model_regions,
-    is_openai_mantle_model,
+    resolve_mantle_model_id,
 )
 
 router = APIRouter()
@@ -88,27 +88,33 @@ async def create_response(
             status_code=400, detail="Request body must be a JSON object"
         )
 
-    model = body.get("model")
-    if not model or not isinstance(model, str):
+    requested_model = body.get("model")
+    if not requested_model or not isinstance(requested_model, str):
         raise HTTPException(status_code=400, detail="Missing 'model' in request body")
 
     stream = bool(body.get("stream", False))
 
     logger.info(
-        f"Responses request: model={model}, stream={stream}, "
+        f"Responses request: model={requested_model}, stream={stream}, "
         f"request_id={request_id}, token_id={token.id}",
     )
 
-    # Only mantle models have a Responses backend.
-    if not is_openai_mantle_model(model):
+    # Only mantle models have a Responses backend. Accept both the canonical
+    # ``openai.``-prefixed ID and the bare form clients often send.
+    model = resolve_mantle_model_id(requested_model)
+    if model is None:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Model '{model}' is not available on the Responses API. "
+                f"Model '{requested_model}' is not available on the Responses API. "
                 f"Available models: {sorted(get_mantle_model_regions())}; "
                 "use /v1/chat/completions for other models."
             ),
         )
+
+    # Forward the canonical ID downstream so mantle receives a name it knows,
+    # regardless of which spelling the client used.
+    body["model"] = model
 
     # Quota + model access (same checks as the other gateway endpoints)
     from sqlalchemy import select
