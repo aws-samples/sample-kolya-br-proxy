@@ -59,7 +59,12 @@ async def readiness_check(db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
         components["database"] = {"status": "healthy", "message": "Connected"}
         logger.debug("Database health check passed")
     except Exception as e:
-        components["database"] = {"status": "unhealthy", "message": str(e)}
+        # Don't leak the raw exception (connection strings, internals) to the
+        # client — log it server-side and return a generic message.
+        components["database"] = {
+            "status": "unhealthy",
+            "message": "Connection failed",
+        }
         overall_healthy = False
         logger.error(f"Database health check failed: {e}")
 
