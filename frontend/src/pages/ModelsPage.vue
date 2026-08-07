@@ -186,13 +186,17 @@
               <q-separator dark />
             </template>
             <template v-slot:option="scope">
-              <q-item v-bind="scope.itemProps">
+              <q-item
+                v-bind="scope.itemProps"
+                :disable="isModelAllowed(scope.opt)"
+              >
                 <q-item-section side>
                   <q-checkbox
                     :model-value="scope.selected"
                     dense
                     dark
-                    @click.stop="scope.toggleOption(scope.opt)"
+                    :disable="isModelAllowed(scope.opt)"
+                    @click.stop="!isModelAllowed(scope.opt) && scope.toggleOption(scope.opt)"
                   />
                 </q-item-section>
                 <q-item-section>
@@ -210,6 +214,12 @@
                       />
                       <q-badge v-else color="grey-7" label="Standard" class="q-ml-sm" />
                     </template>
+                    <q-badge
+                      v-if="isModelAllowed(scope.opt)"
+                      color="teal-8"
+                      label="Already added"
+                      class="q-ml-sm"
+                    />
                   </q-item-label>
                   <q-item-label caption class="text-mono">{{ scope.opt.model_id }}</q-item-label>
                 </q-item-section>
@@ -225,7 +235,7 @@
             color="grey-8"
             @click="addModel"
             :loading="adding"
-            :disable="selectedAwsModels.length === 0"
+            :disable="newModelCount === 0"
             unelevated
           />
         </q-card-actions>
@@ -357,10 +367,31 @@ const currentToken = computed(() => {
   return tokensStore.tokens.find(t => t.id === selectedTokenId.value);
 });
 
+// Models already granted to the current token. Their `model_name` equals the
+// available model's `model_id` (see addModel), so match on that.
+const allowedModelIds = computed(
+  () => new Set(modelsStore.models.map(m => m.model_name)),
+);
+
+function isModelAllowed(m: AwsModel): boolean {
+  return allowedModelIds.value.has(m.model_id);
+}
+
+// Already-granted models for the current provider — always kept selected.
+const lockedModels = computed(() =>
+  _modelsForProvider().filter(m => isModelAllowed(m)),
+);
+
+// Pre-check every model the token already has, so the dialog reflects the
+// current grant instead of opening empty.
+function preselectAllowed() {
+  selectedAwsModels.value = filteredAwsModels.value.filter(m => isModelAllowed(m));
+}
+
 function openAddDialog() {
   selectedProvider.value = 'bedrock';
-  selectedAwsModels.value = [];
   filteredAwsModels.value = _modelsForProvider();
+  preselectAllowed();
   showAddDialog.value = true;
 }
 
@@ -390,9 +421,9 @@ function _modelsForProvider(): AwsModel[] {
 }
 
 function onProviderChange() {
-  // Clear selection when switching provider
-  selectedAwsModels.value = [];
+  // Switching provider: reset to the new provider's already-granted models.
   filteredAwsModels.value = _modelsForProvider();
+  preselectAllowed();
 }
 
 function filterModels(val: string, update: (fn: () => void) => void) {
@@ -418,18 +449,35 @@ const allModelsSelected = computed(
 );
 
 function toggleSelectAllModels() {
-  selectedAwsModels.value = allModelsSelected.value ? [] : [...filteredAwsModels.value];
+  // Deselecting keeps the locked (already-granted) models checked — they can
+  // only be removed from the table's delete action, not here.
+  selectedAwsModels.value = allModelsSelected.value
+    ? [...lockedModels.value]
+    : [...filteredAwsModels.value];
 }
 
+// Newly-checked models (excluding already-granted ones) — drives the Add button.
+const newModelCount = computed(
+  () => selectedAwsModels.value.filter(m => !isModelAllowed(m)).length,
+);
+
 async function addModel() {
-  if (selectedAwsModels.value.length === 0 || !selectedTokenId.value) return;
+  if (!selectedTokenId.value) return;
+
+  // Only submit newly-checked models; already-granted ones are locked/pre-checked
+  // and would be duplicate POSTs.
+  const newModels = selectedAwsModels.value.filter(m => !isModelAllowed(m));
+  if (newModels.length === 0) {
+    showAddDialog.value = false;
+    return;
+  }
 
   adding.value = true;
   try {
     // Use model_id as-is from backend (already has correct prefix:
     // cross-region models have geographic prefix e.g. "us.", standard models have no prefix)
     const results = await Promise.allSettled(
-      selectedAwsModels.value.map((m) =>
+      newModels.map((m) =>
         api.post('/admin/models', {
           token_id: selectedTokenId.value,
           model_name: m.model_id,
