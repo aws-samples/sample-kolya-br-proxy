@@ -443,7 +443,108 @@ List models the current token has access to. Returns OpenAI-compatible model lis
 
 ---
 
-## 1c. Gateway API (OpenAI Responses API — mantle passthrough)
+## 1c. Self usage and quota API
+
+These read-only endpoints let a client monitor the quota associated with its own API key. They accept the same API-key authentication formats as the model endpoints:
+
+```text
+Authorization: Bearer kbr_<your_token>
+```
+
+or:
+
+```text
+x-api-key: kbr_<your_token>
+```
+
+The API key determines the token scope. The client cannot supply a `token_id` or inspect another token.
+
+### GET /v1/usage/quota
+
+Returns the authoritative quota snapshot used by gateway enforcement. Monetary values are decimal strings in USD so clients do not lose precision.
+
+```json
+{
+  "scope": "personal",
+  "reset_policy": "reset",
+  "timezone": "UTC",
+  "usage_window_start": "2026-08-01T00:00:00",
+  "next_allowance_at": "2026-09-01T00:00:00",
+  "rollover_months": 1,
+  "monthly_base_limit_usd": "100.00",
+  "monthly_effective_allowance_usd": "100.00",
+  "monthly_usage_cost_usd": "70.00",
+  "monthly_adjustment_usd": "5.00",
+  "monthly_quota_impact_usd": "75.00",
+  "monthly_remaining_usd": "25.00",
+  "daily_limit_enabled": true,
+  "daily_limit_usd": "3.2258",
+  "daily_usage_cost_usd": "1.00",
+  "daily_adjustment_usd": "0.00",
+  "daily_quota_impact_usd": "1.00",
+  "lifetime_limit_usd": null,
+  "lifetime_usage_cost_usd": null,
+  "lifetime_adjustment_usd": null,
+  "lifetime_quota_impact_usd": null,
+  "lifetime_remaining_usd": null,
+  "is_monthly_exceeded": false,
+  "is_daily_exceeded": false,
+  "is_lifetime_exceeded": false,
+  "unpriced_request_count": 0,
+  "as_of": "2026-08-24T12:00:00"
+}
+```
+
+Quota semantics:
+
+- `monthly_usage_cost_usd` is priced model usage only.
+- `monthly_adjustment_usd` is the sum of manual quota adjustments in the same window.
+- `monthly_quota_impact_usd` is what enforcement compares with the allowance: usage plus adjustments and any other quota-impacting records.
+- `monthly_remaining_usd` is clamped at zero. Use the exceeded flags to distinguish zero remaining from an unlimited quota.
+- `reset_policy=reset` starts a new allowance each UTC calendar month. `reset_policy=rollover` reports the cumulative allowance and its original rollover start.
+- Team tokens report `scope=team` and use their assigned team allocation. A zero team allocation is a real zero allowance, not unlimited.
+- `unpriced_request_count` identifies completed usage records whose model price was unavailable; forecasts should treat these separately.
+
+### GET /v1/usage/timeseries
+
+Returns UTC daily usage for the authenticated API key. The range is half-open (`start_date <= timestamp < end_date`) and limited to 90 days.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `start_date` | ISO 8601 datetime | yes | Inclusive range start; a missing timezone is interpreted as UTC |
+| `end_date` | ISO 8601 datetime | yes | Exclusive range end; a missing timezone is interpreted as UTC |
+
+```bash
+curl "http://localhost:8000/v1/usage/timeseries?start_date=2026-08-01T00:00:00Z&end_date=2026-09-01T00:00:00Z" \
+  -H "Authorization: Bearer kbr_your_token_here"
+```
+
+```json
+{
+  "start_date": "2026-08-01T00:00:00",
+  "end_date": "2026-09-01T00:00:00",
+  "timezone": "UTC",
+  "data": [
+    {
+      "time_bucket": "2026-08-24T00:00:00",
+      "call_count": 2,
+      "total_prompt_tokens": 100,
+      "total_completion_tokens": 20,
+      "total_tokens": 120,
+      "usage_cost_usd": "2.0000",
+      "adjustment_usd": "0.0000",
+      "quota_impact_usd": "2.0000",
+      "unpriced_request_count": 0
+    }
+  ]
+}
+```
+
+Days without usage are omitted. Consumers can zero-fill missing UTC dates before calculating moving averages or monthly exhaustion forecasts.
+
+---
+
+## 1d. Gateway API (OpenAI Responses API — mantle passthrough)
 
 OpenAI **GPT-5.5** (`openai.gpt-5.5`) and **GPT-5.4** (`openai.gpt-5.4`) are served by AWS's "mantle" inference engine through the native **OpenAI Responses API** (`provider: openai-mantle`). These models can be reached three ways:
 

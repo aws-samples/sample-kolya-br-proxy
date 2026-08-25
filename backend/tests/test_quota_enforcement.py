@@ -52,6 +52,16 @@ def _mock_db(total=Decimal("0.00"), monthly=Decimal("0.00"), daily=Decimal("0.00
     row.total = total
     row.monthly = monthly
     row.daily = daily
+    row.lifetime_usage_cost = total
+    row.lifetime_adjustment = Decimal("0.00")
+    row.lifetime_quota_impact = total
+    row.monthly_usage_cost = monthly
+    row.monthly_adjustment = Decimal("0.00")
+    row.monthly_quota_impact = monthly
+    row.daily_usage_cost = daily
+    row.daily_adjustment = Decimal("0.00")
+    row.daily_quota_impact = daily
+    row.unpriced_request_count = 0
     result = MagicMock()
     result.one.return_value = row
     db = MagicMock()
