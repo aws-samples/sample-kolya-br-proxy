@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.token import APIToken
@@ -17,6 +17,94 @@ class UsageStatsService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def get_quota_timeseries(
+        self,
+        token_id: UUID,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> List[dict]:
+        """Return UTC daily usage and quota impact for one API token.
+
+        The range is half-open (``start_date <= created_at < end_date``) so
+        adjacent billing periods cannot double-count a boundary record.
+        """
+        usage_record = UsageRecord.record_type == "usage"
+        adjustment_record = UsageRecord.record_type == "adjustment"
+        time_bucket = func.date_trunc("day", UsageRecord.created_at).label(
+            "time_bucket"
+        )
+        zero_cost = Decimal("0.0000")
+
+        query = (
+            select(
+                time_bucket,
+                func.count(case((usage_record, UsageRecord.id))).label("call_count"),
+                func.coalesce(
+                    func.sum(case((usage_record, UsageRecord.prompt_tokens), else_=0)),
+                    0,
+                ).label("total_prompt_tokens"),
+                func.coalesce(
+                    func.sum(
+                        case((usage_record, UsageRecord.completion_tokens), else_=0)
+                    ),
+                    0,
+                ).label("total_completion_tokens"),
+                func.coalesce(
+                    func.sum(case((usage_record, UsageRecord.total_tokens), else_=0)),
+                    0,
+                ).label("total_tokens"),
+                func.coalesce(
+                    func.sum(
+                        case((usage_record, UsageRecord.cost_usd), else_=zero_cost)
+                    ),
+                    zero_cost,
+                ).label("usage_cost"),
+                func.coalesce(
+                    func.sum(
+                        case((adjustment_record, UsageRecord.cost_usd), else_=zero_cost)
+                    ),
+                    zero_cost,
+                ).label("adjustment"),
+                func.coalesce(func.sum(UsageRecord.cost_usd), zero_cost).label(
+                    "quota_impact"
+                ),
+                func.count(
+                    case(
+                        (
+                            and_(
+                                usage_record,
+                                UsageRecord.note == "pricing_missing",
+                            ),
+                            1,
+                        )
+                    )
+                ).label("unpriced_request_count"),
+            )
+            .where(
+                UsageRecord.token_id == token_id,
+                UsageRecord.created_at >= start_date,
+                UsageRecord.created_at < end_date,
+            )
+            .group_by(time_bucket)
+            .order_by(time_bucket)
+        )
+
+        result = await self.db.execute(query)
+        return [
+            {
+                "time_bucket": row.time_bucket.isoformat(),
+                "call_count": row.call_count,
+                "total_prompt_tokens": row.total_prompt_tokens,
+                "total_completion_tokens": row.total_completion_tokens,
+                "total_tokens": row.total_tokens,
+                "usage_cost_usd": str(row.usage_cost),
+                "adjustment_usd": str(row.adjustment),
+                "quota_impact_usd": str(row.quota_impact),
+                "unpriced_request_count": row.unpriced_request_count,
+            }
+            for row in result.all()
+        ]
 
     async def get_aggregated_stats(
         self,

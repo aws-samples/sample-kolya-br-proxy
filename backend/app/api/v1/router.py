@@ -5,7 +5,7 @@ All endpoints require API Token authentication.
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import chat, models, responses
+from app.api.v1.endpoints import chat, models, responses, usage
 
 gateway_router = APIRouter()
 
@@ -13,6 +13,7 @@ gateway_router = APIRouter()
 gateway_router.include_router(chat.router, tags=["chat"])
 gateway_router.include_router(responses.router, tags=["responses"])
 gateway_router.include_router(models.router, tags=["models"])
+gateway_router.include_router(usage.router, tags=["usage"])
 
 
 @gateway_router.get("/")
@@ -27,5 +28,7 @@ async def gateway_root():
             "responses": "/v1/responses",
             "messages": "/v1/messages",
             "models": "/v1/models",
+            "usage_quota": "/v1/usage/quota",
+            "usage_timeseries": "/v1/usage/timeseries",
         },
     }
