@@ -281,3 +281,30 @@ async def test_credit_adjustment_reduces_the_sql_enforcement_impact(db_session):
     assert snapshot.monthly_quota_impact_usd == Decimal("95.0000")
     assert snapshot.monthly_remaining_usd == Decimal("5.0000")
     assert snapshot.is_monthly_exceeded is False
+
+
+@pytest.mark.asyncio
+async def test_prior_month_usage_over_allowance_does_not_trigger_429(db_session):
+    """A team/monthly key whose lifetime spend exceeds the monthly allowance is
+    NOT blocked as long as the current month is under budget.
+
+    Reproduces the API-Keys-page confusion: the UI progress bar shows a red
+    "cumulative / monthly-limit" ratio from month 2 onward, but enforcement only
+    ever looks at the current monthly window, so no 429 is raised.
+    """
+    # quota_usd=None mirrors a team member (no lifetime cap); $500 monthly.
+    token = _token(monthly_quota_usd=Decimal("500.00"))
+    # Last month (July) pushes lifetime spend over the $500 allowance.
+    await _insert_record(db_session, token.id, "400.00", datetime(2026, 7, 15))
+    # This month (August), before NOW (8/24) so it stays out of the daily window.
+    await _insert_record(db_session, token.id, "362.00", datetime(2026, 8, 10))
+    await db_session.commit()
+
+    # Cumulative = $762 > $500, but the current month = $362 < $500: must NOT raise.
+    await _enforce(token, db_session)
+
+    snapshot = await _snapshot(token, db_session)
+    assert snapshot.lifetime_usage_cost_usd is None
+    assert snapshot.monthly_usage_cost_usd == Decimal("362.0000")
+    assert snapshot.is_monthly_exceeded is False
+    assert snapshot.is_daily_exceeded is False
