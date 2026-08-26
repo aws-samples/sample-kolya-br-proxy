@@ -15,6 +15,7 @@ export interface APIToken {
   expires_at: string | null;
   quota_usd: string | null;
   used_usd: string;
+  monthly_used_usd?: string | null;
   remaining_quota: string | null;
   allowed_ips: string[];
   notify_emails: string[];

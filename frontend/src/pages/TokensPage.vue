@@ -78,17 +78,13 @@
                   />
                 </template>
                 <template v-else-if="col.name === 'quota'">
-                  <div v-if="props.row.quota_usd">
-                    ${{ Number(props.row.used_usd).toFixed(2) }} / ${{ Number(props.row.quota_usd).toFixed(2) }}
-                    <q-linear-progress
-                      :value="getQuotaProgress(props.row)"
-                      :color="getQuotaColor(props.row)"
-                      class="q-mt-xs"
-                    />
-                  </div>
-                  <div v-else-if="props.row.allocated_usd">
-                    ${{ Number(props.row.used_usd).toFixed(2) }} / ${{ Number(props.row.allocated_usd).toFixed(2) }}
-                    <span class="text-caption text-grey-6 q-ml-xs">(team)</span>
+                  <div v-if="props.row.quota_usd || props.row.allocated_usd">
+                    ${{ getQuotaUsed(props.row).toFixed(2) }} / ${{ getQuotaLimit(props.row).toFixed(2) }}
+                    <span
+                      v-if="!props.row.quota_usd && props.row.allocated_usd"
+                      class="text-caption text-grey-6 q-ml-xs"
+                      >(team)</span
+                    >
                     <q-linear-progress
                       :value="getQuotaProgress(props.row)"
                       :color="getQuotaColor(props.row)"
@@ -912,10 +908,22 @@ function getStatusLabel(token: APIToken) {
   return 'Active';
 }
 
+// Lifetime quota compares cumulative spend against the lifetime cap; a team /
+// monthly allocation compares the current month only, so the bar resets each
+// month instead of growing past 100% from cumulative usage. The text and the
+// progress bar both read from these helpers so they can never disagree.
+function getQuotaUsed(token: APIToken): number {
+  if (token.quota_usd) return parseFloat(token.used_usd);
+  return parseFloat(token.monthly_used_usd ?? token.used_usd);
+}
+
+function getQuotaLimit(token: APIToken): number {
+  return parseFloat(token.quota_usd ?? token.allocated_usd ?? '0');
+}
+
 function getQuotaProgress(token: APIToken) {
-  const limit = token.quota_usd || token.allocated_usd;
-  if (!limit) return 0;
-  return parseFloat(token.used_usd) / parseFloat(limit);
+  const limit = getQuotaLimit(token);
+  return limit ? getQuotaUsed(token) / limit : 0;
 }
 
 function getQuotaColor(token: APIToken) {
