@@ -539,15 +539,21 @@ class BedrockClient:
         "opus-4-6",
     )
 
+    # Non-Anthropic models (Converse API) that reject sampling params. xAI Grok
+    # reasoning models raise ValidationException if temperature/top_p is sent
+    # ("This model doesn't support the temperature field").
+    _NO_SAMPLING_CONVERSE_PATTERNS = ("grok",)
+
     @classmethod
     def _is_no_sampling_model(cls, model_id: str) -> bool:
         """Models that don't support temperature/top_p/top_k.
 
-        Whitelist approach: only models matching _SAMPLING_SUPPORTED_PATTERNS
-        support sampling. All newer models (post-4.6) do not.
+        Anthropic: whitelist — only models matching _SAMPLING_SUPPORTED_PATTERNS
+        support sampling; all newer models (post-4.6) do not.
+        Non-Anthropic (Converse): denylist — e.g. xAI Grok reasoning models.
         """
         if not cls.is_anthropic_model(model_id):
-            return False
+            return any(pat in model_id for pat in cls._NO_SAMPLING_CONVERSE_PATTERNS)
         return not any(pat in model_id for pat in cls._SAMPLING_SUPPORTED_PATTERNS)
 
     # Map AWS region prefix to geographic inference profile prefix
@@ -1280,11 +1286,11 @@ class BedrockClient:
             params["system"] = [{"text": request.system}]
 
         # --- inferenceConfig ---
-        is_opus_47 = model_id and BedrockClient._is_no_sampling_model(model_id)
+        no_sampling = model_id and BedrockClient._is_no_sampling_model(model_id)
         inference_config: dict = {"maxTokens": request.max_tokens}
-        if request.temperature is not None and not is_opus_47:
+        if request.temperature is not None and not no_sampling:
             inference_config["temperature"] = request.temperature
-        if request.top_p is not None and not is_opus_47:
+        if request.top_p is not None and not no_sampling:
             inference_config["topP"] = request.top_p
         if request.stop_sequences:
             inference_config["stopSequences"] = request.stop_sequences
