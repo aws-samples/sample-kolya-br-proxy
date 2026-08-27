@@ -50,9 +50,7 @@ def test_converse_params_strip_temperature_and_top_p_for_grok():
 
 
 def test_converse_params_keep_sampling_for_regular_model():
-    params = BedrockClient._build_converse_params(
-        _request(), "us.amazon.nova-pro-v1:0"
-    )
+    params = BedrockClient._build_converse_params(_request(), "us.amazon.nova-pro-v1:0")
     inference = params["inferenceConfig"]
     assert inference["temperature"] == 0.7
     assert inference["topP"] == 0.9
