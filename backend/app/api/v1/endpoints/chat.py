@@ -39,7 +39,10 @@ from app.services.mantle_client import (
     extract_cached_tokens as _mantle_extract_cached_tokens,
     extract_cached_tokens_from_chunk as _mantle_extract_cached_tokens_from_chunk,
 )
-from app.services.mantle_models import is_openai_mantle_model
+from app.services.mantle_models import (
+    is_openai_mantle_model,
+    resolve_mantle_model_id,
+)
 from app.core.metrics import emit_request_metrics
 from app.services.pricing import ModelPricing
 from app.services.translator import RequestTranslator, ResponseTranslator
@@ -212,6 +215,14 @@ async def create_chat_completion(
                 status_code=403,
                 detail="Token does not have access to any models",
             )
+
+        # Clients often send the bare mantle name (``gpt-5.6-sol``) while the
+        # gateway stores the canonical ``openai.``-prefixed ID. Rewrite to the
+        # canonical form so both the access check below and the mantle routing
+        # (is_openai_mantle_model) match; non-mantle models are left untouched.
+        canonical_model = resolve_mantle_model_id(request_data.model)
+        if canonical_model is not None:
+            request_data.model = canonical_model
 
         # Check if requested model matches any allowed model (exact match)
         if request_data.model not in allowed_model_names:
