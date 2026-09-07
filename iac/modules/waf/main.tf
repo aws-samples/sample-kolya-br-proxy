@@ -165,8 +165,11 @@ resource "aws_wafv2_web_acl" "main" {
   # - SizeRestrictions_QUERYSTRING: Microsoft OAuth callback codes exceed default query string limit
   # - CrossSiteScripting_BODY: Code snippets in messages trigger XSS false positives
   # - GenericLFI_BODY: System prompts with file path examples (../../) trigger LFI false positives
+  # - GenericRFI_BODY: Conversation/compaction bodies contain URLs like http://127.0.0.1:8188 (://IP:port) → RFI false positives
+  # - EC2MetaDataSSRF_BODY: Conversation content referencing 169.254.169.254 / localhost:port triggers SSRF false positives
   # - NoUserAgent_HEADER: Some SDK clients don't send User-Agent
-  # The API path is already protected by Bearer token auth + per-IP rate limiting.
+  # These are body-inspection rules that inherently false-positive on an LLM proxy carrying arbitrary text;
+  # the app never fetches these URLs. The API path is already protected by Bearer token auth + per-IP rate limiting.
   rule {
     name     = "aws-managed-common"
     priority = 3
@@ -203,6 +206,20 @@ resource "aws_wafv2_web_acl" "main" {
 
         rule_action_override {
           name = "GenericLFI_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "GenericRFI_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "EC2MetaDataSSRF_BODY"
           action_to_use {
             count {}
           }
