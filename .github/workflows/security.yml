@@ -81,12 +81,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: iac
-          soft_fail: true
-
+      # tfsec 已归档并并入 Trivy；且 aquasecurity 组织启用了 IP 白名单，
+      # tfsec-action 无法从 GitHub API 下载二进制（403）。下方 Trivy config
+      # 扫描已覆盖 Terraform 错误配置，故移除 tfsec。
       - name: Run trivy on IaC
         uses: aquasecurity/trivy-action@master
         with:
