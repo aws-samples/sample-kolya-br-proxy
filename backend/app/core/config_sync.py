@@ -42,6 +42,15 @@ def _apply_config(payload: dict) -> None:
             set_metrics_enabled(value)
             logger.info("Metrics toggle synced from peer: %s", value)
 
+    if "openai_gpt_backend" in payload:
+        from app.core.runtime_config import set_openai_gpt_backend
+
+        try:
+            applied = set_openai_gpt_backend(payload["openai_gpt_backend"])
+            logger.info("openai_gpt_backend synced from peer: %s", applied)
+        except ValueError as e:
+            logger.warning("Ignoring bad openai_gpt_backend from peer: %s", e)
+
 
 async def publish_config_change(client: aioredis.Redis, changes: dict) -> None:
     """Publish a config change so all pods pick it up."""

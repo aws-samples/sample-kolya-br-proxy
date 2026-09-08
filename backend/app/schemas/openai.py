@@ -4,7 +4,7 @@ OpenAI API compatible request/response schemas.
 
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ContentPart(BaseModel):
@@ -33,6 +33,18 @@ class ChatMessage(BaseModel):
     name: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     tool_call_id: Optional[str] = None  # For tool role messages
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalize_developer_role(cls, value: Any) -> Any:
+        # OpenAI reasoning models (and clients like pi) send the newer
+        # "developer" role in place of "system". Bedrock has no such role, so
+        # collapse it to "system" before the Literal check — the downstream
+        # translator already extracts system messages into the Converse
+        # ``system`` field.
+        if value == "developer":
+            return "system"
+        return value
 
 
 class ChatCompletionRequest(BaseModel):

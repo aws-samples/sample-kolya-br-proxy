@@ -27,6 +27,13 @@ def _request(temperature=0.7, top_p=0.9):
     [
         ("global.xai.grok-4.6", True),
         ("us.xai.grok-3", True),
+        # OpenAI GPT reasoning models routed through Converse (runtime backend)
+        # reject sampling params. gpt-6.x is covered ahead of release because the
+        # classifier is shared with the mantle reasoning family list.
+        ("openai.gpt-5.6-sol", True),
+        ("openai.gpt-6.0-preview", True),
+        # Open-weight gpt-oss is NOT a reasoning model → keeps sampling.
+        ("openai.gpt-oss-120b", False),
         # Non-reasoning Converse models keep sampling support.
         ("us.amazon.nova-pro-v1:0", False),
         ("us.deepseek.r1-v1:0", False),
@@ -54,3 +61,12 @@ def test_converse_params_keep_sampling_for_regular_model():
     inference = params["inferenceConfig"]
     assert inference["temperature"] == 0.7
     assert inference["topP"] == 0.9
+
+
+def test_converse_params_strip_sampling_for_gpt_reasoning():
+    """runtime backend: openai.gpt-5.x through Converse must drop temperature/topP."""
+    params = BedrockClient._build_converse_params(_request(), "openai.gpt-5.6-sol")
+    inference = params["inferenceConfig"]
+    assert "temperature" not in inference
+    assert "topP" not in inference
+    assert inference["maxTokens"] == 256

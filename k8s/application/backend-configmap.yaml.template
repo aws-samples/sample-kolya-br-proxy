@@ -8,6 +8,8 @@ data:
   KBR_DEBUG: "false"
   KBR_PORT: "8000"
   KBR_AWS_REGION: "${AWS_REGION}"
+  # OpenAI GPT upstream: "mantle" (Responses API) or "runtime" (bedrock-runtime converse)
+  KBR_OPENAI_GPT_BACKEND: "mantle"
   KBR_JWT_ALGORITHM: "HS256"
   KBR_JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "30"
   KBR_JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
