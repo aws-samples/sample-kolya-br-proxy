@@ -46,7 +46,11 @@ from app.services.mantle_models import (
 )
 from app.core.metrics import emit_request_metrics
 from app.services.pricing import ModelPricing
-from app.services.translator import RequestTranslator, ResponseTranslator
+from app.services.translator import (
+    RequestTranslator,
+    ResponseTranslator,
+    map_stop_reason_to_finish_reason,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -961,15 +965,13 @@ async def stream_chat_completion(
                     event.delta.get("stop_reason") if event.delta else None
                 )
                 if new_stop_reason:
-                    stop_reason = (
-                        "tool_calls"
-                        if new_stop_reason == "tool_use"
-                        else new_stop_reason
-                    )
+                    # Keep the raw Bedrock stop_reason; it's mapped to a
+                    # spec-valid OpenAI finish_reason only at emission time.
+                    stop_reason = new_stop_reason
 
             elif event.type == "message_stop":
-                finish_reason = stop_reason or (
-                    "tool_calls" if tool_use_blocks else "stop"
+                finish_reason = map_stop_reason_to_finish_reason(
+                    stop_reason or ("tool_use" if tool_use_blocks else None)
                 )
                 chunk = ResponseTranslator.create_stream_chunk(
                     request_id=request_id,
@@ -985,8 +987,8 @@ async def stream_chat_completion(
             # Send it here so OpenAI clients (e.g. pi) don't error with
             # "Stream ended without finish_reason".
             if not finish_sent:
-                finish_reason = stop_reason or (
-                    "tool_calls" if tool_use_blocks else "stop"
+                finish_reason = map_stop_reason_to_finish_reason(
+                    stop_reason or ("tool_use" if tool_use_blocks else None)
                 )
                 yield ResponseTranslator.create_stream_chunk(
                     request_id=request_id,

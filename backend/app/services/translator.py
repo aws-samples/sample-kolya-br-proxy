@@ -13,6 +13,26 @@ from app.schemas.openai import (
     UsageInfo,
 )
 
+# Bedrock/Converse stop_reason -> OpenAI finish_reason. OpenAI clients (e.g. pi)
+# validate finish_reason against the spec's enum, so passing Bedrock values
+# like "end_turn" through verbatim makes them error
+# ("Provider finish_reason: end_turn"). Map to the allowed set instead.
+_STOP_REASON_TO_FINISH_REASON = {
+    "end_turn": "stop",
+    "stop_sequence": "stop",
+    "max_tokens": "length",
+    "tool_use": "tool_calls",
+    "content_filtered": "content_filter",
+    "guardrail_intervened": "content_filter",
+}
+
+
+def map_stop_reason_to_finish_reason(stop_reason: str | None) -> str:
+    """Map a Bedrock stop_reason to a spec-valid OpenAI finish_reason."""
+    if not stop_reason:
+        return "stop"
+    return _STOP_REASON_TO_FINISH_REASON.get(stop_reason, "stop")
+
 
 class RequestTranslator:
     """Translates OpenAI requests to Bedrock format."""
@@ -403,10 +423,8 @@ class ResponseTranslator:
             tool_calls=tool_calls if tool_calls else None,
         )
 
-        # Map Bedrock stop_reason to OpenAI finish_reason
-        finish_reason = bedrock_response.stop_reason or "stop"
-        if finish_reason == "tool_use":
-            finish_reason = "tool_calls"
+        # Map Bedrock stop_reason to a spec-valid OpenAI finish_reason
+        finish_reason = map_stop_reason_to_finish_reason(bedrock_response.stop_reason)
 
         # Create choice
         choice = ChatCompletionChoice(

@@ -90,10 +90,11 @@ async def test_converse_stream_emits_finish_reason():
     joined = "".join(chunks)
 
     assert "data: [DONE]\n\n" in joined
-    # Exactly one finish_reason, carrying the Converse stop_reason (passed
-    # through as the non-streaming path does), not clobbered to null by the
-    # trailing metadata-as-message_delta event.
-    assert _finish_reasons(chunks) == ["end_turn"]
+    # Exactly one finish_reason, mapped from the Converse stop_reason
+    # "end_turn" to the spec-valid OpenAI value "stop" (clients like pi
+    # reject "end_turn"), and not clobbered to null by the trailing
+    # metadata-as-message_delta event.
+    assert _finish_reasons(chunks) == ["stop"]
 
 
 @pytest.mark.asyncio
@@ -102,4 +103,4 @@ async def test_finish_reason_not_double_emitted_with_message_stop():
     events = _converse_events()
     events.append(BedrockStreamEvent(type="message_stop"))
     chunks = await _collect(events)
-    assert _finish_reasons(chunks) == ["end_turn"]
+    assert _finish_reasons(chunks) == ["stop"]
