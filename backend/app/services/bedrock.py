@@ -550,10 +550,18 @@ class BedrockClient:
 
         Anthropic: whitelist — only models matching _SAMPLING_SUPPORTED_PATTERNS
         support sampling; all newer models (post-4.6) do not.
-        Non-Anthropic (Converse): denylist — e.g. xAI Grok reasoning models.
+        Non-Anthropic (Converse): denylist — xAI Grok reasoning models, plus
+        OpenAI GPT reasoning models (gpt-5.x / gpt-6.x / o-series) when they are
+        routed through Converse via OPENAI_GPT_BACKEND=runtime. The GPT set
+        reuses the mantle reasoning classifier so both upstreams share one
+        source of truth (a future family only needs updating there).
         """
         if not cls.is_anthropic_model(model_id):
-            return any(pat in model_id for pat in cls._NO_SAMPLING_CONVERSE_PATTERNS)
+            if any(pat in model_id for pat in cls._NO_SAMPLING_CONVERSE_PATTERNS):
+                return True
+            from app.services.mantle_client import _is_reasoning_model
+
+            return _is_reasoning_model(model_id)
         return not any(pat in model_id for pat in cls._SAMPLING_SUPPORTED_PATTERNS)
 
     # Map AWS region prefix to geographic inference profile prefix
