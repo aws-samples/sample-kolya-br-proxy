@@ -220,8 +220,15 @@ async def list_teams(
     result = await db.execute(query)
     rows = result.all()
 
-    # Get total monthly usage per team
+    # Get total monthly usage per team over each team's own budget window so
+    # the list cards match the /teams dashboard and /tokens page: rollover
+    # teams accumulate from monthly_budget_start, reset teams use the calendar
+    # month.
     team_ids = [row.id for row in rows]
+    team_window_boundary = case(
+        (Team.monthly_reset_policy == "rollover", Team.monthly_budget_start),
+        else_=month_start,
+    )
     usage_result = await db.execute(
         select(
             TeamMember.team_id,
@@ -229,11 +236,13 @@ async def list_teams(
                 "total_used"
             ),
         )
-        .join(UsageRecord, UsageRecord.token_id == TeamMember.token_id)
-        .where(
-            TeamMember.team_id.in_(team_ids),
-            UsageRecord.created_at >= month_start,
+        .join(Team, TeamMember.team_id == Team.id)
+        .join(
+            UsageRecord,
+            (UsageRecord.token_id == TeamMember.token_id)
+            & (UsageRecord.created_at >= team_window_boundary),
         )
+        .where(TeamMember.team_id.in_(team_ids))
         .group_by(TeamMember.team_id)
     )
     usage_map = {row.team_id: row.total_used for row in usage_result.all()}

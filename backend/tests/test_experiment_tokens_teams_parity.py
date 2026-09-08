@@ -109,6 +109,45 @@ async def test_tokens_and_teams_agree_for_rollover_team_key(db):
     assert tokens_old != teams_member
 
 
+async def _team_sum_since(db, token_ids, boundary):
+    """Sum a team's spend across all member tokens over one window."""
+    total = Decimal("0.00")
+    for tid in token_ids:
+        total += await _sum_since(db, tid, boundary)
+    return total
+
+
+@pytest.mark.asyncio
+async def test_teams_list_card_matches_dashboard_for_rollover_team(db):
+    """The /teams list card total must match the dashboard for a rollover team.
+
+    Models the three production windows for a rollover team with two member
+    tokens:
+      * list_old  — pre-fix /teams list card: always calendar month_start
+      * list_new  — post-fix /teams list card: case(rollover -> budget_start)
+      * dashboard — /teams dashboard: sum of per-member team-window totals
+    list_new must equal the dashboard total, and list_old must have diverged.
+    """
+    toks = ["aa-1", "aa-2"]
+    # August spend (inside the rollover window, before the calendar month).
+    await _insert(db, "aa-1", "4.00", datetime(2026, 8, 12, 9, 0))
+    await _insert(db, "aa-2", "2.00", datetime(2026, 8, 15, 9, 0))
+    # September spend (also inside the calendar month).
+    await _insert(db, "aa-1", "3.00", datetime(2026, 9, 5, 9, 0))
+    await _insert(db, "aa-2", "1.00", datetime(2026, 9, 6, 9, 0))
+    await db.commit()
+
+    list_old = await _team_sum_since(db, toks, CALENDAR_MONTH_START)  # pre-fix card
+    list_new = await _team_sum_since(db, toks, BUDGET_START)  # post-fix card
+    dashboard = await _team_sum_since(db, toks, BUDGET_START)  # /teams dashboard
+
+    # Consistency achieved: the list card now matches the dashboard.
+    assert list_new == dashboard == Decimal("10.00")
+    # And the fix mattered: the old calendar-month card under-counted.
+    assert list_old == Decimal("4.00")
+    assert list_old != dashboard
+
+
 @pytest.mark.asyncio
 async def test_tokens_and_teams_agree_for_reset_team_key(db):
     """For a reset-policy team, both windows are the calendar month → trivially equal."""
