@@ -228,6 +228,19 @@ async def calculate_token_usage(token: APIToken, db: AsyncSession) -> TokenUsage
     return TokenUsageSummary(total=row[0], monthly=row[1], daily=row[2])
 
 
+async def _is_team_key(token_id: UUID, db: AsyncSession) -> bool:
+    """Return True if the token is managed by a team (has a TeamMember row).
+
+    Team keys are provisioned and governed via the /teams UI. Money and
+    lifecycle operations (recharge, quota edits, deletion) must be blocked on
+    /tokens so the team dashboard remains the single source of truth.
+    """
+    result = await db.execute(
+        select(TeamMember.id).where(TeamMember.token_id == token_id).limit(1)
+    )
+    return result.first() is not None
+
+
 def _extract_key_prefix(token: APIToken) -> str:
     """Extract the key prefix from the encrypted token."""
     try:
@@ -767,6 +780,26 @@ async def update_token(
                 detail="Access denied",
             )
 
+    # Team keys are governed by the /teams dashboard: only prompt-cache settings
+    # (token_metadata) may be edited here. Reject money/lifecycle changes.
+    team_managed_fields = {
+        "quota_usd": request.quota_usd,
+        "monthly_quota_usd": request.monthly_quota_usd,
+        "monthly_reset_policy": request.monthly_reset_policy,
+        "notify_emails": request.notify_emails,
+        "expires_at": request.expires_at,
+        "is_active": request.is_active,
+    }
+    if any(v is not None for v in team_managed_fields.values()) and await _is_team_key(
+        token_uuid, db
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This key is managed by a team. Quota, alerts, and lifecycle "
+            "settings must be changed on the /teams page. Only prompt-cache "
+            "settings can be edited here.",
+        )
+
     # Validate token_metadata if provided
     if request.token_metadata is not None:
         try:
@@ -823,6 +856,7 @@ async def delete_token(
     current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     audit_service: AuditLogService = Depends(get_audit_log_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Delete (revoke) a token permanently.
@@ -856,6 +890,14 @@ async def delete_token(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied",
             )
+
+    # Team keys must be deleted by removing the member on the /teams page.
+    if await _is_team_key(token_uuid, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This key is managed by a team and cannot be deleted here. "
+            "Remove the member from the team on the /teams page instead.",
+        )
 
     await _invalidate_token_cache(token.token_hash)
 
@@ -1000,6 +1042,7 @@ async def notify_token(
     current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
     audit_service: AuditLogService = Depends(get_audit_log_service),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Email the plain key value to its associated users.
@@ -1034,6 +1077,14 @@ async def notify_token(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied",
             )
+
+    # Team keys are distributed to members via the /teams page.
+    if await _is_team_key(token_uuid, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This key is managed by a team. Share it with members from "
+            "the /teams page instead.",
+        )
 
     recipients = [
         e.strip()
@@ -1156,6 +1207,14 @@ async def adjust_token_balance(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied",
             )
+
+    # Team keys are funded via the team budget on the /teams page.
+    if await _is_team_key(token_uuid, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This key is managed by a team. Adjust its budget on the "
+            "/teams page instead.",
+        )
 
     adjustment = UsageRecord(
         id=uuid_mod.uuid4(),

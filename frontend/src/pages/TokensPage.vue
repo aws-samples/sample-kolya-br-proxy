@@ -51,17 +51,20 @@
             <q-tr :props="props" @click="props.expand = !props.expand" class="cursor-pointer">
               <q-td v-for="col in props.cols" :key="col.name" :props="props">
                 <template v-if="col.name === 'name'">
-                  <div class="text-weight-bold">{{ props.row.name }}</div>
-                  <q-badge
-                    v-if="props.row.team_id"
-                    color="deep-purple-5"
-                    class="q-mt-xs"
-                    outline
-                  >
-                    <q-icon name="groups" size="xs" class="q-mr-xs" />
-                    {{ props.row.team_name || 'Team' }}
-                    <q-tooltip>Created by team {{ props.row.team_name }}</q-tooltip>
-                  </q-badge>
+                  <div class="row items-center no-wrap">
+                    <span class="text-weight-bold">{{ props.row.name }}</span>
+                    <q-space />
+                    <q-badge
+                      v-if="props.row.team_id"
+                      color="deep-purple-5"
+                      class="q-ml-sm"
+                      outline
+                    >
+                      <q-icon name="groups" size="xs" class="q-mr-xs" />
+                      {{ props.row.team_name || 'Team' }}
+                      <q-tooltip>Created by team {{ props.row.team_name }}</q-tooltip>
+                    </q-badge>
+                  </div>
                 </template>
                 <template v-else-if="col.name === 'key'">
                   <div class="row items-center no-wrap">
@@ -128,6 +131,11 @@
                     >
                       <q-tooltip>Cache Settings</q-tooltip>
                     </q-btn>
+                    <!-- Team keys manage budget / lifecycle from the /teams page,
+                         so only prompt-cache settings stay here. Recharge, alerts,
+                         email and delete are hidden to avoid duplicating (and
+                         conflicting with) team allocation and membership. -->
+                    <template v-if="!isTeamKey(props.row)">
                     <q-btn
                       flat
                       dense
@@ -173,6 +181,7 @@
                     >
                       <q-tooltip>Delete</q-tooltip>
                     </q-btn>
+                    </template>
                   </div>
                 </template>
                 <template v-else>
@@ -1085,6 +1094,13 @@ async function copyDisplayKey() {
   } catch {
     Notify.create({ type: 'negative', message: 'Copy failed, please select and copy manually', position: 'top' });
   }
+}
+
+// A team-created key: budget and lifecycle are managed on the /teams page, so
+// the /tokens row hides its money/lifecycle actions (recharge, alerts, email,
+// delete) and keeps only prompt-cache settings.
+function isTeamKey(token: APIToken): boolean {
+  return !!token.team_id;
 }
 
 function rechargeToken(token: APIToken) {

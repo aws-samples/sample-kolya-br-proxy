@@ -40,11 +40,14 @@ async def test_switch_reset_to_rollover_reanchors_to_current_month_start():
     service, team = _service_with_team(reset_policy="reset")
     now = datetime(2026, 8, 24, 12, 0, 0)
 
-    with patch.object(
-        TeamService,
-        "_lock_team_and_members",
-        AsyncMock(return_value=(team, [], Decimal("0.00"))),
-    ), patch("app.services.team.datetime") as dt:
+    with (
+        patch.object(
+            TeamService,
+            "_lock_team_and_members",
+            AsyncMock(return_value=(team, [], Decimal("0.00"))),
+        ),
+        patch("app.services.team.datetime") as dt,
+    ):
         dt.utcnow.return_value = now
         dt.side_effect = lambda *a, **k: datetime(*a, **k)
         await service.update_team(team_id=team.id, monthly_reset_policy="rollover")

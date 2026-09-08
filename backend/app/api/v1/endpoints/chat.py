@@ -240,8 +240,14 @@ async def create_chat_completion(
                 start_time=start_time,
             )
 
-        # Route mantle-served OpenAI models to the Responses API directly
-        if is_openai_mantle_model(request_data.model):
+        # Route mantle-served OpenAI models to the Responses API directly.
+        # The OPENAI_GPT_BACKEND switch lets operators send these GPT models
+        # through the standard bedrock-runtime converse path instead: when set
+        # to "runtime" we skip the mantle branch and fall through below.
+        if (
+            is_openai_mantle_model(request_data.model)
+            and get_settings().OPENAI_GPT_BACKEND == "mantle"
+        ):
             return await _handle_mantle_request(
                 request_data=request_data,
                 request_id=request_id,

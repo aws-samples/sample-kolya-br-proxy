@@ -87,6 +87,15 @@ class Settings(BaseSettings):
         "is found in becomes its preferred routing region. Empty disables "
         "discovery (static registry only).",
     )
+    OPENAI_GPT_BACKEND: str = Field(
+        default="mantle",
+        description="Upstream for OpenAI GPT (openai.gpt-5.x) models only. "
+        "'mantle' → OpenAI Responses API at bedrock-mantle.{region}.api.aws; "
+        "'runtime' → standard bedrock-runtime converse/converse_stream. "
+        "Does NOT affect Anthropic (always bedrock-runtime invoke_model), "
+        "Gemini (Google API), or open-weight openai.gpt-oss-* (always "
+        "bedrock-runtime converse) — the switch is scoped to mantle GPT models.",
+    )
 
     # AWS Bedrock settings
     BEDROCK_MAX_CONCURRENT_REQUESTS: int = Field(
@@ -280,6 +289,13 @@ class Settings(BaseSettings):
         if v not in ("text", "json"):
             raise ValueError("LOG_FORMAT must be 'text' or 'json'")
         return v
+
+    @validator("OPENAI_GPT_BACKEND")
+    def validate_openai_gpt_backend(cls, v):
+        lowered = v.lower()
+        if lowered not in ("mantle", "runtime"):
+            raise ValueError("OPENAI_GPT_BACKEND must be 'mantle' or 'runtime'")
+        return lowered
 
     @validator("JWT_SECRET_KEY")
     def validate_jwt_secret(cls, v):
