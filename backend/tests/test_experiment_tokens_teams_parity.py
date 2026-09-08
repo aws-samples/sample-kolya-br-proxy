@@ -122,3 +122,47 @@ async def test_tokens_and_teams_agree_for_reset_team_key(db):
     teams = await _sum_since(db, tok, boundary)
 
     assert tokens == teams == Decimal("3.00")
+
+
+@pytest.mark.asyncio
+async def test_reset_second_month_tokens_and_teams_agree(db):
+    """Second month under 'reset': /tokens and /teams both show only the new month.
+
+    Reproduces the two production code paths' boundary + sum for a reset team:
+      * /tokens  (tokens.py):  case(rollover -> budget_start, else_ -> month_start)
+      * /teams   (teams.py:280): budget_start if is_rollover else month_start
+    Both collapse to the current calendar month_start for reset, and both sum
+    cost_usd across record types (usage + adjustment). So in the second month the
+    first month's spend is dropped and the two pages must report the same figure.
+    """
+    tok = "aa-reset-2mo"
+    # "Now" is the second month (October); reset boundary is Oct 1.
+    now = datetime(2026, 10, 15, 12, 0)
+    month_start = datetime(now.year, now.month, 1)  # 2026-10-01
+
+    # First month (September) spend — must be excluded in the second month.
+    await _insert(db, tok, "7.00", datetime(2026, 9, 20, 9, 0))
+    # Second month (October) spend + a mid-month admin adjustment.
+    await _insert(db, tok, "5.00", datetime(2026, 10, 3, 9, 0))
+    await _insert(
+        db, tok, "-2.00", datetime(2026, 10, 8, 9, 0), record_type="adjustment"
+    )
+    await db.commit()
+
+    # Independently derive each page's boundary exactly as the code does.
+    is_rollover = False  # reset policy
+    tokens_boundary = month_start if not is_rollover else datetime(2026, 8, 1)
+    teams_boundary = datetime(2026, 8, 1) if is_rollover else month_start
+
+    tokens_used = await _sum_since(db, tok, tokens_boundary)
+    teams_used = await _sum_since(db, tok, teams_boundary)
+
+    print(
+        f"\n[experiment reset 2nd month] tokens={tokens_used} teams={teams_used} "
+        f"(first-month $7 excluded; second month 5 - 2 = 3)"
+    )
+
+    # Both pages agree, and only the second month counts (5 - 2 = 3).
+    assert tokens_used == teams_used == Decimal("3.00")
+    # Sanity: the first month's $7 was genuinely dropped.
+    assert await _sum_since(db, tok, datetime(2026, 9, 1)) == Decimal("10.00")

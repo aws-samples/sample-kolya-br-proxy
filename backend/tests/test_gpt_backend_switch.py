@@ -40,7 +40,7 @@ def _db_with_models(names):
 async def _call(request, allowed_names, backend):
     token = SimpleNamespace(id="tok", user_id="usr", token_metadata=None)
     db = _db_with_models(allowed_names)
-    settings_ns = SimpleNamespace(OPENAI_GPT_BACKEND=backend, PROMPT_CACHE_TTL="5m")
+    settings_ns = SimpleNamespace(PROMPT_CACHE_TTL="5m")
     bedrock_client = MagicMock()
     bedrock_response = SimpleNamespace(
         usage=SimpleNamespace(cache_creation_input_tokens=0, cache_read_input_tokens=0)
@@ -52,6 +52,7 @@ async def _call(request, allowed_names, backend):
     with (
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
         patch.object(chat_module, "get_settings", return_value=settings_ns),
+        patch.object(chat_module, "get_openai_gpt_backend", return_value=backend),
         patch.object(
             chat_module, "_handle_mantle_request", new=AsyncMock(return_value="mantle")
         ) as mantle,

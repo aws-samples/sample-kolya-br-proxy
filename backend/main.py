@@ -137,6 +137,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     redis_client = await get_redis()
     await start_subscriber(redis_client)
 
+    # Seed runtime-mutable config (e.g. openai_gpt_backend) from system_configs
+    from app.core.runtime_config import load_persisted_config
+
+    async with async_session_maker() as db:
+        await load_persisted_config(db)
+
     logger.info("Kolya BR Proxy started successfully")
 
     yield

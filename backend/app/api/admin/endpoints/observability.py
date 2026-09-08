@@ -11,13 +11,20 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_superadmin
 from app.core.config import get_settings
 from app.core.config_sync import publish_config_change
+from app.core.database import get_db
 from app.core.json_formatter import set_log_level
 from app.core.metrics import is_metrics_enabled, set_metrics_enabled
 from app.core.redis import get_redis
+from app.core.runtime_config import (
+    get_openai_gpt_backend,
+    persist_openai_gpt_backend,
+    set_openai_gpt_backend,
+)
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -25,10 +32,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
+_VALID_GPT_BACKENDS = {"mantle", "runtime"}
 
 
 class ObservabilityUpdate(BaseModel):
-    """Request body for updating observability settings."""
+    """Request body for updating runtime configuration."""
 
     log_level: Optional[str] = Field(
         default=None,
@@ -38,13 +46,17 @@ class ObservabilityUpdate(BaseModel):
         default=None,
         description="Enable/disable CloudWatch EMF metrics",
     )
+    openai_gpt_backend: Optional[str] = Field(
+        default=None,
+        description="OpenAI GPT (openai.gpt-5.x) upstream: 'mantle' or 'runtime'",
+    )
 
 
 @router.get("")
 async def get_observability_config(
     current_user: User = Depends(get_current_superadmin),
 ):
-    """Get current observability configuration."""
+    """Get current runtime configuration."""
     settings = get_settings()
     root_logger = logging.getLogger()
 
@@ -53,6 +65,7 @@ async def get_observability_config(
         "log_format": settings.LOG_FORMAT,
         "metrics_enabled": is_metrics_enabled(),
         "tracing_exporter": settings.OTEL_EXPORTER or "disabled",
+        "openai_gpt_backend": get_openai_gpt_backend(),
         "note": "log_format and tracing_exporter require restart to change",
     }
 
@@ -61,12 +74,15 @@ async def get_observability_config(
 async def update_observability_config(
     update: ObservabilityUpdate,
     current_user: User = Depends(get_current_superadmin),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Update observability settings at runtime (no restart required).
+    """Update runtime configuration (no restart required).
 
     Supports:
     - **log_level**: Changes root logger level immediately
     - **enable_metrics**: Toggles CloudWatch EMF metric emission
+    - **openai_gpt_backend**: Switch GPT upstream (mantle | runtime); persisted
+      to system_configs so it survives restarts
 
     Does NOT support (requires restart):
     - log_format (text/json)
@@ -92,6 +108,20 @@ async def update_observability_config(
         changes["metrics_enabled"] = {"old": old_val, "new": update.enable_metrics}
         logger.info("Metrics toggled: %s -> %s", old_val, update.enable_metrics)
 
+    if update.openai_gpt_backend is not None:
+        candidate = update.openai_gpt_backend.lower()
+        if candidate not in _VALID_GPT_BACKENDS:
+            return {
+                "success": False,
+                "error": f"Invalid openai_gpt_backend: {update.openai_gpt_backend}. "
+                f"Must be one of {_VALID_GPT_BACKENDS}",
+            }
+        old_backend = get_openai_gpt_backend()
+        set_openai_gpt_backend(candidate)
+        await persist_openai_gpt_backend(db, candidate)
+        changes["openai_gpt_backend"] = {"old": old_backend, "new": candidate}
+        logger.info("OpenAI GPT backend changed: %s -> %s", old_backend, candidate)
+
     if not changes:
         return {"success": True, "message": "No changes requested", "changes": {}}
 
@@ -102,6 +132,8 @@ async def update_observability_config(
             broadcast["log_level"] = changes["log_level"]["new"]
         if "metrics_enabled" in changes:
             broadcast["metrics_enabled"] = changes["metrics_enabled"]["new"]
+        if "openai_gpt_backend" in changes:
+            broadcast["openai_gpt_backend"] = changes["openai_gpt_backend"]["new"]
         await publish_config_change(redis_client, broadcast)
 
     return {"success": True, "changes": changes}

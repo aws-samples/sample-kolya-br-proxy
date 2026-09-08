@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_token_flexible
 from app.core.config import get_settings
+from app.core.runtime_config import get_openai_gpt_backend
 from app.core.database import get_db
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -175,8 +176,13 @@ async def create_message(
                 start_time=start_time,
             )
 
-        # Route mantle-served OpenAI models to the Responses API
-        if _is_mantle_model(request_data.model):
+        # Route mantle-served OpenAI models to the Responses API, unless the
+        # global switch sends GPT through bedrock-runtime converse instead
+        # (fall through to the standard invoke pipeline below).
+        if (
+            _is_mantle_model(request_data.model)
+            and get_openai_gpt_backend() == "mantle"
+        ):
             return await _handle_mantle_via_anthropic(
                 request_data=request_data,
                 request_id=request_id,

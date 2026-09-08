@@ -65,11 +65,11 @@
         <DataManagementCard />
       </div>
 
-      <!-- Observability -->
+      <!-- Runtime Configuration -->
       <div class="col-12">
         <q-card>
           <q-card-section>
-            <div class="text-h6 q-mb-md">Observability</div>
+            <div class="text-h6 q-mb-md">Runtime Configuration</div>
 
             <div class="row q-col-gutter-md items-end">
               <!-- Log Level -->
@@ -107,6 +107,28 @@
                   :disable="!obsChanged"
                   @click="saveObservability"
                 />
+              </div>
+            </div>
+
+            <!-- OpenAI GPT backend switch (super-admin only) -->
+            <div v-if="authStore.isSuperAdmin" class="row q-col-gutter-md items-end q-mt-sm">
+              <div class="col-12 col-sm-8">
+                <q-select
+                  v-model="obs.openai_gpt_backend"
+                  :options="gptBackendOptions"
+                  label="OpenAI GPT Upstream (openai.gpt-5.x)"
+                  outlined
+                  dense
+                  emit-value
+                  map-options
+                  :loading="obsLoading"
+                />
+                <div class="text-caption text-grey q-mt-xs">
+                  <strong>mantle</strong>: OpenAI Responses API &nbsp;|&nbsp;
+                  <strong>runtime</strong>: bedrock-runtime converse. Applies to
+                  GPT only — not Anthropic / Gemini / gpt-oss. Takes effect on the
+                  next request (no restart).
+                </div>
               </div>
             </div>
 
@@ -182,6 +204,11 @@ const logLevelOptions = [
   { label: 'ERROR', value: 'ERROR' },
 ];
 
+const gptBackendOptions = [
+  { label: 'mantle (OpenAI Responses API)', value: 'mantle' },
+  { label: 'runtime (bedrock-runtime converse)', value: 'runtime' },
+];
+
 const obsLoading = ref(false);
 const obsSaving = ref(false);
 
@@ -190,15 +217,21 @@ const obs = ref({
   log_format: 'text',
   metrics_enabled: false,
   tracing_exporter: 'disabled',
+  openai_gpt_backend: 'mantle',
 });
 
 // Snapshot of server state to detect changes
-const obsOriginal = ref({ log_level: 'INFO', metrics_enabled: false });
+const obsOriginal = ref({
+  log_level: 'INFO',
+  metrics_enabled: false,
+  openai_gpt_backend: 'mantle',
+});
 
 const obsChanged = computed(
   () =>
     obs.value.log_level !== obsOriginal.value.log_level ||
-    obs.value.metrics_enabled !== obsOriginal.value.metrics_enabled,
+    obs.value.metrics_enabled !== obsOriginal.value.metrics_enabled ||
+    obs.value.openai_gpt_backend !== obsOriginal.value.openai_gpt_backend,
 );
 
 async function loadObservability() {
@@ -209,9 +242,11 @@ async function loadObservability() {
     obs.value.log_format = data.log_format;
     obs.value.metrics_enabled = data.metrics_enabled;
     obs.value.tracing_exporter = data.tracing_exporter;
+    obs.value.openai_gpt_backend = data.openai_gpt_backend ?? 'mantle';
     obsOriginal.value = {
       log_level: data.log_level,
       metrics_enabled: data.metrics_enabled,
+      openai_gpt_backend: data.openai_gpt_backend ?? 'mantle',
     };
   } catch {
     // Silently fail — section will show defaults
@@ -230,12 +265,16 @@ async function saveObservability() {
     if (obs.value.metrics_enabled !== obsOriginal.value.metrics_enabled) {
       payload.enable_metrics = obs.value.metrics_enabled;
     }
+    if (obs.value.openai_gpt_backend !== obsOriginal.value.openai_gpt_backend) {
+      payload.openai_gpt_backend = obs.value.openai_gpt_backend;
+    }
 
     await api.put('/admin/observability', payload);
 
     obsOriginal.value = {
       log_level: obs.value.log_level,
       metrics_enabled: obs.value.metrics_enabled,
+      openai_gpt_backend: obs.value.openai_gpt_backend,
     };
 
     Notify.create({

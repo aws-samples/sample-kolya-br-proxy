@@ -17,6 +17,7 @@ import httpx
 
 from app.api.deps import get_current_token
 from app.core.config import get_settings
+from app.core.runtime_config import get_openai_gpt_backend
 from app.core.database import get_db
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -246,7 +247,7 @@ async def create_chat_completion(
         # to "runtime" we skip the mantle branch and fall through below.
         if (
             is_openai_mantle_model(request_data.model)
-            and get_settings().OPENAI_GPT_BACKEND == "mantle"
+            and get_openai_gpt_backend() == "mantle"
         ):
             return await _handle_mantle_request(
                 request_data=request_data,
