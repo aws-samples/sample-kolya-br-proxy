@@ -52,6 +52,16 @@
               <q-td v-for="col in props.cols" :key="col.name" :props="props">
                 <template v-if="col.name === 'name'">
                   <div class="text-weight-bold">{{ props.row.name }}</div>
+                  <q-badge
+                    v-if="props.row.team_id"
+                    color="deep-purple-5"
+                    class="q-mt-xs"
+                    outline
+                  >
+                    <q-icon name="groups" size="xs" class="q-mr-xs" />
+                    {{ props.row.team_name || 'Team' }}
+                    <q-tooltip>Created by team {{ props.row.team_name }}</q-tooltip>
+                  </q-badge>
                 </template>
                 <template v-else-if="col.name === 'key'">
                   <div class="row items-center no-wrap">

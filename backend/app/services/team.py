@@ -120,7 +120,20 @@ class TeamService:
         if name is not None:
             team.name = name
         if monthly_reset_policy is not None:
+            # Re-anchor the rollover window to the start of the current month when
+            # switching *into* rollover, so accumulation begins from the switch
+            # rather than the team's creation date (which would retroactively pull
+            # in historical reset-era usage). Rollover math is calendar-month based
+            # (see quota._months_elapsed), hence the 1st-of-month anchor. Only
+            # re-anchor on an actual transition so repeated saves don't reset it.
+            switching_to_rollover = (
+                monthly_reset_policy == "rollover"
+                and team.monthly_reset_policy != "rollover"
+            )
             team.monthly_reset_policy = monthly_reset_policy
+            if switching_to_rollover:
+                now = datetime.utcnow()
+                team.monthly_budget_start = datetime(now.year, now.month, 1)
         if daily_limit_enabled is not None:
             team.daily_limit_enabled = daily_limit_enabled
 

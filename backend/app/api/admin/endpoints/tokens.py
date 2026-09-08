@@ -507,6 +507,35 @@ async def list_tokens(
         for row in team_result
     }
 
+    # For team-owned tokens, recompute monthly usage over the team's budget
+    # window so the /tokens page matches the /teams dashboard: rollover teams
+    # accumulate from monthly_budget_start, reset teams use the calendar month.
+    # Standalone tokens are untouched and keep the calendar-month value above.
+    team_window_boundary = case(
+        (Team.monthly_reset_policy == "rollover", Team.monthly_budget_start),
+        else_=month_start,
+    )
+    team_usage_query = (
+        select(
+            TeamMember.token_id,
+            func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")).label(
+                "team_monthly_cost"
+            ),
+        )
+        .join(Team, TeamMember.team_id == Team.id)
+        .join(
+            UsageRecord,
+            (UsageRecord.token_id == TeamMember.token_id)
+            & (UsageRecord.created_at >= team_window_boundary),
+        )
+        .where(TeamMember.token_id.in_(token_ids))
+        .group_by(TeamMember.token_id)
+    )
+    team_usage_result = await db.execute(team_usage_query)
+    team_monthly_map = {
+        row.token_id: row.team_monthly_cost for row in team_usage_result
+    }
+
     # Get allowed models for all tokens in one query
     models_query = select(Model.token_id, Model.model_name).where(
         Model.token_id.in_(token_ids),
@@ -525,6 +554,9 @@ async def list_tokens(
             token.id, (Decimal("0.00"), Decimal("0.00"), Decimal("0.00"))
         )
         team_info = team_map.get(token.id)
+        # Team tokens: align monthly usage with the /teams dashboard window.
+        if team_info is not None:
+            monthly = team_monthly_map.get(token.id, Decimal("0.00"))
         token_responses.append(
             build_token_response(
                 token,
