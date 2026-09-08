@@ -824,6 +824,8 @@ async def stream_chat_completion(
     # Track tool use state for streaming
     tool_use_blocks = {}  # {index: {"id": ..., "name": ..., "input": ""}}
     thinking_blocks = set()  # indices of thinking content blocks to skip
+    stop_reason = None  # captured from message_delta (Converse maps here too)
+    finish_sent = False  # whether the finish_reason chunk was already emitted
 
     # Compute fallback models for stream failover
     fb_models = get_fallback_models(allowed_model_names or [], model)
@@ -951,24 +953,47 @@ async def stream_chat_completion(
                 # Anthropic InvokeModel sends output_tokens in message_delta
                 if event.usage:
                     total_output_tokens = event.usage.output_tokens or 0
-                # Map stop_reason
-                stop_reason = event.delta.get("stop_reason") if event.delta else None
-                if stop_reason == "tool_use":
-                    stop_reason = "tool_calls"
+                # Map stop_reason. Converse maps its ``messageStop`` here too,
+                # and the trailing ``metadata`` event also arrives as a
+                # message_delta (with no delta) — don't let it clobber a
+                # stop_reason we already captured.
+                new_stop_reason = (
+                    event.delta.get("stop_reason") if event.delta else None
+                )
+                if new_stop_reason:
+                    stop_reason = (
+                        "tool_calls"
+                        if new_stop_reason == "tool_use"
+                        else new_stop_reason
+                    )
 
             elif event.type == "message_stop":
-                if stop_reason:
-                    finish_reason = stop_reason
-                else:
-                    finish_reason = "tool_calls" if tool_use_blocks else "stop"
+                finish_reason = stop_reason or (
+                    "tool_calls" if tool_use_blocks else "stop"
+                )
                 chunk = ResponseTranslator.create_stream_chunk(
                     request_id=request_id,
                     model=model,
                     finish_reason=finish_reason,
                 )
                 yield chunk
+                finish_sent = True
 
         if not client_disconnected:
+            # Converse streams (runtime backend) don't surface a message_stop
+            # event, so the finish_reason chunk isn't emitted inside the loop.
+            # Send it here so OpenAI clients (e.g. pi) don't error with
+            # "Stream ended without finish_reason".
+            if not finish_sent:
+                finish_reason = stop_reason or (
+                    "tool_calls" if tool_use_blocks else "stop"
+                )
+                yield ResponseTranslator.create_stream_chunk(
+                    request_id=request_id,
+                    model=model,
+                    finish_reason=finish_reason,
+                )
+
             # Send usage chunk before done marker (OpenAI spec)
             yield ResponseTranslator.create_stream_usage_chunk(
                 request_id=request_id,
