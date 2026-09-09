@@ -95,3 +95,61 @@ async def test_unknown_model_still_403():
     with pytest.raises(HTTPException) as exc:
         await _call(request, allowed_names=["openai.gpt-5.6-luna"])
     assert exc.value.status_code == 403
+
+
+class _StopBeforeInvoke(Exception):
+    """Sentinel to halt the endpoint right after the access-check rewrite."""
+
+
+async def _call_bedrock(request, allowed_names):
+    """Drive the endpoint through the access check on the Bedrock converse
+    path, then bail before any real invocation, returning the (possibly
+    rewritten) request so tests can assert the resolved model ID.
+
+    The rewrite runs before ``BedrockClient.get_instance()``, so raising there
+    is enough to observe it. The endpoint wraps the sentinel in a 500, which we
+    swallow — the assertion is on ``request.model``, not the exception.
+    """
+    token = SimpleNamespace(id="tok", token_metadata=None)
+    db = _db_with_models(allowed_names)
+    with (
+        patch("app.services.quota.enforce_quota", new=AsyncMock()),
+        patch.object(chat_module, "_is_gemini_model", return_value=False),
+        patch.object(chat_module, "is_openai_mantle_model", return_value=False),
+        patch.object(
+            chat_module.BedrockClient,
+            "get_instance",
+            side_effect=_StopBeforeInvoke,
+        ),
+    ):
+        with pytest.raises(Exception):
+            await chat_module.create_chat_completion(
+                request, _http_request(), token=token, db=db
+            )
+    return request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requested", "granted"),
+    [
+        ("openai.gpt-6-astra", "us.openai.gpt-6-astra"),
+        ("us.openai.gpt-6-astra", "us.openai.gpt-6-astra"),
+        ("xai.grok-4.6", "global.xai.grok-4.6"),
+    ],
+)
+async def test_region_prefix_normalized_to_granted_id(requested, granted):
+    # A bare provider.model authorises against the granted region-prefixed
+    # profile and is rewritten to the exact granted ID.
+    request = _request(requested)
+    await _call_bedrock(request, allowed_names=[granted])
+    assert request.model == granted
+
+
+@pytest.mark.asyncio
+async def test_region_prefix_mismatch_still_403():
+    # Different bare model — prefix stripping must not create a false match.
+    request = _request("openai.gpt-6-nova")
+    with pytest.raises(HTTPException) as exc:
+        await _call(request, allowed_names=["us.openai.gpt-6-astra"])
+    assert exc.value.status_code == 403

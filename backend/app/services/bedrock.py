@@ -514,19 +514,28 @@ class BedrockClient:
     ANTHROPIC_BASE_PREFIX = "anthropic."
 
     @classmethod
+    def strip_inference_profile_prefix(cls, model_id: str) -> str:
+        """Return *model_id* without its cross-region inference-profile prefix.
+
+        ``us.openai.gpt-6-astra`` → ``openai.gpt-6-astra``. An ID that carries
+        no such prefix (a bare ``provider.model`` or a mantle ID) is returned
+        unchanged.
+        """
+        for prefix in cls.INFERENCE_PROFILE_PREFIXES:
+            if model_id.startswith(prefix):
+                return model_id[len(prefix) :]
+        return model_id
+
+    @classmethod
     def is_anthropic_model(cls, model_id: str) -> bool:
         """Return True if *model_id* refers to an Anthropic model.
 
         Handles both bare IDs (``anthropic.claude-...``) and inference-profile
         IDs (``us.anthropic.claude-...``).
         """
-        # Strip optional inference-profile geo prefix
-        base = model_id
-        for prefix in cls.INFERENCE_PROFILE_PREFIXES:
-            if model_id.startswith(prefix):
-                base = model_id[len(prefix) :]
-                break
-        return base.startswith(cls.ANTHROPIC_BASE_PREFIX)
+        return cls.strip_inference_profile_prefix(model_id).startswith(
+            cls.ANTHROPIC_BASE_PREFIX
+        )
 
     _SAMPLING_SUPPORTED_PATTERNS = (
         "claude-3-",
@@ -2143,6 +2152,32 @@ class BedrockClient:
 # ======================================================================
 # Helpers for endpoint handlers
 # ======================================================================
+
+
+def match_allowed_model(
+    requested_model: str,
+    allowed_model_names: list[str],
+) -> str | None:
+    """Resolve *requested_model* against a token's *allowed_model_names*,
+    ignoring the cross-region inference-profile prefix (``us.`` / ``global.`` /
+    …).
+
+    Clients frequently send the bare ``provider.model`` form (``openai.gpt-6-
+    astra``) while the gateway stores the region-prefixed inference-profile ID
+    (``us.openai.gpt-6-astra``). Matching on the prefix-stripped form lets
+    either spelling authorise, and the *allowed* name is returned so callers
+    forward the exact ID the token was granted (and Bedrock expects) downstream.
+
+    Returns the canonical allowed model name, or None when nothing matches even
+    after normalization.
+    """
+    if requested_model in allowed_model_names:
+        return requested_model
+    bare = BedrockClient.strip_inference_profile_prefix(requested_model)
+    for allowed in allowed_model_names:
+        if BedrockClient.strip_inference_profile_prefix(allowed) == bare:
+            return allowed
+    return None
 
 
 def get_fallback_models(

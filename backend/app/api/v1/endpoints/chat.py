@@ -27,7 +27,11 @@ from app.schemas.openai import (
     ErrorResponse,
 )
 from app.services.background_tasks import BackgroundTaskManager
-from app.services.bedrock import BedrockClient, get_fallback_models
+from app.services.bedrock import (
+    BedrockClient,
+    get_fallback_models,
+    match_allowed_model,
+)
 from app.services.gemini_client import (
     GeminiClient,
     is_gemini_configured,
@@ -229,12 +233,17 @@ async def create_chat_completion(
         if canonical_model is not None:
             request_data.model = canonical_model
 
-        # Check if requested model matches any allowed model (exact match)
-        if request_data.model not in allowed_model_names:
+        # Match against the token's allowed models, ignoring the cross-region
+        # inference-profile prefix so a bare ``openai.gpt-6-astra`` authorises
+        # against a granted ``us.openai.gpt-6-astra`` (and vice versa). Rewrite
+        # to the granted ID so the exact profile Bedrock expects is forwarded.
+        matched_model = match_allowed_model(request_data.model, allowed_model_names)
+        if matched_model is None:
             raise HTTPException(
                 status_code=403,
                 detail=f"Token does not have access to model: {request_data.model}. Allowed models: {allowed_model_names}",
             )
+        request_data.model = matched_model
 
         # Route Gemini models to Google API directly
         if _is_gemini_model(request_data.model):
