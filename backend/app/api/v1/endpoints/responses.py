@@ -35,6 +35,7 @@ from app.core.database import get_db
 from app.models.model import Model
 from app.models.token import APIToken
 from app.services.background_tasks import BackgroundTaskManager
+from app.services.bedrock import match_allowed_model
 from app.services.mantle_client import MantleClient
 from app.services.mantle_models import (
     get_mantle_model_regions,
@@ -130,7 +131,12 @@ async def create_response(
         )
     )
     allowed_model_names = [m.model_name for m in result.scalars().all()]
-    if model not in allowed_model_names:
+    # Authorise ignoring the cross-region inference-profile prefix: the same
+    # model may be granted under its Bedrock profile ID (``us.openai.gpt-6-
+    # astra``) while ``resolve_mantle_model_id`` yields the bare mantle form
+    # (``openai.gpt-6-astra``). Match on the prefix-stripped form; the mantle
+    # canonical ``model`` is what stays in ``body`` for the downstream call.
+    if match_allowed_model(model, allowed_model_names) is None:
         raise HTTPException(
             status_code=403,
             detail=f"Token does not have access to model: {model}. "
