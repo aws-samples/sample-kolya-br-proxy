@@ -204,9 +204,10 @@ def _openai_tool_choice_to_responses(tool_choice: Any) -> Optional[Any]:
 
 # Model families whose mantle-served members are reasoning models (reject
 # temperature/top_p).  Family prefixes rather than exact versions so
-# auto-discovered future releases (e.g. gpt-5.7) are classified without a code
-# change.  gpt-5.4 included: it is version-gated the same way by AWS.
-_REASONING_MODEL_PATTERNS = ("gpt-5.", "gpt-6.", "o1", "o3", "o4")
+# auto-discovered future releases are classified without a code change.
+# No trailing separator: members may be versioned with a dot (gpt-5.6-luna,
+# gpt-5.7) OR a bare codename with a dash (gpt-6-astra), and both must match.
+_REASONING_MODEL_PATTERNS = ("gpt-5", "gpt-6", "o1", "o3", "o4")
 
 
 def _is_reasoning_model(model: str) -> bool:

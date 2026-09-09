@@ -32,6 +32,10 @@ def _request(temperature=0.7, top_p=0.9):
         # classifier is shared with the mantle reasoning family list.
         ("openai.gpt-5.6-sol", True),
         ("openai.gpt-6.0-preview", True),
+        # Codename variants use a dash, not a version dot (gpt-6-astra,
+        # gpt-5.6-luna). Both separators must be classified as reasoning.
+        ("us.openai.gpt-6-astra", True),
+        ("us.openai.gpt-5.6-luna", True),
         # Open-weight gpt-oss is NOT a reasoning model → keeps sampling.
         ("openai.gpt-oss-120b", False),
         # Non-reasoning Converse models keep sampling support.
