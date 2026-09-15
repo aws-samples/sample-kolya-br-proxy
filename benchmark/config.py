@@ -32,3 +32,9 @@ TEMPERATURE = float(os.getenv("BENCHMARK_TEMPERATURE", "0.7"))
 
 # Extended thinking (Anthropic endpoint only, 0 = disabled)
 THINKING_BUDGET = int(os.getenv("BENCHMARK_THINKING_BUDGET", "0"))
+
+# Reasoning effort (OpenAI/GPT mantle endpoint only, "" = disabled).
+# One of: minimal | low | medium | high. Injected via
+# bedrock_additional_model_request_fields.reasoning.effort — the only entry the
+# proxy schema preserves (the bare ``reasoning_effort`` field is dropped).
+REASONING_EFFORT = os.getenv("BENCHMARK_REASONING_EFFORT", "")

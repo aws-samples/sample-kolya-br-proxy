@@ -24,6 +24,7 @@ from benchmark.config import (
     MAX_TOKENS,
     OPENAI_MODEL,
     PROMPT_SIZE,
+    REASONING_EFFORT,
     TEMPERATURE,
     THINKING_BUDGET,
 )
@@ -47,15 +48,23 @@ class OpenAIUser(HttpUser):
         self._messages = openai_messages(PROMPT_SIZE)
 
     def _body(self, stream: bool) -> dict:
-        return {
+        body = {
             "model": OPENAI_MODEL,
             "messages": self._messages,
             "max_tokens": MAX_TOKENS,
             "temperature": TEMPERATURE,
             "stream": stream,
         }
+        # GPT reasoning: the proxy only preserves effort via this Bedrock
+        # passthrough field (the bare reasoning_effort field is dropped by the
+        # request schema). Reasoning models ignore temperature downstream.
+        if REASONING_EFFORT:
+            body["bedrock_additional_model_request_fields"] = {
+                "reasoning": {"effort": REASONING_EFFORT}
+            }
+        return body
 
-    @tag("openai")
+    @tag("openai", "stream")
     @task(3)
     def stream_chat(self):
         name = "/v1/chat/completions [stream]"
