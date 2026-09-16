@@ -92,7 +92,6 @@ async def test_openai_stream_records_usage_on_midstream_error():
             bedrock_request={},
             bedrock_client=bedrock_client,
             token=_make_token(),
-            db=MagicMock(),
             start_time=0.0,
         )
         # Drain the generator; the mid-stream error is caught and turned into an
@@ -133,7 +132,6 @@ async def test_openai_stream_records_usage_once_on_success():
             bedrock_request={},
             bedrock_client=bedrock_client,
             token=_make_token(),
-            db=MagicMock(),
             start_time=0.0,
         )
         async for _ in gen:
@@ -166,7 +164,6 @@ async def test_openai_stream_no_usage_when_nothing_consumed():
             bedrock_request={},
             bedrock_client=bedrock_client,
             token=_make_token(),
-            db=MagicMock(),
             start_time=0.0,
         )
         async for _ in gen:
@@ -211,7 +208,6 @@ async def test_anthropic_stream_records_usage_on_midstream_error():
             bedrock_request={},
             bedrock_client=bedrock_client,
             token=_make_token(),
-            db=MagicMock(),
             start_time=0.0,
         )
         async for _ in gen:

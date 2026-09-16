@@ -9,6 +9,7 @@ mantle ID and returned 403. These tests pin that the region prefix is ignored
 for authorization while the mantle canonical ID is still forwarded downstream.
 """
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,8 +39,14 @@ async def _call(requested_model, canonical, allowed_names):
     token = SimpleNamespace(id="tok", user_id="usr", token_metadata=None)
     db = _db_with_models(allowed_names)
     http_request = _http_request({"model": requested_model, "stream": False})
+
+    @asynccontextmanager
+    async def fake_scope():
+        yield db
+
     with (
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
+        patch.object(responses_module, "session_scope", fake_scope),
         patch.object(
             responses_module, "resolve_mantle_model_id", return_value=canonical
         ),
@@ -51,9 +58,7 @@ async def _call(requested_model, canonical, allowed_names):
         patch.object(responses_module, "record_usage", new=AsyncMock()),
         patch.object(responses_module.background_tasks, "create_task"),
     ):
-        result = await responses_module.create_response(
-            http_request, token=token, db=db
-        )
+        result = await responses_module.create_response(http_request, token=token)
     return result, passthrough
 
 

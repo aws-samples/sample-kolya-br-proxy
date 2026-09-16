@@ -6,6 +6,7 @@ through to the standard bedrock-runtime converse path instead — while leaving
 the default ("mantle") behaviour untouched.
 """
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,6 +41,11 @@ def _db_with_models(names):
 async def _call(request, allowed_names, backend):
     token = SimpleNamespace(id="tok", user_id="usr", token_metadata=None)
     db = _db_with_models(allowed_names)
+
+    @asynccontextmanager
+    async def fake_scope():
+        yield db
+
     settings_ns = SimpleNamespace(PROMPT_CACHE_TTL="5m")
     bedrock_client = MagicMock()
     bedrock_response = SimpleNamespace(
@@ -51,6 +57,7 @@ async def _call(request, allowed_names, backend):
     )
     with (
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
+        patch.object(chat_module, "session_scope", fake_scope),
         patch.object(chat_module, "get_settings", return_value=settings_ns),
         patch.object(chat_module, "get_openai_gpt_backend", return_value=backend),
         patch.object(
@@ -73,7 +80,7 @@ async def _call(request, allowed_names, backend):
         patch.object(chat_module, "record_usage", new=MagicMock()),
     ):
         result = await chat_module.create_chat_completion(
-            request, _http_request(), token=token, db=db
+            request, _http_request(), token=token
         )
     return result, mantle, bedrock_client
 

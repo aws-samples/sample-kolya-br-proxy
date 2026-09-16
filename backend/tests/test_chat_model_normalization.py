@@ -9,6 +9,7 @@ and routes to the mantle Responses handler — while a genuinely unknown model
 still gets 403.
 """
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -44,14 +45,22 @@ def _db_with_models(names):
 async def _call(request, allowed_names):
     token = SimpleNamespace(id="tok", token_metadata=None)
     db = _db_with_models(allowed_names)
+
+    @asynccontextmanager
+    async def fake_scope():
+        # The endpoint now does its early reads in a short-lived session_scope
+        # (released before streaming); hand it the mock db.
+        yield db
+
     with (
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
+        patch.object(chat_module, "session_scope", fake_scope),
         patch.object(
             chat_module, "_handle_mantle_request", new=AsyncMock(return_value="mantle")
         ) as mantle,
     ):
         result = await chat_module.create_chat_completion(
-            request, _http_request(), token=token, db=db
+            request, _http_request(), token=token
         )
     return result, mantle
 
@@ -112,8 +121,14 @@ async def _call_bedrock(request, allowed_names):
     """
     token = SimpleNamespace(id="tok", token_metadata=None)
     db = _db_with_models(allowed_names)
+
+    @asynccontextmanager
+    async def fake_scope():
+        yield db
+
     with (
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
+        patch.object(chat_module, "session_scope", fake_scope),
         patch.object(chat_module, "_is_gemini_model", return_value=False),
         patch.object(chat_module, "is_openai_mantle_model", return_value=False),
         patch.object(
@@ -124,7 +139,7 @@ async def _call_bedrock(request, allowed_names):
     ):
         with pytest.raises(Exception):
             await chat_module.create_chat_completion(
-                request, _http_request(), token=token, db=db
+                request, _http_request(), token=token
             )
     return request
 

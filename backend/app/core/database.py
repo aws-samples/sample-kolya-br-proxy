@@ -3,6 +3,7 @@ Database configuration and connection management using SQLAlchemy with PostgreSQ
 """
 
 import logging
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy import MetaData
@@ -69,6 +70,31 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
     Yields:
         AsyncSession: Database session
+    """
+    if async_session_maker is None:
+        raise RuntimeError("Database not initialized. Call init_db() first.")
+
+    async with async_session_maker() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+@asynccontextmanager
+async def session_scope() -> AsyncGenerator[AsyncSession, None]:
+    """Open a short-lived session and release its connection on exit.
+
+    Use this for DB work that must NOT hold a pooled connection across a slow,
+    non-DB operation (e.g. a Bedrock stream that runs for tens of seconds).
+    Unlike the ``get_db`` request dependency — whose session FastAPI keeps
+    checked out until the whole request (including a StreamingResponse) ends —
+    this returns the connection to the pool the moment the ``async with`` block
+    closes. Resolves ``async_session_maker`` at call time so it picks up the
+    instance created by ``init_db()``.
     """
     if async_session_maker is None:
         raise RuntimeError("Database not initialized. Call init_db() first.")

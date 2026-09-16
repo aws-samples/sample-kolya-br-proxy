@@ -11,14 +11,13 @@ from typing import AsyncGenerator
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 import httpx
 
-from app.api.deps import get_current_token
+from app.api.deps import get_current_token_streaming
 from app.core.config import get_settings
 from app.core.runtime_config import get_openai_gpt_backend
-from app.core.database import get_db
+from app.core.database import get_db, session_scope
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.schemas.openai import (
@@ -65,8 +64,7 @@ background_tasks = BackgroundTaskManager()
 async def create_chat_completion(
     request_data: ChatCompletionRequest,
     http_request: Request,
-    token: APIToken = Depends(get_current_token),
-    db: AsyncSession = Depends(get_db),
+    token: APIToken = Depends(get_current_token_streaming),
 ):
     """
     Create a chat completion (OpenAI compatible).
@@ -204,19 +202,26 @@ async def create_chat_completion(
         # Check all quota tiers (lifetime, monthly, daily)
         from app.services.quota import enforce_quota
 
-        await enforce_quota(token, db)
+        # Do the quota + model-access reads in a short-lived session that is
+        # released before any Bedrock call. The stream below can run for tens of
+        # seconds; if we held this connection across it, the pool would be
+        # exhausted under load long before Bedrock is reached (the source of the
+        # 100-concurrency HTTP 500s). Everything the request needs downstream is
+        # copied out as plain values so nothing is read off a closed session.
+        async with session_scope() as db:
+            await enforce_quota(token, db)
 
-        # Validate model access by querying the models table
-        result = await db.execute(
-            select(Model).where(
-                Model.token_id == token.id,
-                Model.is_active,
-                ~Model.is_deleted,
+            # Validate model access by querying the models table
+            result = await db.execute(
+                select(Model).where(
+                    Model.token_id == token.id,
+                    Model.is_active,
+                    ~Model.is_deleted,
+                )
             )
-        )
-        token_models = result.scalars().all()
-
-        allowed_model_names = [model.model_name for model in token_models]
+            token_models = result.scalars().all()
+            allowed_model_names = [model.model_name for model in token_models]
+        # Connection returned to the pool here — the stream below holds none.
 
         # If no models are associated with this token, deny all access
         if not allowed_model_names:
@@ -284,7 +289,6 @@ async def create_chat_completion(
                     bedrock_request=bedrock_request,
                     bedrock_client=bedrock_client,
                     token=token,
-                    db=db,
                     start_time=start_time,
                     http_request=http_request,
                     cache_ttl=request_data.bedrock_cache_ttl
@@ -769,7 +773,6 @@ async def stream_chat_completion(
     bedrock_request,
     bedrock_client: BedrockClient,
     token: APIToken,
-    db: AsyncSession,
     start_time: float,
     http_request: Request = None,
     cache_ttl: str = None,
@@ -784,7 +787,6 @@ async def stream_chat_completion(
         bedrock_request: Bedrock format request
         bedrock_client: Bedrock client instance
         token: API token
-        db: Database session
         start_time: Request start time
         http_request: Original HTTP request (for disconnect detection)
         cache_ttl: Effective cache TTL for pricing calculation

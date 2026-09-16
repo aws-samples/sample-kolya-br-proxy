@@ -12,12 +12,11 @@ from typing import AsyncGenerator
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_token_flexible
+from app.api.deps import get_current_token_flexible_streaming
 from app.core.config import get_settings
 from app.core.runtime_config import get_openai_gpt_backend
-from app.core.database import get_db
+from app.core.database import session_scope
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.schemas.anthropic import (
@@ -87,8 +86,7 @@ def _build_trace_request(
 async def create_message(
     request_data: AnthropicMessagesRequest,
     http_request: Request,
-    token: APIToken = Depends(get_current_token_flexible),
-    db: AsyncSession = Depends(get_db),
+    token: APIToken = Depends(get_current_token_flexible_streaming),
 ):
     """
     Create a message (Anthropic Messages API compatible).
@@ -109,21 +107,26 @@ async def create_message(
         from sqlalchemy import select
         from app.models.model import Model
 
-        # Check all quota tiers (lifetime, monthly, daily)
+        # Check all quota tiers (lifetime, monthly, daily).
         from app.services.quota import enforce_quota
 
-        await enforce_quota(token, db)
+        # Do the early reads in a short-lived session released before streaming.
+        # An Anthropic stream can run for tens of seconds; holding this pooled
+        # connection across it exhausts the pool under load.
+        async with session_scope() as db:
+            await enforce_quota(token, db)
 
-        # Validate model access
-        result = await db.execute(
-            select(Model).where(
-                Model.token_id == token.id,
-                Model.is_active,
-                ~Model.is_deleted,
+            # Validate model access
+            result = await db.execute(
+                select(Model).where(
+                    Model.token_id == token.id,
+                    Model.is_active,
+                    ~Model.is_deleted,
+                )
             )
-        )
-        token_models = result.scalars().all()
-        allowed_model_names = [model.model_name for model in token_models]
+            token_models = result.scalars().all()
+            allowed_model_names = [model.model_name for model in token_models]
+        # Connection returned to the pool here — the stream below holds none.
 
         if not allowed_model_names:
             raise HTTPException(
@@ -218,7 +221,6 @@ async def create_message(
                     bedrock_request=bedrock_request,
                     bedrock_client=bedrock_client,
                     token=token,
-                    db=db,
                     start_time=start_time,
                     http_request=http_request,
                     cache_ttl=cache_ttl or get_settings().PROMPT_CACHE_TTL,
@@ -358,7 +360,6 @@ async def stream_anthropic_messages(
     bedrock_request,
     bedrock_client: BedrockClient,
     token: APIToken,
-    db: AsyncSession,
     start_time: float,
     http_request: Request = None,
     cache_ttl: str = None,

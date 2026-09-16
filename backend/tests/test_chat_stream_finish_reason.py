@@ -63,7 +63,6 @@ async def _collect(events):
             bedrock_request=MagicMock(),
             bedrock_client=bedrock_client,
             token=token,
-            db=MagicMock(),
             start_time=0.0,
         ):
             chunks.append(chunk)

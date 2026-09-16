@@ -12,7 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import get_db, session_scope
 from app.core.log_context import set_log_context
 from app.core.security import decode_jwt_token
 from app.models.token import APIToken
@@ -154,6 +154,39 @@ async def get_current_token(
     return token
 
 
+async def get_current_token_streaming(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> APIToken:
+    """Validate the API token without holding a DB connection for the request.
+
+    ``get_current_token`` resolves ``get_token_service``, whose ``get_db``
+    dependency keeps a pooled connection checked out until the request ends.
+    For a streaming chat completion the request only "ends" after the Bedrock
+    stream finishes (tens of seconds), so that idle connection is held the whole
+    time — and under load the pool is exhausted before Bedrock is ever reached.
+
+    This dependency instead validates inside a short-lived ``session_scope`` that
+    is released immediately, so the long stream holds zero DB connections. The
+    returned token is a detached row; the chat endpoint only reads scalar columns
+    off it (id, user_id, name, token_metadata), which stay accessible because the
+    session maker sets ``expire_on_commit=False``.
+    """
+    plain_token = credentials.credentials
+    async with session_scope() as db:
+        token_service = TokenService(db)
+        token = await _validate_token_with_cache(token_service, plain_token)
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    set_log_context(token_name=token.name, token_id=str(token.id))
+    return token
+
+
 async def get_current_token_flexible(
     request: Request,
     token_service: TokenService = Depends(get_token_service),
@@ -179,6 +212,42 @@ async def get_current_token_flexible(
         )
 
     token = await _validate_token_with_cache(token_service, api_key)
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+        )
+
+    set_log_context(token_name=token.name, token_id=str(token.id))
+    return token
+
+
+async def get_current_token_flexible_streaming(
+    request: Request,
+) -> APIToken:
+    """Flexible-auth variant of :func:`get_current_token_streaming`.
+
+    Same short-lived ``session_scope`` validation (so a long stream holds no DB
+    connection — see ``get_current_token_streaming``), but accepts the token via
+    either ``x-api-key`` (Anthropic SDK) or ``Authorization: Bearer`` (OpenAI
+    SDK). Used by the streaming ``/v1/messages`` endpoint.
+    """
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            api_key = auth_header[7:]
+
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key. Provide via Authorization: Bearer or x-api-key header.",
+        )
+
+    async with session_scope() as db:
+        token_service = TokenService(db)
+        token = await _validate_token_with_cache(token_service, api_key)
 
     if not token:
         raise HTTPException(
