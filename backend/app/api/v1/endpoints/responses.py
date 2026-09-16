@@ -26,12 +26,11 @@ from typing import Any, AsyncGenerator, Dict
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_token
+from app.api.deps import get_current_token_streaming
 from app.api.v1.endpoints.chat import record_usage
 from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.database import session_scope
 from app.models.model import Model
 from app.models.token import APIToken
 from app.services.background_tasks import BackgroundTaskManager
@@ -66,8 +65,7 @@ def _usage_from_response(usage: Dict[str, Any]) -> Dict[str, int]:
 @router.post("/responses")
 async def create_response(
     http_request: Request,
-    token: APIToken = Depends(get_current_token),
-    db: AsyncSession = Depends(get_db),
+    token: APIToken = Depends(get_current_token_streaming),
 ):
     """
     Create a model response (OpenAI Responses API, native passthrough).
@@ -117,20 +115,24 @@ async def create_response(
     # regardless of which spelling the client used.
     body["model"] = model
 
-    # Quota + model access (same checks as the other gateway endpoints)
+    # Quota + model access (same checks as the other gateway endpoints).
+    # Done in a short-lived session released before streaming: a Responses
+    # stream can run for tens of seconds and must not pin a pooled connection.
     from sqlalchemy import select
     from app.services.quota import enforce_quota
 
-    await enforce_quota(token, db)
+    async with session_scope() as db:
+        await enforce_quota(token, db)
 
-    result = await db.execute(
-        select(Model).where(
-            Model.token_id == token.id,
-            Model.is_active,
-            ~Model.is_deleted,
+        result = await db.execute(
+            select(Model).where(
+                Model.token_id == token.id,
+                Model.is_active,
+                ~Model.is_deleted,
+            )
         )
-    )
-    allowed_model_names = [m.model_name for m in result.scalars().all()]
+        allowed_model_names = [m.model_name for m in result.scalars().all()]
+    # Connection returned to the pool here — the stream below holds none.
     # Authorise ignoring the cross-region inference-profile prefix: the same
     # model may be granted under its Bedrock profile ID (``us.openai.gpt-6-
     # astra``) while ``resolve_mantle_model_id`` yields the bare mantle form
