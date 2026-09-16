@@ -159,7 +159,9 @@ async def test_flexible_streaming_auth_releases_session():
 
     with (
         patch.object(deps_module, "session_scope", fake_scope),
-        patch.object(deps_module, "_validate_token_with_cache", AsyncMock(return_value=token)),
+        patch.object(
+            deps_module, "_validate_token_with_cache", AsyncMock(return_value=token)
+        ),
         patch.object(deps_module, "set_log_context", MagicMock()),
     ):
         result = await deps_module.get_current_token_flexible_streaming(request=request)
