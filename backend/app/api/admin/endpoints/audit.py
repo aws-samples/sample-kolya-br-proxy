@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with Mapped[].
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false
 """Audit log viewing endpoints."""
 
 import time

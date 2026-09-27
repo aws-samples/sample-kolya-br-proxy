@@ -3,7 +3,8 @@
  * Checks for runtime config, then falls back to environment variables
  */
 export function getApiBaseUrl(): string {
-  // Check if there's a runtime config injected by nginx
+  // Check if there's a runtime config injected by nginx.
+  // SAFETY: nginx injects __CONFIG__ as a string-valued object before app startup.
   const config = (window as unknown as Record<string, Record<string, string>>).__CONFIG__;
   if (config?.apiBaseUrl) {
     return config.apiBaseUrl;

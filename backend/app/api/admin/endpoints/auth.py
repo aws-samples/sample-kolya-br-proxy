@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on the legacy SQLAlchemy User
+# model's declarative Column attributes. Remove these overrides with Mapped[].
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 Authentication endpoints for user registration and login.
 """
@@ -96,7 +99,7 @@ class RevokeTokenRequest(BaseModel):
 async def refresh_access_token(
     http_request: Request,
     response: Response,
-    request_body: RefreshTokenRequest = None,
+    request_body: RefreshTokenRequest | None = None,
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
     audit_log_service: AuditLogService = Depends(get_audit_log_service),
 ):
@@ -147,15 +150,16 @@ async def refresh_access_token(
             user_agent=user_agent,
         )
 
-        if error:
+        if error or new_refresh_token is None or user is None:
+            failure = error or "Refresh token rotation failed"
             await audit_log_service.log_token_refresh_failed(
                 ip_address=ip_address,
                 user_agent=user_agent,
-                error_message=error,
+                error_message=failure,
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=error,
+                detail=failure,
             )
 
         # Log successful refresh
@@ -203,7 +207,7 @@ async def refresh_access_token(
 async def revoke_refresh_token(
     http_request: Request,
     response: Response,
-    request_body: RevokeTokenRequest = None,
+    request_body: RevokeTokenRequest | None = None,
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
 ):
     """
