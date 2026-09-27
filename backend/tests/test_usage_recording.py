@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.schemas.bedrock import BedrockStreamEvent, BedrockUsage
+from app.services.bedrock import BedrockClient
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,48 @@ class _CaptureTasks:
         self.calls.append((task_name, coro))
         # Close the coroutine so pytest doesn't warn about it never being awaited.
         coro.close()
+
+
+def _capture_record_usage(captured):
+    """Return a record_usage stand-in that exposes the scheduled arguments."""
+
+    def fake_record_usage(**kwargs):
+        captured.append(kwargs)
+
+        async def complete():
+            return None
+
+        return complete()
+
+    return fake_record_usage
+
+
+async def _converse_stream(*args, **kwargs):
+    """Yield the event order returned by Bedrock ConverseStream."""
+    raw_events = [
+        {"messageStart": {"role": "assistant"}},
+        {
+            "contentBlockDelta": {
+                "contentBlockIndex": 0,
+                "delta": {"text": "hello"},
+            }
+        },
+        {"messageStop": {"stopReason": "end_turn"}},
+        {
+            "metadata": {
+                "usage": {
+                    "inputTokens": 17,
+                    "outputTokens": 3,
+                    "cacheWriteInputTokens": 7,
+                    "cacheReadInputTokens": 5,
+                }
+            }
+        },
+    ]
+    for raw_event in raw_events:
+        event = BedrockClient._converse_stream_event_to_bedrock(raw_event)
+        assert event is not None
+        yield event
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +258,88 @@ async def test_anthropic_stream_records_usage_on_midstream_error():
 
     record_calls = [c for c in capture.calls if c[0] == "record_usage_req-anthropic"]
     assert len(record_calls) == 1, "anthropic path must record once on error"
+
+
+@pytest.mark.asyncio
+async def test_openai_converse_stream_records_metadata_input_tokens():
+    """Converse reports input tokens in trailing metadata, not message_start."""
+    from app.api.v1.endpoints import chat
+
+    bedrock_client = MagicMock()
+    bedrock_client.invoke_stream = _converse_stream
+    recorded = []
+
+    with (
+        patch.object(chat, "record_usage", new=_capture_record_usage(recorded)),
+        patch.object(chat, "background_tasks", _CaptureTasks()),
+        patch.object(chat, "get_fallback_models", return_value=[]),
+        patch.object(chat, "emit_request_metrics", new=AsyncMock()),
+    ):
+        async for _ in chat.stream_chat_completion(
+            request_id="req-converse-openai",
+            model="amazon.nova-pro-v1:0",
+            bedrock_request={},
+            bedrock_client=bedrock_client,
+            token=_make_token(),
+            start_time=0.0,
+        ):
+            pass
+
+    assert recorded[0]["prompt_tokens"] == 17
+    assert recorded[0]["completion_tokens"] == 3
+    assert recorded[0]["cache_creation_input_tokens"] == 7
+    assert recorded[0]["cache_read_input_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_anthropic_converse_stream_records_metadata_input_tokens():
+    """The Anthropic-compatible endpoint must retain Converse metadata usage."""
+    from app.api.anthropic.endpoints import messages
+
+    bedrock_client = MagicMock()
+    bedrock_client.invoke_stream = _converse_stream
+    recorded = []
+
+    with (
+        patch.object(messages, "record_usage", new=_capture_record_usage(recorded)),
+        patch.object(messages, "background_tasks", _CaptureTasks()),
+        patch.object(messages, "get_fallback_models", return_value=[]),
+        patch.object(messages, "emit_request_metrics", new=AsyncMock()),
+    ):
+        async for _ in messages.stream_anthropic_messages(
+            request_id="req-converse-anthropic",
+            model="amazon.nova-pro-v1:0",
+            bedrock_request={},
+            bedrock_client=bedrock_client,
+            token=_make_token(),
+            start_time=0.0,
+        ):
+            pass
+
+    assert recorded[0]["prompt_tokens"] == 17
+    assert recorded[0]["completion_tokens"] == 3
+    assert recorded[0]["cache_creation_input_tokens"] == 7
+    assert recorded[0]["cache_read_input_tokens"] == 5
+
+
+def test_converse_response_preserves_cache_usage():
+    client = object.__new__(BedrockClient)
+    response = client._parse_converse_response(
+        {
+            "output": {"message": {"content": [{"text": "hello"}]}},
+            "usage": {
+                "inputTokens": 17,
+                "outputTokens": 3,
+                "cacheWriteInputTokens": 7,
+                "cacheReadInputTokens": 5,
+            },
+            "stopReason": "end_turn",
+        },
+        "amazon.nova-pro-v1:0",
+    )
+
+    assert response.usage.cache_creation_input_tokens == 7
+    assert response.usage.cache_read_input_tokens == 5
 
 
 # ---------------------------------------------------------------------------

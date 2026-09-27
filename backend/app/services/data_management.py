@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 Data management service for export/import of application configuration.
 """
@@ -42,6 +45,14 @@ class SectionResult:
 class DataManagementService:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _clear_standalone_quotas(token: APIToken) -> None:
+        """Make TeamMember.allocated_usd the Team Key's only budget source."""
+        token.quota_usd = None
+        token.monthly_quota_usd = None
+        token.monthly_reset_policy = None
+        token.monthly_quota_start = None
 
     async def export_config(self, exported_by: str) -> dict:
         """Export all application configuration as a JSON-serializable dict."""
@@ -405,6 +416,12 @@ class DataManagementService:
                 )
             )
             existing = result.scalar_one_or_none()
+            is_team_key = False
+            if existing:
+                membership_result = await self.db.execute(
+                    select(TeamMember.id).where(TeamMember.token_id == existing.id)
+                )
+                is_team_key = membership_result.scalar_one_or_none() is not None
 
             if existing:
                 if strategy == "skip":
@@ -431,6 +448,9 @@ class DataManagementService:
                             existing.id, item["allowed_models"]
                         )
                     sr.overwritten += 1
+
+                if is_team_key:
+                    self._clear_standalone_quotas(existing)
             else:
                 # Generate new token
                 plain_token = generate_api_token()
@@ -554,6 +574,10 @@ class DataManagementService:
                 )
             )
             existing = existing_result.scalar_one_or_none()
+
+            # Imports may restore standalone quotas before memberships are linked,
+            # so heal the invariant for new, overwritten, and skipped memberships.
+            self._clear_standalone_quotas(token)
 
             if existing:
                 if strategy == "skip":

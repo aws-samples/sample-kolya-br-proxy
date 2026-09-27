@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportArgumentType=false, reportOperatorIssue=false, reportOptionalOperand=false
 """Centralized quota calculation and enforcement for API tokens."""
 
 import calendar
@@ -224,7 +227,7 @@ async def _build_quota_snapshot(
         is_lifetime_exceeded=(
             token.quota_usd is not None and lifetime_impact >= token.quota_usd
         ),
-        unpriced_request_count=int(row.unpriced_request_count or 0),
+        unpriced_request_count=row.unpriced_request_count or 0,
         as_of=now,
     )
 

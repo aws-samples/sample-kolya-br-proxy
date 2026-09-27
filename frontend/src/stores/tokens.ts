@@ -65,42 +65,48 @@ export const useTokensStore = defineStore('tokens', {
     tokens: [] as APIToken[],
     loading: false,
     loaded: false,
+    error: null as string | null,
+    lastFetchedAt: null as string | null,
   }),
 
   actions: {
-    async fetchTokens(includeInactive = false, force = false) {
+    async fetchTokens(includeInactive = false, force = false): Promise<boolean> {
       // Return cached data if available and not forcing refresh
       if (this.tokens.length > 0 && !force) {
-        return;
+        return true;
       }
 
       this.loading = true;
+      this.error = null;
       try {
         const response = await api.get<APIToken[]>('/admin/tokens', {
           params: { include_inactive: includeInactive },
         });
         this.tokens = response.data;
+        this.lastFetchedAt = new Date().toISOString();
+        return true;
       } catch (error: unknown) {
+        let message = 'Failed to fetch token list';
+
         // Check if it's an authentication error
         if (error && typeof error === 'object' && 'response' in error) {
           const response = error.response as { status?: number; data?: { detail?: string } };
           if (response?.status === 401) {
-            // Auth error will be handled by axios interceptor
-            return;
+            message = 'Authentication required';
+          } else {
+            message = response?.data?.detail || message;
           }
-          const message = response?.data?.detail || 'Failed to fetch token list';
+        }
+
+        this.error = message;
+        if (message !== 'Authentication required') {
           Notify.create({
             type: 'negative',
             message,
             position: 'top',
           });
-        } else {
-          Notify.create({
-            type: 'negative',
-            message: 'Failed to fetch token list',
-            position: 'top',
-          });
         }
+        return false;
       } finally {
         this.loading = false;
         this.loaded = true;
@@ -120,9 +126,11 @@ export const useTokensStore = defineStore('tokens', {
         await this.fetchTokens(false, true);
         return response.data;
       } catch (error: unknown) {
-        const message = error && typeof error === 'object' && 'response' in error
-          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to create token'
-          : 'Failed to create token';
+        const message =
+          error && typeof error === 'object' && 'response' in error
+            ? (error.response as { data?: { detail?: string } })?.data?.detail ||
+              'Failed to create token'
+            : 'Failed to create token';
         Notify.create({
           type: 'negative',
           message,
@@ -132,7 +140,11 @@ export const useTokensStore = defineStore('tokens', {
       }
     },
 
-    async updateToken(tokenId: string, data: Partial<CreateTokenRequest>, showNotification = false) {
+    async updateToken(
+      tokenId: string,
+      data: Partial<CreateTokenRequest>,
+      showNotification = false,
+    ) {
       try {
         await api.put(`/admin/tokens/${tokenId}`, data);
 
@@ -147,9 +159,11 @@ export const useTokensStore = defineStore('tokens', {
         await this.fetchTokens(false, true);
         return true;
       } catch (error: unknown) {
-        const message = error && typeof error === 'object' && 'response' in error
-          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to update token'
-          : 'Failed to update token';
+        const message =
+          error && typeof error === 'object' && 'response' in error
+            ? (error.response as { data?: { detail?: string } })?.data?.detail ||
+              'Failed to update token'
+            : 'Failed to update token';
         Notify.create({
           type: 'negative',
           message,
@@ -172,9 +186,11 @@ export const useTokensStore = defineStore('tokens', {
         await this.fetchTokens(false, true);
         return true;
       } catch (error: unknown) {
-        const message = error && typeof error === 'object' && 'response' in error
-          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to delete token'
-          : 'Failed to delete token';
+        const message =
+          error && typeof error === 'object' && 'response' in error
+            ? (error.response as { data?: { detail?: string } })?.data?.detail ||
+              'Failed to delete token'
+            : 'Failed to delete token';
         Notify.create({
           type: 'negative',
           message,
@@ -184,7 +200,9 @@ export const useTokensStore = defineStore('tokens', {
       }
     },
 
-    async createTokensBatch(data: BatchCreateTokenRequest): Promise<BatchCreateTokenResponse | null> {
+    async createTokensBatch(
+      data: BatchCreateTokenRequest,
+    ): Promise<BatchCreateTokenResponse | null> {
       try {
         const response = await api.post<BatchCreateTokenResponse>('/admin/tokens/batch', data);
 
@@ -197,9 +215,11 @@ export const useTokensStore = defineStore('tokens', {
         await this.fetchTokens(false, true);
         return response.data;
       } catch (error: unknown) {
-        const message = error && typeof error === 'object' && 'response' in error
-          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to batch create tokens'
-          : 'Failed to batch create tokens';
+        const message =
+          error && typeof error === 'object' && 'response' in error
+            ? (error.response as { data?: { detail?: string } })?.data?.detail ||
+              'Failed to batch create tokens'
+            : 'Failed to batch create tokens';
         Notify.create({
           type: 'negative',
           message,
@@ -222,9 +242,11 @@ export const useTokensStore = defineStore('tokens', {
         await this.fetchTokens(false, true);
         return true;
       } catch (error: unknown) {
-        const message = error && typeof error === 'object' && 'response' in error
-          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to revoke token'
-          : 'Failed to revoke token';
+        const message =
+          error && typeof error === 'object' && 'response' in error
+            ? (error.response as { data?: { detail?: string } })?.data?.detail ||
+              'Failed to revoke token'
+            : 'Failed to revoke token';
         Notify.create({
           type: 'negative',
           message,
@@ -248,9 +270,11 @@ export const useTokensStore = defineStore('tokens', {
         });
         return true;
       } catch (error: unknown) {
-        const message = error && typeof error === 'object' && 'response' in error
-          ? (error.response as { data?: { detail?: string } })?.data?.detail || 'Failed to send notification'
-          : 'Failed to send notification';
+        const message =
+          error && typeof error === 'object' && 'response' in error
+            ? (error.response as { data?: { detail?: string } })?.data?.detail ||
+              'Failed to send notification'
+            : 'Failed to send notification';
         Notify.create({
           type: 'negative',
           message,

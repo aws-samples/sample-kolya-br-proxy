@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.api.v1.endpoints import chat as chat_module
-from app.schemas.bedrock import BedrockStreamEvent, BedrockUsage
+from app.schemas.bedrock import BedrockContentBlock, BedrockStreamEvent, BedrockUsage
 
 
 def _converse_events():
@@ -23,10 +23,13 @@ def _converse_events():
     Note the absence of any ``message_stop`` event and the trailing
     metadata-as-message_delta (delta=None) that must not clobber stop_reason.
     """
+    text_block = BedrockContentBlock(type="text")
     return [
         BedrockStreamEvent(type="message_start", message={"role": "assistant"}),
         BedrockStreamEvent(
-            type="content_block_start", index=0, content_block={"type": "text"}
+            type="content_block_start",
+            index=0,
+            content_block=text_block,
         ),
         BedrockStreamEvent(
             type="content_block_delta", index=0, delta={"text": "Hi hi hi!"}

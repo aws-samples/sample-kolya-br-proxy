@@ -12,7 +12,7 @@ from app.services.gemini_pricing_updater import GeminiPricingUpdater
 logger = logging.getLogger(__name__)
 
 # Global scheduler instance
-scheduler: AsyncIOScheduler = None
+scheduler: AsyncIOScheduler | None = None
 
 
 async def update_pricing_task():

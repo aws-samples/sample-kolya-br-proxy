@@ -2,18 +2,37 @@
   <q-page class="q-pa-md">
     <div class="text-h4 q-mb-md">Dashboard</div>
 
-    <!-- Account Balance Card -->
-    <q-card class="q-mb-md">
+    <!-- Remaining Lifetime Quota Card -->
+    <q-card v-if="canManageApiKeys" class="q-mb-md">
       <q-card-section>
-        <div class="text-h6">Account Balance</div>
-        <div v-if="!tokensStore.loaded" class="q-mt-md">
+        <div class="row items-center no-wrap">
+          <div class="text-h6">Remaining Lifetime Quota</div>
+          <q-space />
+          <q-btn
+            icon="refresh"
+            flat
+            dense
+            round
+            color="grey-7"
+            aria-label="Refresh remaining lifetime quota"
+            :loading="tokensStore.loading"
+            @click="refreshBalance"
+          >
+            <q-tooltip>Refresh quota</q-tooltip>
+          </q-btn>
+        </div>
+        <div v-if="tokensStore.loading && !tokensStore.loaded" class="q-mt-md">
           <q-skeleton type="text" width="200px" height="48px" />
         </div>
-        <div v-else class="text-h3 text-primary q-mt-md">
-          ${{ totalBalance }}
+        <div v-else-if="tokensStore.error" class="text-negative q-mt-md">
+          {{ tokensStore.error }}. Refresh to try again.
         </div>
+        <div v-else class="text-h3 text-primary q-mt-md">${{ totalBalance }}</div>
         <div class="text-caption text-grey-7 q-mt-sm">
-          Total quota of all API Keys
+          Active standalone keys with a lifetime quota; each key is clamped at zero.
+        </div>
+        <div v-if="lastRefreshedLabel" class="text-caption text-grey-7 q-mt-xs">
+          Last refreshed {{ lastRefreshedLabel }}
         </div>
       </q-card-section>
     </q-card>
@@ -26,12 +45,7 @@
           <q-space />
           <div v-if="groupBy === 'token'" class="row items-center no-wrap q-gutter-xs">
             <span class="text-caption">Active:</span>
-            <q-toggle
-              v-model="showActiveTokens"
-              dark
-              color="primary"
-              dense
-            />
+            <q-toggle v-model="showActiveTokens" dark color="primary" dense />
           </div>
           <q-input
             v-model="startDate"
@@ -114,13 +128,7 @@
           </q-btn>
         </div>
 
-        <q-table
-          :rows="displayRows"
-          :columns="displayColumns"
-          row-key="id"
-          flat
-          :loading="loading"
-        >
+        <q-table :rows="displayRows" :columns="displayColumns" row-key="id" flat :loading="loading">
           <template v-slot:body-cell-token_id="props">
             <q-td :props="props">
               <div class="text-mono text-caption">{{ props.row.token_id }}</div>
@@ -145,7 +153,8 @@
 
         <div class="q-mt-sm q-px-md q-pb-md">
           <div class="text-caption text-grey-7 text-italic">
-            * Cost estimates are for reference only. Please refer to your actual billing statement for accurate charges.
+            * Cost estimates are for reference only. Please refer to your actual billing statement
+            for accurate charges.
           </div>
         </div>
       </q-card-section>
@@ -161,6 +170,7 @@ import { useDashboardStore } from 'src/stores/dashboard';
 import { useAuthStore } from 'src/stores/auth';
 import { api } from 'src/boot/axios';
 import { getApiBaseUrl } from 'src/utils/api';
+import { calculateRemainingLifetimeBalance } from 'src/utils/balance';
 
 const tokensStore = useTokensStore();
 const dashboardStore = useDashboardStore();
@@ -185,22 +195,19 @@ const groupByOptions = [
   { label: 'By Model', value: 'model' },
 ];
 
-// Account balance = Total quota - Total used (only tokens WITH a quota limit)
-// Tokens without quota (unlimited) are excluded from balance calculation
-const totalBalance = computed(() => {
-  const tokensWithQuota = tokensStore.tokens.filter((token) => token.quota_usd);
-
-  const totalQuota = tokensWithQuota.reduce((sum, token) => {
-    return sum + parseFloat(token.quota_usd!);
-  }, 0);
-
-  const totalUsed = tokensWithQuota.reduce((sum, token) => {
-    const used = token.used_usd ? parseFloat(token.used_usd) : 0;
-    return sum + used;
-  }, 0);
-
-  return (totalQuota - totalUsed).toFixed(2);
+const canManageApiKeys = computed(() => authStore.hasPermission('manage_api_keys'));
+const totalBalance = computed(() => calculateRemainingLifetimeBalance(tokensStore.tokens));
+const lastRefreshedLabel = computed(() => {
+  if (!tokensStore.lastFetchedAt) return '';
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  }).format(new Date(tokensStore.lastFetchedAt));
 });
+
+async function refreshBalance() {
+  await tokensStore.fetchTokens(false, true);
+}
 
 const tokenOptions = computed(() => [
   { label: 'All', value: null },
@@ -405,18 +412,56 @@ async function exportCsv() {
     }
 
     const tokenStatusMap = new Map(
-      tokensStore.tokens.map(t => [t.id, t.is_active ? 'Active' : 'Inactive'])
+      tokensStore.tokens.map((t) => [t.id, t.is_active ? 'Active' : 'Inactive']),
     );
 
     const isSuperAdmin = authStore.isSuperAdmin;
     const headers = isSuperAdmin
-      ? ['Date', 'API Key', 'Status', 'Model', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Requests', 'Cost (USD)']
-      : ['Date', 'Status', 'Model', 'Prompt Tokens', 'Completion Tokens', 'Total Tokens', 'Requests', 'Cost (USD)'];
-    const csvRows = rows.map(r => {
+      ? [
+          'Date',
+          'API Key',
+          'Status',
+          'Model',
+          'Prompt Tokens',
+          'Completion Tokens',
+          'Total Tokens',
+          'Requests',
+          'Cost (USD)',
+        ]
+      : [
+          'Date',
+          'Status',
+          'Model',
+          'Prompt Tokens',
+          'Completion Tokens',
+          'Total Tokens',
+          'Requests',
+          'Cost (USD)',
+        ];
+    const csvRows = rows.map((r) => {
       const row = isSuperAdmin
-        ? [r.time_bucket, r.token_name, tokenStatusMap.get(String(r.token_id)) ?? 'Unknown', r.model, r.prompt_tokens, r.completion_tokens, r.total_tokens, r.request_count, r.total_cost]
-        : [r.time_bucket, tokenStatusMap.get(String(r.token_id)) ?? 'Unknown', r.model, r.prompt_tokens, r.completion_tokens, r.total_tokens, r.request_count, r.total_cost];
-      return row.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
+        ? [
+            r.time_bucket,
+            r.token_name,
+            tokenStatusMap.get(String(r.token_id)) ?? 'Unknown',
+            r.model,
+            r.prompt_tokens,
+            r.completion_tokens,
+            r.total_tokens,
+            r.request_count,
+            r.total_cost,
+          ]
+        : [
+            r.time_bucket,
+            tokenStatusMap.get(String(r.token_id)) ?? 'Unknown',
+            r.model,
+            r.prompt_tokens,
+            r.completion_tokens,
+            r.total_tokens,
+            r.request_count,
+            r.total_cost,
+          ];
+      return row.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',');
     });
 
     const csv = [headers.join(','), ...csvRows].join('\n');
@@ -444,7 +489,10 @@ async function exportCsv() {
 function exportKeys() {
   const token = localStorage.getItem('access_token');
   if (!token) return;
-  window.open(`${getApiBaseUrl()}/admin/tokens/export/keys?token=${encodeURIComponent(token)}`, '_blank');
+  window.open(
+    `${getApiBaseUrl()}/admin/tokens/export/keys?token=${encodeURIComponent(token)}`,
+    '_blank',
+  );
 }
 
 onMounted(async () => {
@@ -455,7 +503,7 @@ onMounted(async () => {
 
   const tasks: Promise<unknown>[] = [];
   if (authStore.hasPermission('manage_api_keys')) {
-    tasks.push(tokensStore.fetchTokens());
+    tasks.push(tokensStore.fetchTokens(false, true));
   }
   if (authStore.hasPermission('view_usage')) {
     tasks.push(fetchUsageByToken());

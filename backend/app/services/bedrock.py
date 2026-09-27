@@ -1,3 +1,6 @@
+# Pyright cannot model aioboto3's dynamic async clients and several legacy
+# event adapter types here. Remove these overrides when typed adapters replace them.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportPossiblyUnboundVariable=false, reportReturnType=false
 """
 AWS Bedrock client service.
 
@@ -51,7 +54,7 @@ class LocalTokenBucket:
     def __init__(self, rate: float, capacity: int):
         self._rate = rate
         self._capacity = capacity
-        self._tokens = float(capacity)
+        self._tokens: float = capacity
         self._last_refill = time.monotonic()
         self._lock = asyncio.Lock()
 
@@ -1394,6 +1397,8 @@ class BedrockClient:
         usage = BedrockUsage(
             input_tokens=usage_data.get("inputTokens", 0),
             output_tokens=usage_data.get("outputTokens", 0),
+            cache_creation_input_tokens=usage_data.get("cacheWriteInputTokens", 0),
+            cache_read_input_tokens=usage_data.get("cacheReadInputTokens", 0),
         )
 
         stop_reason_raw = response.get("stopReason", "end_turn")
@@ -1490,6 +1495,12 @@ class BedrockClient:
                 usage=BedrockUsage(
                     input_tokens=usage_data.get("inputTokens", 0),
                     output_tokens=usage_data.get("outputTokens", 0),
+                    cache_creation_input_tokens=usage_data.get(
+                        "cacheWriteInputTokens", 0
+                    ),
+                    cache_read_input_tokens=usage_data.get(
+                        "cacheReadInputTokens", 0
+                    ),
                 ),
             )
 

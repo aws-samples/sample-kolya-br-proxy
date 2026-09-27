@@ -1,3 +1,6 @@
+# Pyright cannot model this module's legacy SQLAlchemy Column attributes or
+# callback-style background task manager. Remove after their typing migrations.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 OpenAI-compatible chat completions endpoint.
 """
@@ -40,6 +43,8 @@ from app.services.gemini_client import (
 )
 from app.services.mantle_client import (
     MantleClient,
+    extract_cache_write_tokens as _mantle_extract_cache_write_tokens,
+    extract_cache_write_tokens_from_chunk as _mantle_extract_cache_write_tokens_from_chunk,
     extract_cached_tokens as _mantle_extract_cached_tokens,
     extract_cached_tokens_from_chunk as _mantle_extract_cached_tokens_from_chunk,
 )
@@ -633,8 +638,9 @@ async def _handle_mantle_request(
     prompt_tokens = usage.get("prompt_tokens", 0)
     completion_tokens = usage.get("completion_tokens", 0)
     cached_tokens = _mantle_extract_cached_tokens(response_data)
-    # Responses reports input_tokens as the total including cached; bill only non-cached.
-    non_cached_prompt = max(0, prompt_tokens - cached_tokens)
+    cache_write_tokens = _mantle_extract_cache_write_tokens(response_data)
+    # Responses input_tokens includes read, write, and uncached categories.
+    non_cached_prompt = max(0, prompt_tokens - cached_tokens - cache_write_tokens)
 
     background_tasks.create_task(
         record_usage(
@@ -644,13 +650,18 @@ async def _handle_mantle_request(
             request_id=request_id,
             prompt_tokens=non_cached_prompt,
             completion_tokens=completion_tokens,
+            cache_creation_input_tokens=cache_write_tokens,
             cache_read_input_tokens=cached_tokens,
         ),
         task_name=f"record_usage_{request_id}",
     )
 
     duration = time.time() - start_time
-    cache_info = f", cached={cached_tokens}" if cached_tokens else ""
+    cache_info = ""
+    if cache_write_tokens:
+        cache_info += f", cache_write={cache_write_tokens}"
+    if cached_tokens:
+        cache_info += f", cached={cached_tokens}"
     logger.info(
         f"mantle completion successful: request_id={request_id}, "
         f"duration={round(duration, 3)}s, "
@@ -679,6 +690,7 @@ async def stream_mantle_completion(
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_cached_tokens = 0
+    total_cache_write_tokens = 0
     last_heartbeat = time.time()
 
     try:
@@ -710,6 +722,11 @@ async def stream_mantle_completion(
                             cached = _mantle_extract_cached_tokens_from_chunk(data)
                             if cached is not None:
                                 total_cached_tokens = cached
+                            cache_write = (
+                                _mantle_extract_cache_write_tokens_from_chunk(data)
+                            )
+                            if cache_write is not None:
+                                total_cache_write_tokens = cache_write
                     except Exception:
                         pass
 
@@ -741,8 +758,11 @@ async def stream_mantle_completion(
         )
         yield f"data: {error_response.model_dump_json()}\n\n"
 
-    # Adjust prompt tokens to exclude cached
-    non_cached_prompt = max(0, total_prompt_tokens - total_cached_tokens)
+    # Split the Responses total into uncached, cache-read, and cache-write input.
+    non_cached_prompt = max(
+        0,
+        total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
+    )
 
     # Record usage
     background_tasks.create_task(
@@ -753,13 +773,18 @@ async def stream_mantle_completion(
             request_id=request_id,
             prompt_tokens=non_cached_prompt,
             completion_tokens=total_completion_tokens,
+            cache_creation_input_tokens=total_cache_write_tokens,
             cache_read_input_tokens=total_cached_tokens,
         ),
         task_name=f"record_usage_{request_id}",
     )
 
     duration = time.time() - start_time
-    cache_info = f", cached={total_cached_tokens}" if total_cached_tokens else ""
+    cache_info = ""
+    if total_cache_write_tokens:
+        cache_info += f", cache_write={total_cache_write_tokens}"
+    if total_cached_tokens:
+        cache_info += f", cached={total_cached_tokens}"
     logger.info(
         f"mantle streaming successful: request_id={request_id}, "
         f"duration={round(duration, 3)}s, "
@@ -774,8 +799,8 @@ async def stream_chat_completion(
     bedrock_client: BedrockClient,
     token: APIToken,
     start_time: float,
-    http_request: Request = None,
-    cache_ttl: str = None,
+    http_request: Request | None = None,
+    cache_ttl: str | None = None,
     allowed_model_names: list[str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
@@ -817,7 +842,14 @@ async def stream_chat_completion(
         nonlocal usage_recorded
         if usage_recorded:
             return
-        if not (total_input_tokens or total_output_tokens):
+        if not any(
+            (
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_creation_tokens,
+                total_cache_read_tokens,
+            )
+        ):
             # Nothing consumed (e.g. failure before message_start) → skip.
             return
         usage_recorded = True
@@ -965,9 +997,23 @@ async def stream_chat_completion(
                     continue
 
             elif event.type == "message_delta":
-                # Anthropic InvokeModel sends output_tokens in message_delta
+                # Anthropic InvokeModel sends output tokens here. ConverseStream
+                # sends both input and output tokens in its trailing metadata,
+                # which the Bedrock adapter also maps to message_delta.
                 if event.usage:
-                    total_output_tokens = event.usage.output_tokens or 0
+                    total_input_tokens = (
+                        event.usage.input_tokens or total_input_tokens
+                    )
+                    total_output_tokens = (
+                        event.usage.output_tokens or total_output_tokens
+                    )
+                    total_cache_creation_tokens = (
+                        event.usage.cache_creation_input_tokens
+                        or total_cache_creation_tokens
+                    )
+                    total_cache_read_tokens = (
+                        event.usage.cache_read_input_tokens or total_cache_read_tokens
+                    )
                 # Map stop_reason. Converse maps its ``messageStop`` here too,
                 # and the trailing ``metadata`` event also arrives as a
                 # message_delta (with no delta) — don't let it clobber a
@@ -1102,7 +1148,7 @@ async def record_usage(
     completion_tokens: int,
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
-    cache_ttl: str = None,
+    cache_ttl: str | None = None,
 ):
     """
     Record usage to database.

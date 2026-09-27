@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 API Token management endpoints.
 """
@@ -281,7 +284,9 @@ def build_token_response(
         description=token.description,
         key_prefix=_extract_key_prefix(token),
         expires_at=token.expires_at,
-        quota_usd=str(token.quota_usd) if token.quota_usd else None,
+        quota_usd=(
+            str(token.quota_usd) if token.quota_usd is not None else None
+        ),
         monthly_quota_usd=(
             str(effective_monthly) if effective_monthly is not None else None
         ),
@@ -292,7 +297,11 @@ def build_token_response(
             str(monthly_used_usd) if monthly_used_usd is not None else None
         ),
         daily_used_usd=str(daily_used_usd) if daily_used_usd is not None else None,
-        remaining_quota=str(token.remaining_quota) if token.remaining_quota else None,
+        remaining_quota=(
+            str(token.remaining_quota)
+            if token.remaining_quota is not None
+            else None
+        ),
         allowed_ips=token.allowed_ips or [],
         notify_emails=token.notify_emails or [],
         is_active=token.is_active,

@@ -2,8 +2,11 @@
 Admin endpoints for pricing management.
 """
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.services.pricing_updater import PricingUpdater
 from app.api.deps import get_current_superadmin
@@ -47,7 +50,7 @@ async def update_pricing(
 @router.get("/models/{model_id}")
 async def get_model_pricing(
     model_id: str,
-    region: str = None,
+    region: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_superadmin),
 ):
@@ -61,20 +64,25 @@ async def get_model_pricing(
     Returns:
         Pricing information
     """
+    effective_region = region or get_settings().AWS_REGION
     updater = PricingUpdater(db)
-    pricing = await updater.get_pricing(model_id, region)
+    pricing = await updater.get_pricing(model_id, effective_region)
 
     if not pricing:
         raise HTTPException(
             status_code=404,
-            detail=f"Pricing not found for model: {model_id}, region: {region}",
+            detail=(
+                f"Pricing not found for model: {model_id}, "
+                f"region: {effective_region}"
+            ),
         )
 
-    input_price, output_price = pricing
+    input_price = Decimal(str(pricing[0]))
+    output_price = Decimal(str(pricing[1]))
 
     return {
         "model_id": model_id,
-        "region": region,
+        "region": effective_region,
         "input_price_per_token": str(input_price),
         "output_price_per_token": str(output_price),
         "input_price_per_1m": str(input_price * 1_000_000),

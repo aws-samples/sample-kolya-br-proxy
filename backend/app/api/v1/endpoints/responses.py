@@ -1,3 +1,6 @@
+# Pyright cannot model this module's legacy SQLAlchemy Column attributes and
+# callback-style background task manager. Remove after their typing migrations.
+# pyright: reportArgumentType=false
 """
 OpenAI Responses API endpoint (native passthrough for AWS mantle).
 
@@ -54,11 +57,14 @@ def _usage_from_response(usage: Dict[str, Any]) -> Dict[str, int]:
     """
     prompt = usage.get("input_tokens", 0) or 0
     completion = usage.get("output_tokens", 0) or 0
-    cached = (usage.get("input_tokens_details") or {}).get("cached_tokens", 0) or 0
+    details = usage.get("input_tokens_details") or {}
+    cached = details.get("cached_tokens", 0) or 0
+    cache_write = details.get("cache_write_tokens", 0) or 0
     return {
-        "non_cached_prompt": max(0, prompt - cached),
+        "non_cached_prompt": max(0, prompt - cached - cache_write),
         "completion": completion,
         "cached": cached,
+        "cache_write": cache_write,
     }
 
 
@@ -177,13 +183,18 @@ async def create_response(
             request_id=request_id,
             prompt_tokens=usage["non_cached_prompt"],
             completion_tokens=usage["completion"],
+            cache_creation_input_tokens=usage["cache_write"],
             cache_read_input_tokens=usage["cached"],
         ),
         task_name=f"record_usage_{request_id}",
     )
 
     duration = time.time() - start_time
-    cache_info = f", cached={usage['cached']}" if usage["cached"] else ""
+    cache_info = ""
+    if usage["cache_write"]:
+        cache_info += f", cache_write={usage['cache_write']}"
+    if usage["cached"]:
+        cache_info += f", cached={usage['cached']}"
     logger.info(
         f"Responses successful: request_id={request_id}, "
         f"duration={round(duration, 3)}s, prompt={usage['non_cached_prompt']}, "
@@ -207,7 +218,12 @@ async def _stream_responses(
     its usage object for billing — without altering the client-facing stream.
     """
     settings = get_settings()
-    usage = {"non_cached_prompt": 0, "completion": 0, "cached": 0}
+    usage = {
+        "non_cached_prompt": 0,
+        "completion": 0,
+        "cached": 0,
+        "cache_write": 0,
+    }
     buffer = ""
     last_heartbeat = time.time()
     usage_recorded = False
@@ -215,7 +231,7 @@ async def _stream_responses(
     def _record():
         """Record usage once, on any exit path (incl. client disconnect)."""
         nonlocal usage_recorded
-        if usage_recorded or not (usage["non_cached_prompt"] or usage["completion"]):
+        if usage_recorded or not any(usage.values()):
             return
         usage_recorded = True
         background_tasks.create_task(
@@ -226,6 +242,7 @@ async def _stream_responses(
                 request_id=request_id,
                 prompt_tokens=usage["non_cached_prompt"],
                 completion_tokens=usage["completion"],
+                cache_creation_input_tokens=usage["cache_write"],
                 cache_read_input_tokens=usage["cached"],
             ),
             task_name=f"record_usage_{request_id}",
@@ -298,7 +315,11 @@ async def _stream_responses(
         _record()
 
     duration = time.time() - start_time
-    cache_info = f", cached={usage['cached']}" if usage["cached"] else ""
+    cache_info = ""
+    if usage["cache_write"]:
+        cache_info += f", cache_write={usage['cache_write']}"
+    if usage["cached"]:
+        cache_info += f", cached={usage['cached']}"
     logger.info(
         f"Responses streaming successful: request_id={request_id}, "
         f"duration={round(duration, 3)}s, prompt={usage['non_cached_prompt']}, "

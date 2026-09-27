@@ -2060,10 +2060,17 @@ build_and_push_images() {
     local account_id=$(aws sts get-caller-identity --query Account --output text)
     print_info "AWS Account ID: $account_id"
 
-    # ECR login (use temp config dir to avoid macOS keychain conflicts)
+    # Keep the caller's Docker configuration so the selected runtime context
+    # (for example OrbStack) and Buildx plugin remain available. An empty
+    # temporary DOCKER_CONFIG falls back to the usually absent
+    # /var/run/docker.sock on macOS.
+    if ! docker info &> /dev/null; then
+        print_error "Docker daemon is unavailable for context: $(docker context show 2>/dev/null || echo unknown)"
+        exit 1
+    fi
+
     print_substep "Logging in to Amazon ECR..."
     local ecr_registry="$account_id.dkr.ecr.$AWS_REGION.amazonaws.com"
-    export DOCKER_CONFIG="${DOCKER_CONFIG:-$(mktemp -d)}"
     aws ecr get-login-password --region "$AWS_REGION" | \
         docker login --username AWS --password-stdin "$ecr_registry"
     print_success "ECR login successful"

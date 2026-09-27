@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false
 """Team management endpoints."""
 
 import asyncio
@@ -69,7 +72,6 @@ class BatchCreateMembersRequest(BaseModel):
     names: str
     per_member_allocation: Decimal
     expires_at: datetime | None = None
-    quota_usd: Decimal | None = None
     allowed_ips: List[str] | None = None
     token_metadata: dict | None = None
     model_names: List[str] | None = None
@@ -665,7 +667,6 @@ async def batch_create_members(
         names=names,
         per_member_allocation=request.per_member_allocation,
         expires_at=request.expires_at,
-        quota_usd=request.quota_usd,
         allowed_ips=request.allowed_ips,
         token_metadata=request.token_metadata,
         model_names=request.model_names,
