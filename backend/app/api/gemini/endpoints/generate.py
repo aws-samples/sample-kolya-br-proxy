@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from decimal import Decimal
-from typing import AsyncGenerator, Dict
+from typing import Any, AsyncGenerator, Dict, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -106,6 +106,7 @@ async def _record_usage(
     from app.core.database import get_db as _get_db
 
     non_cached_prompt = max(0, prompt_tokens - cached_tokens)
+    token_row = cast(Any, token)
 
     async for db in _get_db():
         try:
@@ -129,8 +130,8 @@ async def _record_usage(
                 )
 
             usage_record = UsageRecord(
-                user_id=token.user_id,
-                token_id=token.id,
+                user_id=token_row.user_id,
+                token_id=token_row.id,
                 model=model,
                 prompt_tokens=non_cached_prompt,
                 completion_tokens=completion_tokens,
@@ -147,7 +148,7 @@ async def _record_usage(
                 from app.services.alert import check_alerts_for_usage
 
                 await check_alerts_for_usage(
-                    token_id=token.id, user_id=token.user_id, db=db
+                    token_id=token_row.id, user_id=token_row.user_id, db=db
                 )
             except Exception:
                 logger.warning("Alert check failed", exc_info=True)

@@ -142,7 +142,7 @@ export const useAuthStore = defineStore('auth', {
 
       // Redirect to login page using window.location to ensure clean state
       if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+        window.location.assign('/login');
       }
     },
 

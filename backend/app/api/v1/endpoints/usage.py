@@ -1,6 +1,8 @@
 """API-key-authenticated, self-scoped quota and usage endpoints."""
 
 from datetime import datetime, timedelta, timezone
+from typing import cast
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_token_flexible
 from app.core.database import get_db
 from app.models.token import APIToken
-from app.schemas.usage import QuotaSnapshotResponse, SelfUsageTimeseriesResponse
+from app.schemas.usage import (
+    QuotaSnapshotResponse,
+    SelfUsageBucket,
+    SelfUsageTimeseriesResponse,
+)
 from app.services.quota import get_quota_snapshot
 from app.services.usage_stats import UsageStatsService
 
@@ -58,12 +64,12 @@ async def get_self_usage_timeseries(
         )
 
     data = await UsageStatsService(db).get_quota_timeseries(
-        token_id=token.id,
+        token_id=cast(UUID, token.id),
         start_date=start,
         end_date=end,
     )
     return SelfUsageTimeseriesResponse(
         start_date=_aware_utc(start),
         end_date=_aware_utc(end),
-        data=data,
+        data=[SelfUsageBucket.model_validate(bucket) for bucket in data],
     )

@@ -1,3 +1,6 @@
+# Pyright's aioboto3 stubs model get_credentials as synchronous, but the runtime
+# method is awaitable. Remove this override when upstream typing is corrected.
+# pyright: reportGeneralTypeIssues=false
 """
 SigV4 signing for AWS mantle (OpenAI-on-Bedrock) HTTP requests.
 

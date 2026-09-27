@@ -90,7 +90,7 @@ api.interceptors.response.use(
         // Clear auth state and redirect
         localStorage.removeItem('access_token');
         if (typeof window !== 'undefined') {
-          window.location.href = '/login';
+          window.location.assign('/login');
         }
         return Promise.reject(new Error('Authentication failed'));
       }
@@ -147,7 +147,7 @@ api.interceptors.response.use(
           });
           localStorage.removeItem('access_token');
           if (typeof window !== 'undefined') {
-            window.location.href = '/login';
+            window.location.assign('/login');
           }
           return Promise.reject(err);
         } finally {
@@ -162,7 +162,7 @@ api.interceptors.response.use(
       if (detail === 'Inactive user') {
         localStorage.removeItem('access_token');
         if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-          window.location.href = '/login';
+          window.location.assign('/login');
         }
       }
       return Promise.reject(error as Error);

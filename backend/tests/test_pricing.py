@@ -1,3 +1,6 @@
+# Pyright cannot model this suite's legacy SQLAlchemy async fixtures and ORM
+# Column instance values. Remove these overrides with the Mapped[] migration.
+# pyright: reportCallIssue=false, reportArgumentType=false, reportGeneralTypeIssues=false, reportOptionalSubscript=false, reportOperatorIssue=false
 """
 Unit tests for pricing system.
 """
@@ -6,6 +9,7 @@ import pytest
 from decimal import Decimal
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -209,6 +213,34 @@ class TestPricingUpdater:
         assert pricing[1] == Decimal("0.000002")
 
     @pytest.mark.asyncio
+    async def test_official_profile_does_not_fallback_to_different_scope(
+        self, db_session
+    ):
+        """A missing Global rate must not silently use base or Geo pricing."""
+        updater = PricingUpdater(db_session)
+        await updater._save_pricing_data(
+            [
+                {
+                    "model_id": "openai.gpt-6-sol",
+                    "region": "us-west-2",
+                    "input_price_per_token": Decimal("0.000003"),
+                    "output_price_per_token": Decimal("0.000012"),
+                },
+                {
+                    "model_id": "us.openai.gpt-6-sol",
+                    "region": "us-west-2",
+                    "input_price_per_token": Decimal("0.0000022"),
+                    "output_price_per_token": Decimal("0.000011"),
+                },
+            ],
+            "api",
+        )
+
+        pricing = await updater.get_pricing("global.openai.gpt-6-sol", "us-west-2")
+
+        assert pricing is None
+
+    @pytest.mark.asyncio
     async def test_get_pricing_not_found(self, db_session):
         """Test getting pricing for non-existent model."""
         updater = PricingUpdater(db_session)
@@ -279,6 +311,75 @@ class TestPricingUpdater:
 
                 pricing_data = await updater._fetch_from_price_list_api()
                 assert isinstance(pricing_data, list)
+
+    @pytest.mark.asyncio
+    async def test_update_all_pricing_parses_modern_global_standard_dimensions(
+        self, db_session
+    ):
+        """Modern Price List tokenType fields map to the exact global profile."""
+        updater = PricingUpdater(db_session)
+        mock_settings = MagicMock(AWS_REGION="us-west-2")
+
+        products = {}
+        terms = {"OnDemand": {}}
+        dimensions = {
+            "INPUT": ("input_tokens_mantle", "0.0020000000"),
+            "OUTPUT": ("output_tokens_mantle", "0.0060000000"),
+            "CACHE": ("Cache Read Input Tokens", "0.0005000000"),
+        }
+        for sku, (token_type, price) in dimensions.items():
+            products[sku] = {
+                "attributes": {
+                    "model": "xai.grok-4.6",
+                    "regionCode": "us-west-2",
+                    "service_tier": "global-standard",
+                    "tokenType": token_type,
+                    "usagetype": f"USW2-grok-{sku.lower()}-global-standard",
+                }
+            }
+            terms["OnDemand"][sku] = {
+                "TERM": {
+                    "priceDimensions": {
+                        "DIM": {
+                            "unit": "1K tokens",
+                            "pricePerUnit": {"USD": price},
+                        }
+                    }
+                }
+            }
+
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json = MagicMock(return_value={"products": products, "terms": terms})
+
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings",
+                return_value=mock_settings,
+            ),
+            patch("httpx.AsyncClient") as mock_client,
+            patch.object(updater, "_build_dynamic_mapping", return_value={}),
+            patch(
+                "app.services.pricing_updater.refresh_mantle_registry",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(updater, "_scrape_aws_pricing_page", return_value=[]),
+            patch.object(updater, "_backfill_from_reference_region", return_value=0),
+            patch.object(updater, "ensure_official_profile_pricing", return_value=0),
+            patch.object(updater, "cleanup_stale_cross_region_entries", return_value=0),
+        ):
+            mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                return_value=response
+            )
+            stats = await updater.update_all_pricing()
+
+        assert stats["api_count"] == 1
+        result = await db_session.execute(select(ModelPricing))
+        record = result.scalar_one()
+        assert record.model_id == "global.xai.grok-4.6"
+        assert record.input_price_per_token == Decimal("0.000002")
+        assert record.output_price_per_token == Decimal("0.000006")
+        assert record.cached_input_price_per_token == Decimal("0.0000005")
 
     @pytest.mark.asyncio
     async def test_fetch_from_web_scraper_success(self, db_session):
@@ -402,6 +503,62 @@ class TestPricingUpdater:
                     assert stats["updated"] == 0
                     assert stats["failed"] == 2
 
+    @pytest.mark.asyncio
+    async def test_update_all_pricing_seeds_available_official_profiles(
+        self, db_session
+    ):
+        """AWS model-card rates fill profiles omitted from Price List data."""
+        updater = PricingUpdater(db_session)
+        mock_settings = MagicMock(AWS_REGION="us-west-2")
+        profile_cache = MagicMock()
+        profile_cache._local_profile_ids = {
+            "global.openai.gpt-6-sol",
+            "global.xai.grok-4.6",
+            "us.openai.gpt-6-astra",
+        }
+        bedrock = MagicMock(_profile_cache=profile_cache)
+
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings",
+                return_value=mock_settings,
+            ),
+            patch(
+                "app.services.bedrock.BedrockClient.get_instance",
+                return_value=bedrock,
+            ),
+            patch.object(updater, "_build_dynamic_mapping", return_value={}),
+            patch(
+                "app.services.pricing_updater.refresh_mantle_registry",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(updater, "_fetch_from_price_list_api", return_value=[]),
+            patch.object(updater, "_scrape_aws_pricing_page", return_value=[]),
+            patch.object(updater, "_backfill_from_reference_region", return_value=0),
+            patch.object(updater, "cleanup_stale_cross_region_entries", return_value=0),
+        ):
+            stats = await updater.update_all_pricing()
+
+        assert stats["model_card_count"] == 3
+        assert stats["updated"] == 3
+        assert "aws-model-card" in stats["sources"]
+
+        expected = {
+            "global.openai.gpt-6-sol": ("0.000002", "0.000010", "0.0000002"),
+            "global.xai.grok-4.6": ("0.000002", "0.000006", "0.0000005"),
+            "us.openai.gpt-6-astra": ("0.000011", "0.000055", "0.0000011"),
+        }
+        result = await db_session.execute(select(ModelPricing))
+        records = {record.model_id: record for record in result.scalars()}
+        assert set(records) == set(expected)
+        for model_id, prices in expected.items():
+            record = records[model_id]
+            assert record.region == "us-west-2"
+            assert record.input_price_per_token == Decimal(prices[0])
+            assert record.output_price_per_token == Decimal(prices[1])
+            assert record.cached_input_price_per_token == Decimal(prices[2])
+            assert record.source == "aws-model-card"
+
 
 class TestPricingService:
     """Test ModelPricing service."""
@@ -433,6 +590,64 @@ class TestPricingService:
         # Expected: (1000 * 0.000003) + (500 * 0.000015) = 0.003 + 0.0075 = 0.0105
         expected_cost = Decimal("0.0105")
         assert cost == expected_cost
+
+    @pytest.mark.asyncio
+    async def test_calculate_grok_uses_official_cache_read_rate(self, db_session):
+        """Grok cache reads cost 25% of input, not the generic 10%."""
+        model_id = "global.xai.grok-4.6"
+        await PricingUpdater(db_session)._save_pricing_data(
+            [
+                {
+                    "model_id": model_id,
+                    "region": "us-west-2",
+                    "input_price_per_token": Decimal("0.000002"),
+                    "output_price_per_token": Decimal("0.000006"),
+                    "cached_input_price_per_token": Decimal("0.0000005"),
+                }
+            ],
+            "aws-model-card",
+        )
+
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=100,
+            completion_tokens=20,
+            cache_read_input_tokens=40,
+            region="us-west-2",
+        )
+
+        assert cost == Decimal("0.000340")
+
+    @pytest.mark.asyncio
+    async def test_calculate_astra_uses_long_context_rates_for_full_request(
+        self, db_session
+    ):
+        """Crossing 272K total input applies AWS long rates to every token."""
+        model_id = "us.openai.gpt-6-astra"
+        await PricingUpdater(db_session)._save_pricing_data(
+            [
+                {
+                    "model_id": model_id,
+                    "region": "us-west-2",
+                    "input_price_per_token": Decimal("0.000011"),
+                    "output_price_per_token": Decimal("0.000055"),
+                    "cached_input_price_per_token": Decimal("0.0000011"),
+                }
+            ],
+            "aws-model-card",
+        )
+
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=270_000,
+            completion_tokens=10,
+            cache_creation_input_tokens=1_000,
+            cache_read_input_tokens=1_001,
+            cache_ttl="5m",
+            region="us-west-2",
+        )
+
+        assert cost == Decimal("5.9705272")
 
     @pytest.mark.asyncio
     async def test_calculate_cost_large_numbers(self, db_session):
@@ -758,3 +973,28 @@ class TestCacheWriteMultiplier:
             assert await self._write_multiplier(db_session, model, "5m") == Decimal(
                 "1.25"
             ), f"{model} 5m should bill 1.25x"
+
+    @pytest.mark.asyncio
+    async def test_cache_components_are_billed_once_at_their_own_rates(
+        self, db_session
+    ):
+        model = "global.anthropic.claude-opus-4-8"
+        await self._seed(db_session, model)
+
+        cost = await PricingService(db_session).calculate_cost(
+            model=model,
+            prompt_tokens=100,
+            completion_tokens=20,
+            cache_creation_input_tokens=30,
+            cache_read_input_tokens=40,
+            cache_ttl="5m",
+            region="us-west-2",
+        )
+
+        expected = (
+            Decimal(100) * self.INPUT_PRICE
+            + Decimal(20) * Decimal("0.000025")
+            + Decimal(30) * self.INPUT_PRICE * Decimal("1.25")
+            + Decimal(40) * self.INPUT_PRICE * Decimal("0.1")
+        )
+        assert cost == expected

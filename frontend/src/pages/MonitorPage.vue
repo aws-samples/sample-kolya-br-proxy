@@ -152,9 +152,7 @@
             <div v-if="monitorStore.loading">
               <q-skeleton type="text" width="120px" height="36px" />
             </div>
-            <div v-else class="text-h4 text-positive q-mt-xs">
-              ${{ totalCost }}
-            </div>
+            <div v-else class="text-h4 text-positive q-mt-xs">${{ totalCost }}</div>
           </q-card-section>
         </q-card>
       </div>
@@ -167,7 +165,10 @@
         <div v-if="monitorStore.loading" class="chart-placeholder">
           <q-skeleton type="rect" height="300px" />
         </div>
-        <div v-else-if="callsChartData.datasets.length === 0" class="chart-placeholder text-grey-7 text-center">
+        <div
+          v-else-if="callsChartData.datasets.length === 0"
+          class="chart-placeholder text-grey-7 text-center"
+        >
           <q-icon name="insights" size="48px" class="q-mb-sm" />
           <div>Select API keys to view call count trends</div>
         </div>
@@ -184,7 +185,10 @@
         <div v-if="monitorStore.loading" class="chart-placeholder">
           <q-skeleton type="rect" height="300px" />
         </div>
-        <div v-else-if="tokenUsageChartData.datasets.length === 0" class="chart-placeholder text-grey-7 text-center">
+        <div
+          v-else-if="tokenUsageChartData.datasets.length === 0"
+          class="chart-placeholder text-grey-7 text-center"
+        >
           <q-icon name="insights" size="48px" class="q-mb-sm" />
           <div>No token usage data available</div>
         </div>
@@ -226,7 +230,12 @@
         <div v-if="monitorStore.loadingPricing" class="chart-placeholder">
           <q-skeleton type="rect" height="400px" />
         </div>
-        <div v-else-if="!monitorStore.pricingTable || monitorStore.pricingTable.pricing_data.length === 0" class="chart-placeholder text-grey-7 text-center">
+        <div
+          v-else-if="
+            !monitorStore.pricingTable || monitorStore.pricingTable.pricing_data.length === 0
+          "
+          class="chart-placeholder text-grey-7 text-center"
+        >
           <q-icon name="price_check" size="48px" class="q-mb-sm" />
           <div>No pricing data available</div>
         </div>
@@ -309,7 +318,13 @@
             <q-td :props="props">
               <q-chip
                 dense
-                :color="props.value === 'api' ? 'blue-8' : props.value === 'aws-scraper' ? 'teal-8' : 'purple-8'"
+                :color="
+                  props.value === 'api'
+                    ? 'blue-8'
+                    : props.value === 'aws-scraper'
+                      ? 'teal-8'
+                      : 'purple-8'
+                "
                 text-color="white"
                 size="sm"
               >
@@ -348,6 +363,7 @@ import {
 } from 'chart.js';
 import { useMonitorStore } from 'src/stores/monitor';
 import { useTokensStore } from 'src/stores/tokens';
+import { getModelProvider } from 'src/utils/model-provider';
 
 ChartJS.register(
   CategoryScale,
@@ -370,24 +386,25 @@ const pricingFilter = ref('');
 const selectedRegion = ref<string | null>(null);
 const selectedProvider = ref<string | null>(null);
 
-// Provider colours — keyed by the display name returned by getProvider()
+// Provider colours — keyed by the display name returned by getModelProvider()
 const PROVIDER_COLORS: Record<string, string> = {
-  Amazon:    'blue-8',
+  Amazon: 'blue-8',
   Anthropic: 'orange-8',
-  Google:    'green-8',
-  Gemini:    'teal-8',
-  Meta:      'indigo-7',
-  Mistral:   'deep-orange-7',
-  Cohere:    'cyan-8',
-  DeepSeek:  'purple-8',
-  MiniMax:   'pink-7',
-  Moonshot:  'blue-grey-7',
-  NVIDIA:    'green-9',
-  OpenAI:    'grey-7',
-  Qwen:      'amber-8',
-  AI21:      'light-blue-8',
-  Writer:    'brown-7',
-  ZAI:       'red-8',
+  Google: 'green-8',
+  Gemini: 'teal-8',
+  Meta: 'indigo-7',
+  Mistral: 'deep-orange-7',
+  Cohere: 'cyan-8',
+  DeepSeek: 'purple-8',
+  MiniMax: 'pink-7',
+  Moonshot: 'blue-grey-7',
+  NVIDIA: 'green-9',
+  OpenAI: 'grey-7',
+  xAI: 'blue-grey-8',
+  Qwen: 'amber-8',
+  AI21: 'light-blue-8',
+  Writer: 'brown-7',
+  ZAI: 'red-8',
 };
 
 const MAX_QUERY_DAYS = 90;
@@ -485,54 +502,6 @@ const tokenOptions = computed(() =>
 );
 
 /**
- * Extract a human-readable provider name from a model_id.
- *
- * model_id formats:
- *   "amazon.nova-lite-v1:0"          → "Amazon"
- *   "anthropic.claude-3-5-sonnet…"   → "Anthropic"
- *   "us.amazon.nova-lite-v1:0"       → "Amazon"   (cross-region prefix)
- *   "global.anthropic.claude-…"      → "Anthropic"
- *   "gemini-2.5-pro"                 → "Gemini"
- *   "gemini-1.5-flash"               → "Gemini"
- *   "zai.glm-5"                      → "ZAI"
- */
-function getProvider(modelId: string): string {
-  // Strip cross-region prefixes: "us.", "eu.", "ap.", "global."
-  const stripped = modelId.replace(/^(us|eu|ap|global|us-gov)\.[a-z]{0,4}\.?/, '');
-
-  const prefix = (stripped.split('.')[0] ?? '').toLowerCase();
-
-  const MAP: Record<string, string> = {
-    amazon:    'Amazon',
-    anthropic: 'Anthropic',
-    meta:      'Meta',
-    mistral:   'Mistral',
-    cohere:    'Cohere',
-    deepseek:  'DeepSeek',
-    minimax:   'MiniMax',
-    moonshot:  'Moonshot',
-    nvidia:    'NVIDIA',
-    openai:    'OpenAI',
-    qwen:      'Qwen',
-    ai21:      'AI21',
-    writer:    'Writer',
-    zai:       'ZAI',
-    stability: 'Stability',
-    twelvelabs:'TwelveLabs',
-    google:    'Google',
-    luma:      'Luma',
-  };
-
-  if (MAP[prefix]) return MAP[prefix];
-
-  // Gemini models don't have a dot-prefix — identify by name
-  if (modelId.startsWith('gemini-') || modelId.startsWith('gemini/')) return 'Gemini';
-
-  // Fallback: capitalise first segment
-  return prefix.charAt(0).toUpperCase() + prefix.slice(1);
-}
-
-/**
  * Format a per-1M price string with sensible precision.
  * Always shows at least 2 decimal places; uses up to 4 for sub-cent prices.
  */
@@ -540,36 +509,40 @@ function formatPrice(value: string): string {
   const n = Number(value);
   if (n === 0) return '$0.00';
   // Use 4 decimal places for prices < $0.10, else 2
-  const decimals = n < 0.10 ? 4 : 2;
+  const decimals = n < 0.1 ? 4 : 2;
   return '$' + n.toFixed(decimals);
 }
 
 const enrichedPricingData = computed(() => {
   if (!monitorStore.pricingTable) return [];
-  return monitorStore.pricingTable.pricing_data.map(record => ({
+  return monitorStore.pricingTable.pricing_data.map((record) => ({
     ...record,
-    provider: getProvider(record.model_id),
+    provider: getModelProvider(record.model_id),
   }));
 });
 
 const providerOptions = computed(() => {
   const providers = new Set<string>();
-  enrichedPricingData.value.forEach(r => providers.add(r.provider));
+  enrichedPricingData.value.forEach((r) => providers.add(r.provider));
   return [
     { label: 'All Providers', value: null },
-    ...Array.from(providers).sort().map(p => ({ label: p, value: p })),
+    ...Array.from(providers)
+      .sort()
+      .map((p) => ({ label: p, value: p })),
   ];
 });
 
 const regionOptions = computed(() => {
   const regions = new Set<string>();
-  enrichedPricingData.value.forEach(r => regions.add(r.region));
+  enrichedPricingData.value.forEach((r) => regions.add(r.region));
   return [
     { label: 'All Regions', value: null },
-    ...Array.from(regions).sort().map(region => ({
-      label: region,
-      value: region,
-    })),
+    ...Array.from(regions)
+      .sort()
+      .map((region) => ({
+        label: region,
+        value: region,
+      })),
   ];
 });
 
@@ -577,19 +550,20 @@ const filteredPricingData = computed(() => {
   let data = enrichedPricingData.value;
 
   if (selectedProvider.value) {
-    data = data.filter(r => r.provider === selectedProvider.value);
+    data = data.filter((r) => r.provider === selectedProvider.value);
   }
 
   if (selectedRegion.value) {
-    data = data.filter(r => r.region === selectedRegion.value);
+    data = data.filter((r) => r.region === selectedRegion.value);
   }
 
   if (pricingFilter.value) {
     const searchLower = pricingFilter.value.toLowerCase();
-    data = data.filter(r =>
-      r.model_id.toLowerCase().includes(searchLower) ||
-      r.region.toLowerCase().includes(searchLower) ||
-      r.provider.toLowerCase().includes(searchLower),
+    data = data.filter(
+      (r) =>
+        r.model_id.toLowerCase().includes(searchLower) ||
+        r.region.toLowerCase().includes(searchLower) ||
+        r.provider.toLowerCase().includes(searchLower),
     );
   }
 
@@ -603,7 +577,7 @@ const totalCalls = computed(() => {
   }
   // 只计算选中的 token
   return monitorStore.tokenSummary
-    .filter(item => monitorStore.selectedTokenIds.includes(item.token_id))
+    .filter((item) => monitorStore.selectedTokenIds.includes(item.token_id))
     .reduce((sum, item) => sum + item.call_count, 0);
 });
 
@@ -614,7 +588,7 @@ const totalTokens = computed(() => {
   }
   // 只计算选中的 token
   return monitorStore.tokenSummary
-    .filter(item => monitorStore.selectedTokenIds.includes(item.token_id))
+    .filter((item) => monitorStore.selectedTokenIds.includes(item.token_id))
     .reduce((sum, item) => sum + item.total_tokens, 0);
 });
 
@@ -622,14 +596,11 @@ const totalCost = computed(() => {
   let sum: number;
   // 如果没有选中任何 token，显示所有
   if (monitorStore.selectedTokenIds.length === 0) {
-    sum = monitorStore.tokenSummary.reduce(
-      (acc, item) => acc + Number(item.total_cost),
-      0,
-    );
+    sum = monitorStore.tokenSummary.reduce((acc, item) => acc + Number(item.total_cost), 0);
   } else {
     // 只计算选中的 token
     sum = monitorStore.tokenSummary
-      .filter(item => monitorStore.selectedTokenIds.includes(item.token_id))
+      .filter((item) => monitorStore.selectedTokenIds.includes(item.token_id))
       .reduce((acc, item) => acc + Number(item.total_cost), 0);
   }
   return sum.toFixed(4);
@@ -750,7 +721,12 @@ const tokenUsageChartData = computed(() => {
 function formatBucket(bucket: string): string {
   const d = new Date(bucket);
   if (monitorStore.granularity === 'hourly') {
-    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   }
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
@@ -898,7 +874,7 @@ onMounted(async () => {
   await tokensStore.fetchTokens();
 
   // 默认选中所有 token
-  monitorStore.selectedTokenIds = tokensStore.tokens.map(token => token.id);
+  monitorStore.selectedTokenIds = tokensStore.tokens.map((token) => token.id);
 
   await monitorStore.fetchAll();
 

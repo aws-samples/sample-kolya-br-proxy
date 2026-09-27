@@ -280,14 +280,19 @@ def _build_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
     prompt = usage.get("input_tokens", 0)
     completion = usage.get("output_tokens", 0)
     total = usage.get("total_tokens", prompt + completion)
-    cached = (usage.get("input_tokens_details") or {}).get("cached_tokens", 0)
+    input_details = usage.get("input_tokens_details") or {}
+    cached = input_details.get("cached_tokens", 0)
+    cache_write = input_details.get("cache_write_tokens", 0)
     out: Dict[str, Any] = {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": total,
     }
-    if cached:
-        out["prompt_tokens_details"] = {"cached_tokens": cached}
+    if cached or cache_write:
+        out["prompt_tokens_details"] = {
+            "cached_tokens": cached,
+            "cache_write_tokens": cache_write,
+        }
     return out
 
 
@@ -345,7 +350,7 @@ def _responses_to_openai(
     return {
         "id": request_id,
         "object": "chat.completion",
-        "created": int(time.time()),
+        "created": time.time_ns() // 1_000_000_000,
         "model": model,
         "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
         "usage": _build_usage(resp.get("usage") or {}),
@@ -357,19 +362,35 @@ def _responses_to_openai(
 # ---------------------------------------------------------------------------
 
 
-def extract_cached_tokens(response: dict) -> int:
-    """Extract cached token count from an OpenAI-format response dict."""
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _extract_prompt_token_detail(response: dict, field: str) -> int:
     usage = response.get("usage", {})
     details = usage.get("prompt_tokens_details")
     if not details:
         return 0
     if isinstance(details, dict):
-        return int(details.get("cached_tokens", 0))
+        return _safe_int(details.get(field, 0))
     if isinstance(details, list):
         for item in details:
-            if isinstance(item, dict) and "cached_tokens" in item:
-                return int(item["cached_tokens"])
+            if isinstance(item, dict) and field in item:
+                return _safe_int(item[field])
     return 0
+
+
+def extract_cached_tokens(response: dict) -> int:
+    """Extract cache-read token count from an OpenAI-format response dict."""
+    return _extract_prompt_token_detail(response, "cached_tokens")
+
+
+def extract_cache_write_tokens(response: dict) -> int:
+    """Extract cache-write token count from an OpenAI-format response dict."""
+    return _extract_prompt_token_detail(response, "cache_write_tokens")
 
 
 def extract_cached_tokens_from_chunk(data: dict) -> Optional[int]:
@@ -378,6 +399,14 @@ def extract_cached_tokens_from_chunk(data: dict) -> Optional[int]:
     if not usage:
         return None
     return extract_cached_tokens({"usage": usage})
+
+
+def extract_cache_write_tokens_from_chunk(data: dict) -> Optional[int]:
+    """Extract cache-write token count from a streaming chunk's usage field."""
+    usage = data.get("usage")
+    if not usage:
+        return None
+    return extract_cache_write_tokens({"usage": usage})
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +557,7 @@ class MantleClient:
         headers["Accept"] = "text/event-stream"
 
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
-        created = int(time.time())
+        created = time.time_ns() // 1_000_000_000
         # Map Responses output_index → OpenAI tool_call index (function calls only)
         tool_call_index: Dict[int, int] = {}
 

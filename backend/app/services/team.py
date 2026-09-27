@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false, reportReturnType=false
 """Team management service with budget invariant enforcement."""
 
 import logging
@@ -214,7 +217,9 @@ class TeamService:
                 status_code=400, detail="Token is already a member of a team"
             )
 
-        # Clear token standalone monthly quota (team takes over)
+        # Team allocation is the single quota source. Clear every standalone
+        # quota so the token cannot be governed by both lifetime and team caps.
+        token.quota_usd = None
         token.monthly_quota_usd = None
         token.monthly_reset_policy = None
         token.monthly_quota_start = None
@@ -356,6 +361,7 @@ class TeamService:
         """Create new tokens and add them as team members atomically."""
         from app.services.token import TokenService
 
+        names = names or []
         team, members, total_allocated = await self._lock_team_and_members(team_id)
 
         if not skip_owner_check and team.user_id != user_id:
@@ -381,7 +387,7 @@ class TeamService:
             user_id=user_id,
             names=names,
             expires_at=expires_at,
-            quota_usd=quota_usd,
+            quota_usd=None,
             allowed_ips=allowed_ips,
             token_metadata=token_metadata,
             model_names=model_names,
@@ -389,6 +395,12 @@ class TeamService:
         )
 
         for token, _ in results:
+            # Defend the invariant even if a custom TokenService implementation
+            # returns a token carrying standalone quota fields.
+            token.quota_usd = None
+            token.monthly_quota_usd = None
+            token.monthly_reset_policy = None
+            token.monthly_quota_start = None
             member = TeamMember(
                 team_id=team_id,
                 token_id=token.id,

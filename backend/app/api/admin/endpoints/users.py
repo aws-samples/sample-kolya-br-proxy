@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from functools import lru_cache
-from typing import List
+from typing import Any, cast
 from uuid import UUID
 
 import boto3
@@ -29,7 +29,7 @@ router = APIRouter()
 VALID_ROLES = {r.value for r in UserRole}
 
 
-@lru_cache()
+@lru_cache
 def _get_cognito_client():
     settings = get_settings()
     return boto3.client(
@@ -52,17 +52,22 @@ class AdminUserResponse(BaseModel):
 
     @classmethod
     def from_user(cls, u: User) -> "AdminUserResponse":
+        # User still uses SQLAlchemy 1.x Column declarations, so static
+        # analyzers see class-level Column[T] instead of instance values.
+        row = cast(Any, u)
         return cls(
-            id=str(u.id),
-            email=u.email,
-            first_name=u.first_name,
-            last_name=u.last_name,
-            role=u.role.value,
-            permissions=u.permissions,
-            is_active=u.is_active,
-            auth_method=u.auth_method.value if u.auth_method else None,
-            created_at=u.created_at.isoformat(),
-            last_login_at=u.last_login_at.isoformat() if u.last_login_at else None,
+            id=str(row.id),
+            email=row.email,
+            first_name=row.first_name,
+            last_name=row.last_name,
+            role=row.role.value,
+            permissions=row.permissions,
+            is_active=row.is_active,
+            auth_method=row.auth_method.value if row.auth_method else None,
+            created_at=row.created_at.isoformat(),
+            last_login_at=(
+                row.last_login_at.isoformat() if row.last_login_at else None
+            ),
         )
 
 
@@ -105,7 +110,7 @@ async def list_assignable_resources(
     }
 
 
-@router.get("", response_model=List[AdminUserResponse])
+@router.get("", response_model=list[AdminUserResponse])
 async def list_admin_users(
     current_user: User = Depends(get_current_superadmin),
     db: AsyncSession = Depends(get_db),
@@ -145,16 +150,17 @@ async def invite_admin(
     role = UserRole(request.role)
 
     if user:
-        if user.is_active:
+        user_row = cast(Any, user)
+        if user_row.is_active:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="User with this email already exists",
             )
         # Reactivate previously deactivated user
-        user.is_active = True
-        user.role = role
-        user.permissions = request.permissions
-        user.is_admin = True
+        user_row.is_active = True
+        user_row.role = role
+        user_row.permissions = request.permissions
+        user_row.is_admin = True
     else:
         user = User(
             email=request.email,
@@ -202,13 +208,13 @@ async def invite_admin(
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail=f"Failed to reset Cognito password: {reset_err.response['Error']['Message']}",
-                    )
+                    ) from reset_err
             else:
                 logger.error(f"Failed to create Cognito user: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Failed to create Cognito user: {e.response['Error']['Message']}",
-                )
+                ) from e
 
     await db.commit()
     await db.refresh(user)
@@ -238,16 +244,17 @@ async def update_admin(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    user_row = cast(Any, user)
     if request.role is not None:
         if request.role not in VALID_ROLES:
             raise HTTPException(status_code=400, detail="Invalid role")
-        user.role = UserRole(request.role)
+        user_row.role = UserRole(request.role)
 
     if request.permissions is not None:
-        user.permissions = request.permissions
+        user_row.permissions = request.permissions
 
     if request.is_active is not None:
-        user.is_active = request.is_active
+        user_row.is_active = request.is_active
 
     await db.commit()
     await db.refresh(user)
@@ -309,7 +316,7 @@ async def deactivate_admin(
                         f"Failed to delete Cognito user {cognito_username}: {e}"
                     )
 
-    user.is_active = False
+    cast(Any, user).is_active = False
     await db.commit()
 
     await audit_service.log(

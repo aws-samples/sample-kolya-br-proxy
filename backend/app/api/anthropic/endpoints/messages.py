@@ -1,3 +1,6 @@
+# Pyright cannot model this module's legacy SQLAlchemy Column attributes and
+# callback-style background task manager. Remove after their typing migrations.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 Anthropic Messages API compatible endpoint.
 """
@@ -402,7 +405,7 @@ async def stream_anthropic_messages(
         total_output = accumulated_usage.get("output_tokens", 0)
         total_cache_creation = accumulated_usage.get("cache_creation_input_tokens", 0)
         total_cache_read = accumulated_usage.get("cache_read_input_tokens", 0)
-        if not (total_input or total_output):
+        if not any((total_input, total_output, total_cache_creation, total_cache_read)):
             # Nothing consumed (e.g. failure before message_start) → skip.
             return
         usage_recorded = True
@@ -1021,6 +1024,7 @@ async def _handle_mantle_via_anthropic(
 
     from app.services.mantle_client import (
         MantleClient,
+        extract_cache_write_tokens,
         extract_cached_tokens,
     )
 
@@ -1068,9 +1072,10 @@ async def _handle_mantle_via_anthropic(
         content_text = msg.get("content", "") or ""
 
     cached_tokens = extract_cached_tokens(response_data)
+    cache_write_tokens = extract_cache_write_tokens(response_data)
     prompt_tokens = usage.get("prompt_tokens", 0)
     completion_tokens = usage.get("completion_tokens", 0)
-    non_cached_prompt = max(0, prompt_tokens - cached_tokens)
+    non_cached_prompt = max(0, prompt_tokens - cached_tokens - cache_write_tokens)
 
     background_tasks.create_task(
         record_usage(
@@ -1080,6 +1085,7 @@ async def _handle_mantle_via_anthropic(
             request_id=request_id,
             prompt_tokens=non_cached_prompt,
             completion_tokens=completion_tokens,
+            cache_creation_input_tokens=cache_write_tokens,
             cache_read_input_tokens=cached_tokens,
         ),
         task_name=f"record_usage_{request_id}",
@@ -1102,6 +1108,8 @@ async def _handle_mantle_via_anthropic(
         "usage": {
             "input_tokens": non_cached_prompt,
             "output_tokens": completion_tokens,
+            "cache_creation_input_tokens": cache_write_tokens,
+            "cache_read_input_tokens": cached_tokens,
         },
     }
 
@@ -1123,12 +1131,14 @@ async def _stream_mantle_as_anthropic(
 
     from app.services.mantle_client import (
         MantleClient,
+        extract_cache_write_tokens_from_chunk,
         extract_cached_tokens_from_chunk,
     )
 
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_cached_tokens = 0
+    total_cache_write_tokens = 0
     block_started = False
 
     try:
@@ -1160,6 +1170,9 @@ async def _stream_mantle_as_anthropic(
                     cached = extract_cached_tokens_from_chunk(data)
                     if cached is not None:
                         total_cached_tokens = cached
+                    cache_write = extract_cache_write_tokens_from_chunk(data)
+                    if cache_write is not None:
+                        total_cache_write_tokens = cache_write
 
                 # Extract text delta
                 choices = data.get("choices", [])
@@ -1213,8 +1226,11 @@ async def _stream_mantle_as_anthropic(
             f"data: {_json.dumps({'type': 'error', 'error': {'type': 'server_error', 'message': 'Internal server error'}})}\n\n"
         )
 
-    # Record usage
-    non_cached_prompt = max(0, total_prompt_tokens - total_cached_tokens)
+    # Record each input category exactly once.
+    non_cached_prompt = max(
+        0,
+        total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
+    )
     background_tasks.create_task(
         record_usage(
             token_id=token.id,
@@ -1223,6 +1239,7 @@ async def _stream_mantle_as_anthropic(
             request_id=request_id,
             prompt_tokens=non_cached_prompt,
             completion_tokens=total_completion_tokens,
+            cache_creation_input_tokens=total_cache_write_tokens,
             cache_read_input_tokens=total_cached_tokens,
         ),
         task_name=f"record_usage_{request_id}",

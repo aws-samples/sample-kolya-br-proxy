@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false, reportReturnType=false
 """
 Pricing updater service - fetches latest pricing from AWS.
 
@@ -26,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.config import get_settings
 from app.models.model_pricing import ModelPricing
+from app.services.pricing import OFFICIAL_PROFILE_PRICING
 from app.services.mantle_models import (
     get_mantle_model_regions,
     mantle_pricing_name_to_id,
@@ -59,6 +63,7 @@ class PricingUpdater:
             "failed": 0,
             "api_count": 0,
             "scraper_count": 0,
+            "model_card_count": 0,
             "sources": [],
             "region": settings.AWS_REGION,
         }
@@ -145,7 +150,22 @@ class PricingUpdater:
         except Exception as e:
             logger.warning(f"Failed to back-fill pricing from us-east-1: {e}")
 
-        # 4. Clean up stale cross-region pricing entries
+        # 4. Fill exact inference profiles that AWS documents in model cards
+        #    but has not yet published in the public Price List catalog.
+        try:
+            model_card_count = await self.ensure_official_profile_pricing()
+            if model_card_count:
+                stats["model_card_count"] = model_card_count
+                stats["updated"] += model_card_count
+                stats["sources"].append("aws-model-card")
+                logger.info(
+                    f"Added {model_card_count} pricing records from AWS model cards"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to apply AWS model-card pricing: {e}")
+            stats["failed"] += 1
+
+        # 5. Clean up stale cross-region pricing entries
         await self.cleanup_stale_cross_region_entries()
 
         # Set source summary
@@ -161,6 +181,46 @@ class PricingUpdater:
         )
 
         return stats
+
+    async def ensure_official_profile_pricing(self) -> int:
+        """Insert source-backed prices for locally available exact profiles.
+
+        AWS model cards can publish a model before the public Price List bulk
+        catalog contains it. Existing rows always win so a newer API-derived
+        rate is never overwritten by this fallback.
+        """
+        settings = get_settings()
+        from app.services.bedrock import BedrockClient
+
+        profile_ids = BedrockClient.get_instance()._profile_cache._local_profile_ids
+        available_ids = set(OFFICIAL_PROFILE_PRICING) & set(profile_ids)
+        if not available_ids:
+            return 0
+
+        result = await self.db.execute(
+            select(ModelPricing.model_id).where(
+                ModelPricing.region == settings.AWS_REGION,
+                ModelPricing.model_id.in_(available_ids),
+            )
+        )
+        existing_ids = {row[0] for row in result.fetchall()}
+
+        pricing_data = []
+        for model_id in sorted(available_ids - existing_ids):
+            entry = OFFICIAL_PROFILE_PRICING[model_id]
+            pricing_data.append(
+                {
+                    "model_id": model_id,
+                    "region": settings.AWS_REGION,
+                    "input_price_per_token": entry.short.input,
+                    "output_price_per_token": entry.short.output,
+                    "cached_input_price_per_token": entry.short.cache_read,
+                }
+            )
+
+        if not pricing_data:
+            return 0
+        return await self._save_pricing_data(pricing_data, "aws-model-card")
 
     async def cleanup_stale_cross_region_entries(self) -> int:
         """Remove cross-region pricing entries not in the profile cache.
@@ -445,6 +505,9 @@ class PricingUpdater:
             standard_products = {}
             # Cross-Region: {model_name: {"Text Input Tokens": sku, "Text Output Tokens": sku}}
             cross_region_products = {}
+            # Newer Bedrock Marketplace products use service_tier/tokenType
+            # instead of feature/inferenceType. Keyed by (model, profile scope).
+            modern_products = {}
 
             for product_id, product in products.items():
                 attrs = product.get("attributes", {})
@@ -456,8 +519,28 @@ class PricingUpdater:
                 model = attrs.get("model")
                 inference_type = attrs.get("inferenceType")
                 usagetype = attrs.get("usagetype", "")
+                service_tier = attrs.get("service_tier", "")
+                token_type = attrs.get("tokenType")
 
-                if not model or not inference_type:
+                if not model:
+                    continue
+
+                # Marketplace-backed Bedrock models (for example Grok 4.6)
+                # expose Standard dimensions through these newer attributes.
+                if service_tier in ("standard", "global-standard") and token_type:
+                    canonical_type = {
+                        "input_tokens_mantle": "input",
+                        "output_tokens_mantle": "output",
+                        "Cache Read Input Tokens": "cache_read",
+                    }.get(token_type)
+                    if canonical_type:
+                        scope = "global" if service_tier == "global-standard" else "geo"
+                        modern_products.setdefault((model, scope), {})[
+                            canonical_type
+                        ] = product_id
+                    continue
+
+                if not inference_type:
                     continue
 
                 if "cross-region-global" in usagetype:
@@ -499,8 +582,8 @@ class PricingUpdater:
                         unmatched_standard.append(model)
 
             # Extract Cross-Region pricing
-            # Store with geographic prefix only (e.g., "us.amazon.nova-pro-v1:0")
-            # "global." is NOT a valid Bedrock identifier and is not used
+            # Legacy dimensions do not identify Global versus Geo explicitly,
+            # so retain their established geographic-prefix behavior.
             from app.services.bedrock import BedrockClient
 
             geo_prefix = BedrockClient.get_geo_prefix(target_region)
@@ -529,6 +612,41 @@ class PricingUpdater:
                     else:
                         unmatched_cross_region.append(model)
 
+            # Extract modern Standard-tier profile pricing. Unlike the legacy
+            # attributes above, service_tier explicitly distinguishes Global
+            # CRIS from Geo CRIS, so preserve that distinction in the model ID.
+            unmatched_modern = []
+            for (model, scope), type_map in modern_products.items():
+                input_id = type_map.get("input")
+                output_id = type_map.get("output")
+                if not input_id or not output_id:
+                    continue
+
+                input_price = self._extract_price_from_terms(terms, input_id)
+                output_price = self._extract_price_from_terms(terms, output_id)
+                cache_read_id = type_map.get("cache_read")
+                cache_read_price = (
+                    self._extract_price_from_terms(terms, cache_read_id)
+                    if cache_read_id
+                    else None
+                )
+
+                if input_price is not None and output_price is not None:
+                    base_model_id = self._map_model_name_to_id(model)
+                    if base_model_id:
+                        prefix = "global" if scope == "global" else geo_prefix
+                        row = {
+                            "model_id": f"{prefix}.{base_model_id}",
+                            "region": target_region,
+                            "input_price_per_token": input_price,
+                            "output_price_per_token": output_price,
+                        }
+                        if cache_read_price is not None:
+                            row["cached_input_price_per_token"] = cache_read_price
+                        pricing_data.append(row)
+                    else:
+                        unmatched_modern.append(model)
+
             if unmatched_standard:
                 logger.warning(
                     f"Unmatched standard model names from API (no mapping): {unmatched_standard}"
@@ -536,6 +654,10 @@ class PricingUpdater:
             if unmatched_cross_region:
                 logger.warning(
                     f"Unmatched cross-region model names from API (no mapping): {unmatched_cross_region}"
+                )
+            if unmatched_modern:
+                logger.warning(
+                    f"Unmatched modern model names from API (no mapping): {unmatched_modern}"
                 )
 
         standard_count = len(
@@ -1197,7 +1319,16 @@ class PricingUpdater:
             "NVIDIA Nemotron Nano 2": "nvidia.nemotron-nano-12b-v2",
             "NVIDIA Nemotron Nano 2 VL": "nvidia.nemotron-nano-9b-v2",
             "Nemotron Nano 3 30B": "nvidia.nemotron-nano-3-30b",
-            # ── OpenAI (gpt-oss on Bedrock) ───────────────────────
+            # ── OpenAI / xAI inference profiles ───────────────────
+            # New Marketplace-backed Price List rows use the model ID itself
+            # in the `model` attribute instead of the Bedrock display name.
+            "openai.gpt-6-sol": "openai.gpt-6-sol",
+            "openai.gpt-6-astra": "openai.gpt-6-astra",
+            "xai.grok-4.6": "xai.grok-4.6",
+            "GPT-6 Sol": "openai.gpt-6-sol",
+            "GPT-6 Astra": "openai.gpt-6-astra",
+            "Grok 4.6": "xai.grok-4.6",
+            # OpenAI gpt-oss on Bedrock
             "gpt-oss-20b": "openai.gpt-oss-20b-1:0",
             "gpt-oss-120b": "openai.gpt-oss-120b-1:0",
             "GPT OSS Safeguard 20B": "openai.gpt-oss-20b-1:0",
@@ -1224,7 +1355,7 @@ class PricingUpdater:
         return model_mapping.get(model_name)
 
     async def get_pricing(
-        self, model_id: str, region: str = None
+        self, model_id: str, region: str | None = None
     ) -> Optional[Tuple[Decimal, Decimal]]:
         """
         Get pricing for a model from database.
@@ -1256,6 +1387,16 @@ class PricingUpdater:
 
         if pricing:
             return (pricing.input_price_per_token, pricing.output_price_per_token)
+
+        # These model-card entries have profile-specific Global/Geo rates.
+        # Falling back to the base model or another profile scope would return
+        # a valid-looking but incorrect price, so keep the lookup fail-closed.
+        if model_id in OFFICIAL_PROFILE_PRICING:
+            logger.warning(
+                f"Exact profile pricing not found for {model_id} in {region}; "
+                "refusing cross-scope fallback"
+            )
+            return None
 
         # If model has a cross-region prefix, try fallbacks:
         # 1. Strip prefix → try base model ID (e.g. "anthropic.claude-opus-4-6-v1")

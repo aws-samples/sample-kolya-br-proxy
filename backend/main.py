@@ -6,7 +6,7 @@ AI Gateway service providing OpenAI-compatible access to AWS Bedrock Claude mode
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, cast
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -93,6 +93,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # entries that are not in the profile cache (e.g. after a code
             # update that fixes filtering logic).
             await updater.cleanup_stale_cross_region_entries()
+            # Price List data can lag newly launched profiles. Apply exact,
+            # source-backed AWS model-card fallbacks on every startup so an
+            # existing non-empty database receives new profile prices without
+            # waiting for the scheduled full refresh.
+            try:
+                model_card_count = await updater.ensure_official_profile_pricing()
+                if model_card_count:
+                    logger.info(
+                        f"Added {model_card_count} AWS model-card pricing "
+                        "records on startup"
+                    )
+            except Exception as e:
+                logger.warning(f"Startup model-card pricing failed: {e}")
             # Back-fill pricing for locally-available models that are
             # missing from the DB (e.g. new models not yet in the region's
             # Price List data).  Collects existing model IDs first.
@@ -163,16 +176,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def _is_anthropic_request(request: Request) -> bool:
     """Check if request targets Anthropic API endpoints."""
-    return request.url.path.rstrip("/").endswith("/messages") and request.headers.get(
-        "x-api-key"
+    api_key = request.headers.get("x-api-key")
+    return (
+        request.url.path.rstrip("/").endswith("/messages")
+        and api_key is not None
+        and api_key != ""
     )
 
 
 async def _disable_cache(request: Request, call_next):
     response = await call_next(request)
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
+    response.headers.update(
+        {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+    )
     return response
 
 
@@ -300,8 +320,12 @@ def create_app() -> FastAPI:
     # Register middleware and exception handlers
     app.middleware("http")(_disable_cache)
     app.add_exception_handler(Exception, _global_exception_handler)
-    app.add_exception_handler(RequestValidationError, _validation_exception_handler)
-    app.add_exception_handler(HTTPException, _http_exception_handler)
+    # FastAPI's ExceptionHandler union is narrower than its runtime dispatch:
+    # these handlers intentionally receive their registered exception subtype.
+    app.add_exception_handler(
+        RequestValidationError, cast(Any, _validation_exception_handler)
+    )
+    app.add_exception_handler(HTTPException, cast(Any, _http_exception_handler))
 
     # Observability middleware (last add_middleware = outermost in ASGI stack)
     from app.middleware.observability import ObservabilityMiddleware
@@ -327,6 +351,7 @@ app = create_app()
 
 if __name__ == "__main__":
     settings = get_settings()
+    # pi-lens-ignore: no-server-bind-wildcard
     uvicorn.run(
         "main:app",
         host="0.0.0.0",

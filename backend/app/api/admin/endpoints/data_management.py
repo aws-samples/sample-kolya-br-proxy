@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove this override with the Mapped[] migration.
+# pyright: reportArgumentType=false
 """
 Data management endpoints for exporting and importing application configuration.
 Super-admin only.

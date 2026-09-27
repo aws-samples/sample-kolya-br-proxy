@@ -7,6 +7,7 @@ streaming event format conversion.
 """
 
 import logging
+from typing import Any
 
 from app.schemas.anthropic import (
     AnthropicMessagesRequest,
@@ -390,7 +391,7 @@ class AnthropicResponseTranslator:
             results.append(f"event: ping\ndata: {json.dumps({'type': 'ping'})}\n\n")
 
         elif event.type == "content_block_start":
-            content_block = {}
+            content_block: dict[str, Any] = {}
             if event.content_block:
                 if isinstance(event.content_block, dict):
                     content_block = event.content_block
@@ -455,9 +456,24 @@ class AnthropicResponseTranslator:
             results.append(f"event: content_block_stop\ndata: {json.dumps(data)}\n\n")
 
         elif event.type == "message_delta":
-            # Collect output usage
+            # Anthropic InvokeModel reports output usage here; ConverseStream's
+            # trailing metadata reports both input and output usage here.
             if event.usage:
-                accumulated_usage["output_tokens"] = event.usage.output_tokens or 0
+                accumulated_usage["input_tokens"] = (
+                    event.usage.input_tokens or accumulated_usage.get("input_tokens", 0)
+                )
+                accumulated_usage["output_tokens"] = (
+                    event.usage.output_tokens
+                    or accumulated_usage.get("output_tokens", 0)
+                )
+                accumulated_usage["cache_creation_input_tokens"] = (
+                    event.usage.cache_creation_input_tokens
+                    or accumulated_usage.get("cache_creation_input_tokens", 0)
+                )
+                accumulated_usage["cache_read_input_tokens"] = (
+                    event.usage.cache_read_input_tokens
+                    or accumulated_usage.get("cache_read_input_tokens", 0)
+                )
 
             stop_reason = event.delta.get("stop_reason") if event.delta else None
 
