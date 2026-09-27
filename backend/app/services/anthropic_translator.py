@@ -460,8 +460,7 @@ class AnthropicResponseTranslator:
             # trailing metadata reports both input and output usage here.
             if event.usage:
                 accumulated_usage["input_tokens"] = (
-                    event.usage.input_tokens
-                    or accumulated_usage.get("input_tokens", 0)
+                    event.usage.input_tokens or accumulated_usage.get("input_tokens", 0)
                 )
                 accumulated_usage["output_tokens"] = (
                     event.usage.output_tokens

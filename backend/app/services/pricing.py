@@ -235,9 +235,7 @@ class ModelPricing:
                         + cache_creation_input_tokens
                         + cache_read_input_tokens
                     )
-                    rates = official_pricing.rates_for_input_tokens(
-                        total_input_tokens
-                    )
+                    rates = official_pricing.rates_for_input_tokens(total_input_tokens)
                     if cache_creation_input_tokens and rates.cache_write is None:
                         raise ValueError(
                             f"AWS does not publish a cache-write price for {model}"
@@ -269,8 +267,7 @@ class ModelPricing:
                     cache_read_price = (
                         cached_price
                         if cached_price is not None
-                        else input_price_per_token
-                        * GEMINI_CACHE_READ_FALLBACK_RATIO
+                        else input_price_per_token * GEMINI_CACHE_READ_FALLBACK_RATIO
                     )
                     cache_read_cost = (
                         Decimal(cache_read_input_tokens) * cache_read_price
@@ -302,9 +299,7 @@ class ModelPricing:
             "Please run pricing update task or contact administrator."
         )
 
-    async def _get_cached_input_price(
-        self, model: str, region: str
-    ) -> Decimal | None:
+    async def _get_cached_input_price(self, model: str, region: str) -> Decimal | None:
         """Read an exact model/region cached-input rate when one is stored."""
         if not self.db:
             return None

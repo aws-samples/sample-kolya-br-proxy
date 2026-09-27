@@ -236,9 +236,7 @@ class TestPricingUpdater:
             "api",
         )
 
-        pricing = await updater.get_pricing(
-            "global.openai.gpt-6-sol", "us-west-2"
-        )
+        pricing = await updater.get_pricing("global.openai.gpt-6-sol", "us-west-2")
 
         assert pricing is None
 
@@ -352,9 +350,7 @@ class TestPricingUpdater:
 
         response = MagicMock()
         response.raise_for_status = MagicMock()
-        response.json = MagicMock(
-            return_value={"products": products, "terms": terms}
-        )
+        response.json = MagicMock(return_value={"products": products, "terms": terms})
 
         with (
             patch(

@@ -534,11 +534,7 @@ class PricingUpdater:
                         "Cache Read Input Tokens": "cache_read",
                     }.get(token_type)
                     if canonical_type:
-                        scope = (
-                            "global"
-                            if service_tier == "global-standard"
-                            else "geo"
-                        )
+                        scope = "global" if service_tier == "global-standard" else "geo"
                         modern_products.setdefault((model, scope), {})[
                             canonical_type
                         ] = product_id

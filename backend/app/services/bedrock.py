@@ -1498,9 +1498,7 @@ class BedrockClient:
                     cache_creation_input_tokens=usage_data.get(
                         "cacheWriteInputTokens", 0
                     ),
-                    cache_read_input_tokens=usage_data.get(
-                        "cacheReadInputTokens", 0
-                    ),
+                    cache_read_input_tokens=usage_data.get("cacheReadInputTokens", 0),
                 ),
             )
 

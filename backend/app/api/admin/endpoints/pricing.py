@@ -72,8 +72,7 @@ async def get_model_pricing(
         raise HTTPException(
             status_code=404,
             detail=(
-                f"Pricing not found for model: {model_id}, "
-                f"region: {effective_region}"
+                f"Pricing not found for model: {model_id}, region: {effective_region}"
             ),
         )
 

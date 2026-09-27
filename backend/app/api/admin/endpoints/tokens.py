@@ -284,9 +284,7 @@ def build_token_response(
         description=token.description,
         key_prefix=_extract_key_prefix(token),
         expires_at=token.expires_at,
-        quota_usd=(
-            str(token.quota_usd) if token.quota_usd is not None else None
-        ),
+        quota_usd=(str(token.quota_usd) if token.quota_usd is not None else None),
         monthly_quota_usd=(
             str(effective_monthly) if effective_monthly is not None else None
         ),
@@ -298,9 +296,7 @@ def build_token_response(
         ),
         daily_used_usd=str(daily_used_usd) if daily_used_usd is not None else None,
         remaining_quota=(
-            str(token.remaining_quota)
-            if token.remaining_quota is not None
-            else None
+            str(token.remaining_quota) if token.remaining_quota is not None else None
         ),
         allowed_ips=token.allowed_ips or [],
         notify_emails=token.notify_emails or [],

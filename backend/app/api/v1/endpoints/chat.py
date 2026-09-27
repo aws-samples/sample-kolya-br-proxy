@@ -722,8 +722,8 @@ async def stream_mantle_completion(
                             cached = _mantle_extract_cached_tokens_from_chunk(data)
                             if cached is not None:
                                 total_cached_tokens = cached
-                            cache_write = (
-                                _mantle_extract_cache_write_tokens_from_chunk(data)
+                            cache_write = _mantle_extract_cache_write_tokens_from_chunk(
+                                data
                             )
                             if cache_write is not None:
                                 total_cache_write_tokens = cache_write
@@ -1001,9 +1001,7 @@ async def stream_chat_completion(
                 # sends both input and output tokens in its trailing metadata,
                 # which the Bedrock adapter also maps to message_delta.
                 if event.usage:
-                    total_input_tokens = (
-                        event.usage.input_tokens or total_input_tokens
-                    )
+                    total_input_tokens = event.usage.input_tokens or total_input_tokens
                     total_output_tokens = (
                         event.usage.output_tokens or total_output_tokens
                     )

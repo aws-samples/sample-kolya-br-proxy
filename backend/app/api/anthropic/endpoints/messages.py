@@ -405,9 +405,7 @@ async def stream_anthropic_messages(
         total_output = accumulated_usage.get("output_tokens", 0)
         total_cache_creation = accumulated_usage.get("cache_creation_input_tokens", 0)
         total_cache_read = accumulated_usage.get("cache_read_input_tokens", 0)
-        if not any(
-            (total_input, total_output, total_cache_creation, total_cache_read)
-        ):
+        if not any((total_input, total_output, total_cache_creation, total_cache_read)):
             # Nothing consumed (e.g. failure before message_start) → skip.
             return
         usage_recorded = True
