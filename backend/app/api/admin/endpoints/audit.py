@@ -5,12 +5,10 @@
 
 import time
 from datetime import datetime, timedelta
-from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,7 +81,7 @@ class AuditLogResponse(BaseModel):
 class PaginatedAuditLogsResponse(BaseModel):
     """Paginated audit logs response."""
 
-    items: List[AuditLogResponse]
+    items: list[AuditLogResponse]
     total: int
     page: int
     page_size: int
@@ -197,7 +195,7 @@ class ActivityItem(BaseModel):
 class PaginatedActivityResponse(BaseModel):
     """Paginated activity feed response."""
 
-    items: List[ActivityItem]
+    items: list[ActivityItem]
     total: int
     page: int
     page_size: int

@@ -22,15 +22,21 @@ export interface LoginResponse {
   user: User;
 }
 
+export const ACCESS_CREDENTIAL_STORAGE_KEY = 'access_token';
+
+function readStoredCredential(): string | null {
+  return localStorage.getItem(ACCESS_CREDENTIAL_STORAGE_KEY);
+}
+
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     user: null as User | null,
-    accessToken: localStorage.getItem('access_token') || null,
+    accessToken: null as string | null,
     isAuthenticated: false,
   }),
 
   getters: {
-    isLoggedIn: (state) => state.isAuthenticated && !!state.accessToken,
+    isLoggedIn: (state) => state.isAuthenticated && Boolean(state.accessToken),
     currentUser: (state) => state.user,
     isAdmin: (state) => state.user?.is_admin || false,
     isSuperAdmin: (state) => state.user?.role === 'super_admin',
@@ -38,8 +44,7 @@ export const useAuthStore = defineStore('auth', {
     hasPermission: (state) => (permission: string) => {
       if (!state.user) return false;
       if (state.user.role === 'super_admin') return true;
-      if (!state.user.permissions || Object.keys(state.user.permissions).length === 0)
-        return true;
+      if (!state.user.permissions || Object.keys(state.user.permissions).length === 0) return true;
       const val = state.user.permissions[permission];
       if (val === 'all' || val === true) return true;
       if (Array.isArray(val) && val.length > 0) return true;
@@ -77,7 +82,7 @@ export const useAuthStore = defineStore('auth', {
               message: 'Session expired, please login again',
               position: 'top',
             });
-            void this.logout(false);
+            void this.logoutSilently();
             return;
           }
         }
@@ -89,19 +94,15 @@ export const useAuthStore = defineStore('auth', {
     async refreshAccessToken() {
       try {
         // Cookie is sent automatically via withCredentials
-        const response = await api.post<LoginResponse>(
-          '/admin/auth/refresh',
-          {},
-          {
-            // Skip interceptor to prevent infinite loop
-            _skipAuthRefresh: true,
-          } as Record<string, unknown>
-        );
+        const response = await api.post<LoginResponse>('/admin/auth/refresh', {}, {
+          // Skip interceptor to prevent infinite loop
+          _skipAuthRefresh: true,
+        } as Record<string, unknown>);
 
         const { access_token } = response.data;
 
         this.accessToken = access_token;
-        localStorage.setItem('access_token', access_token);
+        localStorage.setItem(ACCESS_CREDENTIAL_STORAGE_KEY, access_token);
         api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 
         return true;
@@ -111,12 +112,12 @@ export const useAuthStore = defineStore('auth', {
           message: 'Session expired, please login again',
           position: 'top',
         });
-        void this.logout(false);
+        void this.logoutSilently();
         return false;
       }
     },
 
-    async logout(showNotification = true) {
+    async revokeAndClearSession() {
       // Revoke refresh token on server (clears cookie server-side)
       try {
         await api.post('/admin/auth/revoke', {});
@@ -128,25 +129,39 @@ export const useAuthStore = defineStore('auth', {
       this.accessToken = null;
       this.isAuthenticated = false;
 
-      localStorage.removeItem('access_token');
+      localStorage.removeItem(ACCESS_CREDENTIAL_STORAGE_KEY);
 
       delete api.defaults.headers.common['Authorization'];
+    },
 
-      if (showNotification) {
-        Notify.create({
-          type: 'info',
-          message: 'Logged out',
-          position: 'top',
-        });
-      }
-
-      // Redirect to login page using window.location to ensure clean state
+    redirectToLogin() {
+      // Use a full navigation to ensure no authenticated state survives.
       if (typeof window !== 'undefined') {
         window.location.assign('/login');
       }
     },
 
+    async logout() {
+      await this.revokeAndClearSession();
+      Notify.create({
+        type: 'info',
+        message: 'Logged out',
+        position: 'top',
+      });
+      this.redirectToLogin();
+    },
+
+    async logoutSilently() {
+      await this.revokeAndClearSession();
+      this.redirectToLogin();
+    },
+
     async initializeAuth() {
+      const storedCredential = readStoredCredential();
+      if (!this.accessToken && storedCredential) {
+        this.accessToken = storedCredential;
+      }
+
       if (this.accessToken) {
         api.defaults.headers.common['Authorization'] = `Bearer ${this.accessToken}`;
         await this.fetchCurrentUser();

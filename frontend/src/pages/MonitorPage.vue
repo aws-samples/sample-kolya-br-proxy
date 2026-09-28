@@ -755,7 +755,7 @@ function formatCacheAge(seconds: number): string {
 }
 
 async function refreshPricingTable() {
-  await monitorStore.fetchPricingTable(true);
+  await monitorStore.fetchPricingTable({ forceRefresh: true });
 }
 
 const toggleToken = (tokenId: string) => {

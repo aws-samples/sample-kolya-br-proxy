@@ -5,8 +5,8 @@ import {
   createWebHashHistory,
   createWebHistory,
 } from 'vue-router';
-import { useAuthStore } from 'src/stores/auth';
-import routes from './routes';
+import { ACCESS_CREDENTIAL_STORAGE_KEY, useAuthStore } from 'src/stores/auth';
+import routes from './routes'; // pi-lens-ignore: find-import-file-without-extension
 
 /*
  * If not building with SSR mode, you can
@@ -18,11 +18,12 @@ import routes from './routes';
  */
 
 export default defineRouter(function (/* { store, ssrContext } */) {
-  const createHistory = process.env.SERVER
-    ? createMemoryHistory
-    : process.env.VUE_ROUTER_MODE === 'history'
-      ? createWebHistory
-      : createWebHashHistory;
+  let createHistory = createWebHashHistory;
+  if (process.env.SERVER) {
+    createHistory = createMemoryHistory;
+  } else if (process.env.VUE_ROUTER_MODE === 'history') {
+    createHistory = createWebHistory;
+  }
 
   const Router = createRouter({
     scrollBehavior: () => ({ left: 0, top: 0 }),
@@ -38,11 +39,11 @@ export default defineRouter(function (/* { store, ssrContext } */) {
   Router.beforeEach((to, from, next) => {
     const requiresAuth = to.matched.some((record) => record.meta.requiresAuth);
     const requiresSuperAdmin = to.matched.some((record) => record.meta.requiresSuperAdmin);
-    const accessToken = localStorage.getItem('access_token');
+    const storedCredential = localStorage.getItem(ACCESS_CREDENTIAL_STORAGE_KEY);
 
-    if (requiresAuth && !accessToken) {
+    if (requiresAuth && !storedCredential) {
       next('/login');
-    } else if (!requiresAuth && accessToken && to.path === '/login') {
+    } else if (!requiresAuth && storedCredential && to.path === '/login') {
       next('/');
     } else if (requiresSuperAdmin) {
       const authStore = useAuthStore();

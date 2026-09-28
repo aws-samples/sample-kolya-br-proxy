@@ -135,10 +135,7 @@ export const useMonitorStore = defineStore('monitor', {
         if (this.dateRange.end) {
           params.end_date = this.dateRange.end;
         }
-        const response = await api.get<TokenSummary[]>(
-          '/admin/usage/token-summary',
-          { params },
-        );
+        const response = await api.get<TokenSummary[]>('/admin/usage/token-summary', { params });
         this.tokenSummary = response.data || [];
       } catch (error: unknown) {
         if (error && typeof error === 'object' && 'response' in error) {
@@ -215,17 +212,16 @@ export const useMonitorStore = defineStore('monitor', {
       }
     },
 
-    async fetchPricingTable(forceRefresh = false) {
+    async fetchPricingTable(options: { forceRefresh?: boolean } = {}) {
       this.loadingPricing = true;
       try {
         const params: Record<string, string> = {};
-        if (forceRefresh) {
+        if (options.forceRefresh) {
           params.force_refresh = 'true';
         }
-        const response = await api.get<PricingTableResponse>(
-          '/admin/monitor/pricing-table',
-          { params },
-        );
+        const response = await api.get<PricingTableResponse>('/admin/monitor/pricing-table', {
+          params,
+        });
         this.pricingTable = response.data;
       } catch (error: unknown) {
         if (error && typeof error === 'object' && 'response' in error) {

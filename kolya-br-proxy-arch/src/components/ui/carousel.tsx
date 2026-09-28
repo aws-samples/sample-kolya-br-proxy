@@ -32,7 +32,7 @@ type CarouselContextProps = {
 
 const CarouselContext = React.createContext<CarouselContextProps | null>(null)
 
-function useCarousel() {
+function useCarousel() { // pi-lens-ignore: unnecessary-react-hook
   const context = React.useContext(CarouselContext)
 
   if (!context) {
