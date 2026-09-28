@@ -6,7 +6,6 @@ Authentication endpoints for user registration and login.
 """
 
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
@@ -78,21 +77,32 @@ class LoginResponse(BaseModel):
     """Login response with JWT tokens."""
 
     access_token: str
-    refresh_token: Optional[str] = None
-    token_type: str = "bearer"
+    refresh_token: str | None = None
+    token_type: str = "bearer"  # noqa: S105 - OAuth scheme, not a credential
     user: UserResponse
 
 
 class RefreshTokenRequest(BaseModel):
     """Refresh token request (body is optional, cookie is preferred)."""
 
-    refresh_token: Optional[str] = None
+    refresh_token: str | None = None
 
 
 class RevokeTokenRequest(BaseModel):
     """Revoke refresh token request (body is optional, cookie is preferred)."""
 
-    refresh_token: Optional[str] = None
+    refresh_token: str | None = None
+
+
+def _presented_refresh_credential(
+    http_request: Request,
+    request_body: RefreshTokenRequest | RevokeTokenRequest | None,
+) -> str | None:
+    """Read the presented refresh credential, preferring the HttpOnly cookie."""
+    cookie_credential = get_refresh_token_from_cookie(http_request)
+    if cookie_credential:
+        return cookie_credential
+    return request_body.refresh_token if request_body else None
 
 
 @router.post("/refresh", response_model=LoginResponse)
@@ -114,11 +124,9 @@ async def refresh_access_token(
     user_agent = http_request.headers.get("user-agent")
 
     # Read refresh token: cookie first, then body (backward compatibility)
-    refresh_token = get_refresh_token_from_cookie(http_request)
-    if not refresh_token and request_body:
-        refresh_token = request_body.refresh_token
+    presented_credential = _presented_refresh_credential(http_request, request_body)
 
-    if not refresh_token:
+    if not presented_credential:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing refresh token",
@@ -126,7 +134,7 @@ async def refresh_access_token(
 
     try:
         # Verify token type from JWT
-        payload = decode_jwt_token(refresh_token)
+        payload = decode_jwt_token(presented_credential)
 
         if payload.get("type") != "refresh":
             await audit_log_service.log_token_refresh_failed(
@@ -145,7 +153,7 @@ async def refresh_access_token(
             user,
             error,
         ) = await refresh_token_service.validate_and_rotate_token(
-            jwt_token=refresh_token,
+            jwt_token=presented_credential,
             ip_address=ip_address,
             user_agent=user_agent,
         )
@@ -179,7 +187,7 @@ async def refresh_access_token(
 
         return LoginResponse(
             access_token=access_token,
-            token_type="bearer",
+            token_type="bearer",  # noqa: S106 - OAuth scheme, not a credential
             user=UserResponse.from_user(user),
         )
 
@@ -200,7 +208,7 @@ async def refresh_access_token(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
-        )
+        ) from e
 
 
 @router.post("/revoke")
@@ -219,18 +227,16 @@ async def revoke_refresh_token(
     from app.core.security import hash_refresh_token
 
     # Read refresh token: cookie first, then body (backward compatibility)
-    refresh_token = get_refresh_token_from_cookie(http_request)
-    if not refresh_token and request_body:
-        refresh_token = request_body.refresh_token
+    presented_credential = _presented_refresh_credential(http_request, request_body)
 
-    if not refresh_token:
+    if not presented_credential:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing refresh token",
         )
 
     try:
-        token_hash = hash_refresh_token(refresh_token)
+        token_hash = hash_refresh_token(presented_credential)
         revoked = await refresh_token_service.revoke_token(
             token_hash, reason="User requested revocation"
         )
@@ -248,11 +254,11 @@ async def revoke_refresh_token(
 
     except HTTPException:
         raise
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to revoke refresh token",
-        )
+        ) from e
 
 
 @router.post("/revoke-all")
@@ -645,7 +651,7 @@ async def microsoft_callback(
 
     return LoginResponse(
         access_token=access_token_jwt,
-        token_type="bearer",
+        token_type="bearer",  # noqa: S106 - OAuth scheme, not a credential
         user=UserResponse.from_user(user),
     )
 
@@ -890,6 +896,6 @@ async def cognito_callback(
 
     return LoginResponse(
         access_token=access_token_jwt,
-        token_type="bearer",
+        token_type="bearer",  # noqa: S106 - OAuth scheme, not a credential
         user=UserResponse.from_user(user),
     )

@@ -5,7 +5,6 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,31 +32,31 @@ class CreateAlertRuleRequest(BaseModel):
     alert_type: str
     rule_key: str
     threshold_value: Decimal
-    token_id: Optional[str] = None
-    team_id: Optional[str] = None
+    token_id: str | None = None
+    team_id: str | None = None
     cooldown_hours: int = 24
-    notify_email: Optional[str] = None
+    notify_email: str | None = None
     notify_in_app: bool = True
 
 
 class UpdateAlertRuleRequest(BaseModel):
-    threshold_value: Optional[Decimal] = None
-    cooldown_hours: Optional[int] = None
-    is_active: Optional[bool] = None
-    notify_email: Optional[str] = None
-    notify_in_app: Optional[bool] = None
+    threshold_value: Decimal | None = None
+    cooldown_hours: int | None = None
+    is_active: bool | None = None
+    notify_email: str | None = None
+    notify_in_app: bool | None = None
 
 
 class AlertRuleResponse(BaseModel):
     id: str
     user_id: str
-    token_id: Optional[str] = None
-    team_id: Optional[str] = None
+    token_id: str | None = None
+    team_id: str | None = None
     alert_type: str
     rule_key: str
     threshold_value: str
     cooldown_hours: int
-    notify_email: Optional[str] = None
+    notify_email: str | None = None
     notify_in_app: bool
     is_active: bool
     created_at: datetime
@@ -70,16 +69,16 @@ class AlertRuleResponse(BaseModel):
 class AlertNotificationResponse(BaseModel):
     id: str
     user_id: str
-    alert_rule_id: Optional[str] = None
+    alert_rule_id: str | None = None
     rule_key: str
     alert_type: str
     scope_type: str
-    scope_id: Optional[str] = None
-    scope_name: Optional[str] = None
+    scope_id: str | None = None
+    scope_name: str | None = None
     current_value: str
     threshold_value: str
     message: str
-    channels_used: Optional[str] = None
+    channels_used: str | None = None
     is_read: bool
     created_at: datetime
 
@@ -161,7 +160,9 @@ async def create_alert_rule(
             notify_in_app=request.notify_in_app,
         )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
+        ) from e
     await audit_service.log(
         action=AuditAction.ALERT_RULE_CREATED,
         user=current_user,
@@ -176,10 +177,10 @@ async def create_alert_rule(
     return _rule_to_response(rule)
 
 
-@router.get("/rules", response_model=List[AlertRuleResponse])
+@router.get("/rules", response_model=list[AlertRuleResponse])
 async def list_alert_rules(
-    token_id: Optional[str] = None,
-    team_id: Optional[str] = None,
+    token_id: str | None = None,
+    team_id: str | None = None,
     current_user: User = Depends(require_permission("manage_api_keys")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -202,10 +203,10 @@ async def update_alert_rule(
 ):
     try:
         rule_uuid = UUID(rule_id)
-    except ValueError:
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid rule ID"
-        )
+        ) from e
 
     kwargs = request.model_dump(exclude_none=True)
     rule = await alert_service.update_rule(
@@ -234,10 +235,10 @@ async def delete_alert_rule(
 ):
     try:
         rule_uuid = UUID(rule_id)
-    except ValueError:
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid rule ID"
-        )
+        ) from e
 
     # Fetch rule details before deletion for audit log
     result = await db.execute(
@@ -275,7 +276,7 @@ async def delete_alert_rule(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/notifications", response_model=List[AlertNotificationResponse])
+@router.get("/notifications", response_model=list[AlertNotificationResponse])
 async def list_notifications(
     unread_only: bool = False,
     limit: int = 50,
@@ -307,10 +308,10 @@ async def mark_notification_read(
 ):
     try:
         n_uuid = UUID(notification_id)
-    except ValueError:
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid notification ID"
-        )
+        ) from e
 
     marked = await alert_service.mark_read(
         db=db, notification_id=n_uuid, user_id=current_user.id

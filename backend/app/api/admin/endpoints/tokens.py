@@ -58,9 +58,7 @@ async def _invalidate_token_cache(token_hash: str) -> None:
     except Exception as e:
         import logging
 
-        logging.getLogger(__name__).warning(
-            "Failed to invalidate token cache for %s: %s", token_hash[:8], e
-        )
+        logging.getLogger(__name__).warning("Failed to invalidate token cache: %s", e)
 
 
 def validate_token_metadata(meta: dict | None) -> dict | None:
@@ -449,19 +447,15 @@ async def list_tokens(
 
     Returns list of user's tokens (without plain token keys).
     """
+    token_filters = [APIToken.is_deleted.is_(False)]
     allowed_ids = get_allowed_resource_ids(current_user, "manage_api_keys")
     if allowed_ids is not None:
         allowed_uuids = [UUID(id_) for id_ in allowed_ids]
-        query = select(APIToken).where(
-            APIToken.id.in_(allowed_uuids),
-            APIToken.is_deleted.is_(False),
-        )
-    else:
-        query = select(APIToken).where(APIToken.is_deleted.is_(False))
-
+        token_filters.append(APIToken.id.in_(allowed_uuids))
     if not include_inactive:
-        query = query.where(APIToken.is_active)
-    result = await db.execute(query)
+        token_filters.append(APIToken.is_active)
+
+    result = await db.execute(select(APIToken).where(*token_filters))
     tokens = list(result.scalars().all())
 
     if not tokens:
@@ -473,7 +467,7 @@ async def list_tokens(
     day_start = datetime(now.year, now.month, now.day)
 
     token_ids = [token.id for token in tokens]
-    usage_query = (
+    result = await db.execute(
         select(
             UsageRecord.token_id,
             func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")).label(
@@ -501,15 +495,13 @@ async def list_tokens(
         .where(UsageRecord.token_id.in_(token_ids))
         .group_by(UsageRecord.token_id)
     )
-
-    result = await db.execute(usage_query)
     usage_map = {
         row.token_id: (row.total_cost, row.monthly_cost, row.daily_cost)
         for row in result
     }
 
     # Get team membership info for all tokens in one query
-    team_query = (
+    team_result = await db.execute(
         select(
             TeamMember.token_id,
             TeamMember.allocated_usd,
@@ -519,7 +511,6 @@ async def list_tokens(
         .join(Team, TeamMember.team_id == Team.id)
         .where(TeamMember.token_id.in_(token_ids))
     )
-    team_result = await db.execute(team_query)
     team_map = {
         row.token_id: (str(row.team_id), row.team_name, row.allocated_usd)
         for row in team_result
@@ -533,7 +524,7 @@ async def list_tokens(
         (Team.monthly_reset_policy == "rollover", Team.monthly_budget_start),
         else_=month_start,
     )
-    team_usage_query = (
+    team_usage_result = await db.execute(
         select(
             TeamMember.token_id,
             func.coalesce(func.sum(UsageRecord.cost_usd), Decimal("0.00")).label(
@@ -549,18 +540,18 @@ async def list_tokens(
         .where(TeamMember.token_id.in_(token_ids))
         .group_by(TeamMember.token_id)
     )
-    team_usage_result = await db.execute(team_usage_query)
     team_monthly_map = {
         row.token_id: row.team_monthly_cost for row in team_usage_result
     }
 
     # Get allowed models for all tokens in one query
-    models_query = select(Model.token_id, Model.model_name).where(
-        Model.token_id.in_(token_ids),
-        Model.is_active.is_(True),
-        Model.is_deleted.is_(False),
+    models_result = await db.execute(
+        select(Model.token_id, Model.model_name).where(
+            Model.token_id.in_(token_ids),
+            Model.is_active.is_(True),
+            Model.is_deleted.is_(False),
+        )
     )
-    models_result = await db.execute(models_query)
     models_map: dict[UUID, list[str]] = {}
     for row in models_result:
         models_map.setdefault(row.token_id, []).append(row.model_name)

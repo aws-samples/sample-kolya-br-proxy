@@ -1086,11 +1086,12 @@ class PricingUpdater:
         for data in pricing_data:
             try:
                 # Check if record exists
-                stmt = select(ModelPricing).where(
-                    ModelPricing.model_id == data["model_id"],
-                    ModelPricing.region == data["region"],
+                result = await self.db.execute(
+                    select(ModelPricing).where(
+                        ModelPricing.model_id == data["model_id"],
+                        ModelPricing.region == data["region"],
+                    )
                 )
-                result = await self.db.execute(stmt)
                 existing = result.scalar_one_or_none()
 
                 # Optional cached-input price (OpenAI mantle / Gemini-style rows).
@@ -1380,10 +1381,11 @@ class PricingUpdater:
             region = get_settings().AWS_REGION
 
         # Try exact match first
-        stmt = select(ModelPricing).where(
-            ModelPricing.model_id == model_id, ModelPricing.region == region
+        result = await self.db.execute(
+            select(ModelPricing).where(
+                ModelPricing.model_id == model_id, ModelPricing.region == region
+            )
         )
-        result = await self.db.execute(stmt)
         pricing = result.scalar_one_or_none()
 
         if pricing:
@@ -1407,11 +1409,12 @@ class PricingUpdater:
                 base_model_id = model_id[len(prefix) :]
 
                 # Fallback 1: try base model without any prefix
-                stmt = select(ModelPricing).where(
-                    ModelPricing.model_id == base_model_id,
-                    ModelPricing.region == region,
+                result = await self.db.execute(
+                    select(ModelPricing).where(
+                        ModelPricing.model_id == base_model_id,
+                        ModelPricing.region == region,
+                    )
                 )
-                result = await self.db.execute(stmt)
                 pricing = result.scalar_one_or_none()
 
                 if pricing:
@@ -1429,11 +1432,12 @@ class PricingUpdater:
                 geo_prefix = BedrockClient.get_geo_prefix(region)
                 geo_model_id = f"{geo_prefix}.{base_model_id}"
                 if geo_model_id != model_id:
-                    stmt = select(ModelPricing).where(
-                        ModelPricing.model_id == geo_model_id,
-                        ModelPricing.region == region,
+                    result = await self.db.execute(
+                        select(ModelPricing).where(
+                            ModelPricing.model_id == geo_model_id,
+                            ModelPricing.region == region,
+                        )
                     )
-                    result = await self.db.execute(stmt)
                     pricing = result.scalar_one_or_none()
 
                     if pricing:

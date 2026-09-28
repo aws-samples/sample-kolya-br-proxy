@@ -43,7 +43,7 @@ api.interceptors.request.use(
   },
   (error: unknown) => {
     return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-  }
+  },
 );
 
 // Shared state for token refresh deduplication.
@@ -114,11 +114,9 @@ api.interceptors.response.use(
 
         try {
           // Try to refresh the token (cookie sent automatically via withCredentials)
-          const response = await api.post(
-            '/admin/auth/refresh',
-            {},
-            { _skipAuthRefresh: true } as Record<string, unknown>
-          );
+          const response = await api.post('/admin/auth/refresh', {}, {
+            _skipAuthRefresh: true,
+          } as Record<string, unknown>);
 
           const { access_token } = response.data;
 
@@ -176,9 +174,7 @@ api.interceptors.response.use(
     const maxRetries = 2;
     const isServerError = error.response?.status >= 500;
     const isNetworkError = !error.response; // No response = server unreachable
-    const shouldRetry =
-      config.__retryCount < maxRetries &&
-      (isServerError || isNetworkError);
+    const shouldRetry = config.__retryCount < maxRetries && (isServerError || isNetworkError);
 
     if (shouldRetry) {
       config.__retryCount += 1;
@@ -188,7 +184,7 @@ api.interceptors.response.use(
     }
 
     return Promise.reject(new Error(error.message || 'Request failed'));
-  }
+  },
 );
 
 export default boot(({ app }) => {

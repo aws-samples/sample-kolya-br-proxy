@@ -308,11 +308,12 @@ class ModelPricing:
             from app.models.model_pricing import ModelPricing as ModelPricingRecord
             from sqlalchemy import select
 
-            stmt = select(ModelPricingRecord).where(
-                ModelPricingRecord.model_id == model,
-                ModelPricingRecord.region == region,
+            result = await self.db.execute(
+                select(ModelPricingRecord).where(
+                    ModelPricingRecord.model_id == model,
+                    ModelPricingRecord.region == region,
+                )
             )
-            result = await self.db.execute(stmt)
             record = result.scalar_one_or_none()
             if record and hasattr(record, "cached_input_price_per_token"):
                 cached = record.cached_input_price_per_token
