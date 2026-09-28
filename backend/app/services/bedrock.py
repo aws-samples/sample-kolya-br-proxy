@@ -551,10 +551,27 @@ class BedrockClient:
         "opus-4-6",
     )
 
+    # AWS documents structured outputs / strict tool use for these Claude
+    # families on bedrock-runtime. Newer model cards must opt in explicitly;
+    # unsupported models reject tools[].strict with ValidationException.
+    _STRICT_TOOL_SUPPORTED_PATTERNS = (
+        "sonnet-4-5",
+        "haiku-4-5",
+        "opus-4-5",
+        "opus-4-6",
+    )
+
     # Non-Anthropic models (Converse API) that reject sampling params. xAI Grok
     # reasoning models raise ValidationException if temperature/top_p is sent
     # ("This model doesn't support the temperature field").
     _NO_SAMPLING_CONVERSE_PATTERNS = ("grok",)
+
+    @classmethod
+    def _supports_strict_tools(cls, model_id: str) -> bool:
+        """Return whether AWS documents strict tool use for this Claude model."""
+        return cls.is_anthropic_model(model_id) and any(
+            pattern in model_id for pattern in cls._STRICT_TOOL_SUPPORTED_PATTERNS
+        )
 
     @classmethod
     def _is_no_sampling_model(cls, model_id: str) -> bool:
@@ -1092,7 +1109,14 @@ class BedrockClient:
                     "description": t.description,
                     "input_schema": t.input_schema,
                 }
-                if t.strict is not None:
+                # Strict tool use is model-gated by Bedrock. Preserve it only for
+                # AWS-documented model families; unsupported models reject the
+                # request before inference with tools.0.custom.strict.
+                if (
+                    t.strict is not None
+                    and model_id
+                    and BedrockClient._supports_strict_tools(model_id)
+                ):
                     tool_dict["strict"] = t.strict
                 body["tools"].append(tool_dict)
         if request.tool_choice:
