@@ -283,9 +283,21 @@ async def _stream_responses(
                 last_heartbeat = time.time()
 
     except httpx.HTTPStatusError as e:
+        upstream_request_id = (
+            e.response.headers.get("x-amzn-requestid")
+            or e.response.headers.get("x-amz-request-id")
+            or e.response.headers.get("x-request-id")
+            or "-"
+        )
+        upstream_detail = str(e).replace("\r", " ").replace("\n", " ")[:500]
         logger.error(
-            f"mantle Responses stream error: model={model}, "
-            f"request_id={request_id}, status={e.response.status_code}",
+            "mantle Responses stream error: model=%s, gateway_request_id=%s, "
+            "status=%s, upstream_request_id=%s, upstream_detail=%r",
+            model,
+            request_id,
+            e.response.status_code,
+            upstream_request_id,
+            upstream_detail,
             exc_info=True,
         )
         err = {

@@ -1324,6 +1324,7 @@ class PricingUpdater:
             # in the `model` attribute instead of the Bedrock display name.
             "openai.gpt-6-sol": "openai.gpt-6-sol",
             "openai.gpt-6-astra": "openai.gpt-6-astra",
+            "xai.grok-4.3": "xai.grok-4.3",
             "xai.grok-4.6": "xai.grok-4.6",
             "GPT-6 Sol": "openai.gpt-6-sol",
             "GPT-6 Astra": "openai.gpt-6-astra",

@@ -114,6 +114,11 @@ spec:
               name: backend-secrets
               key: gemini-api-key
               optional: true
+        # The managed CloudWatch webhook may inject OTEL_TRACES_SAMPLER=xray,
+        # but this image uses the upstream Python SDK without the ADOT sampler.
+        # Pin the SDK's supported fallback explicitly to avoid warning/fallback drift.
+        - name: OTEL_TRACES_SAMPLER
+          value: "parentbased_always_on"
         - name: NODE_IP
           valueFrom:
             fieldRef:

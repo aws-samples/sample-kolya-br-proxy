@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on the legacy SQLAlchemy
+# RefreshToken model's declarative Column attributes. Remove with Mapped[].
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 Refresh token service for secure token rotation.
 Implements token family tracking to detect token theft.
@@ -115,9 +118,12 @@ class RefreshTokenService:
         """
         token_hash = hash_refresh_token(jwt_token)
 
-        # Find token in database
+        # Serialize rotations of the same token across backend replicas. The lock
+        # remains held until create_refresh_token() commits the replacement.
         result = await self.db.execute(
-            select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+            select(RefreshToken)
+            .where(RefreshToken.token_hash == token_hash)
+            .with_for_update()
         )
         token = result.scalar_one_or_none()
 
@@ -161,7 +167,8 @@ class RefreshTokenService:
                 return None, None, "Concurrent refresh detected, please retry"
 
             logger.warning(
-                f"Token reuse detected for user {token.user_id}. "
+                f"Token reuse detected for user {token.user_id} "
+                f"(child age {age:.1f}s > {REUSE_GRACE_SECONDS}s grace). "
                 f"Revoking entire token family {token.family_id}"
             )
 
@@ -172,7 +179,11 @@ class RefreshTokenService:
                 success=False,
                 ip_address=ip_address,
                 user_agent=user_agent,
-                details={"family_id": str(token.family_id)},
+                details={
+                    "family_id": str(token.family_id),
+                    "child_age_seconds": round(age, 3),
+                    "grace_seconds": REUSE_GRACE_SECONDS,
+                },
             )
 
             await self.revoke_token_family(
