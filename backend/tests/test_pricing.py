@@ -998,3 +998,15 @@ class TestCacheWriteMultiplier:
             + Decimal(40) * self.INPUT_PRICE * Decimal("0.1")
         )
         assert cost == expected
+
+
+def test_marketplace_model_id_mapping_is_exact_and_non_speculative():
+    updater = PricingUpdater(MagicMock())
+
+    assert updater._map_model_name_to_id("xai.grok-4.3") == "xai.grok-4.3"
+    assert updater._map_model_name_to_id("Minimax M2.1") is None
+    assert updater._map_model_name_to_id("Devstral") is None
+    assert updater._map_model_name_to_id("Claude Mythos 5.1") is None
+    assert updater._map_model_name_to_id("Llama 3.3 70B Custom") is None
+    assert updater._map_model_name_to_id("Command") is None
+    assert updater._map_model_name_to_id("Command-Light") is None
