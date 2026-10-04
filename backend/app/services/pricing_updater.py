@@ -1323,11 +1323,15 @@ class PricingUpdater:
             # ── OpenAI / xAI inference profiles ───────────────────
             # New Marketplace-backed Price List rows use the model ID itself
             # in the `model` attribute instead of the Bedrock display name.
+            "openai.gpt-6.1-sol": "openai.gpt-6.1-sol",
             "openai.gpt-6-sol": "openai.gpt-6-sol",
+            "openai.gpt-6-luna": "openai.gpt-6-luna",
             "openai.gpt-6-astra": "openai.gpt-6-astra",
             "xai.grok-4.3": "xai.grok-4.3",
             "xai.grok-4.6": "xai.grok-4.6",
+            "GPT-6.1 Sol": "openai.gpt-6.1-sol",
             "GPT-6 Sol": "openai.gpt-6-sol",
+            "GPT-6 Luna": "openai.gpt-6-luna",
             "GPT-6 Astra": "openai.gpt-6-astra",
             "Grok 4.6": "xai.grok-4.6",
             # OpenAI gpt-oss on Bedrock

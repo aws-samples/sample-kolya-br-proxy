@@ -53,6 +53,68 @@ class OfficialProfilePricing:
 # Source-backed fallbacks for profiles omitted from the public Price List file.
 # Exact profile IDs are intentional: Global and Geo CRIS rates differ.
 OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
+    # ── GPT-6.1 Sol ──────────────────────────────────────────────────
+    "openai.gpt-6.1-sol": OfficialProfilePricing(
+        model_id="openai.gpt-6.1-sol",
+        source_url=(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+            "model-card-openai-gpt-6-1-sol.html"
+        ),
+        short=TokenRates(
+            input=_per_token("2.20"),
+            cache_write=_per_token("2.75"),
+            cache_read=_per_token("0.11"),
+            output=_per_token("11.00"),
+        ),
+        long_context_threshold=272_000,
+        long=TokenRates(
+            input=_per_token("4.40"),
+            cache_write=_per_token("5.50"),
+            cache_read=_per_token("0.22"),
+            output=_per_token("16.50"),
+        ),
+    ),
+    "global.openai.gpt-6.1-sol": OfficialProfilePricing(
+        model_id="global.openai.gpt-6.1-sol",
+        source_url=(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+            "model-card-openai-gpt-6-1-sol.html"
+        ),
+        short=TokenRates(
+            input=_per_token("2.00"),
+            cache_write=_per_token("2.50"),
+            cache_read=_per_token("0.10"),
+            output=_per_token("10.00"),
+        ),
+        long_context_threshold=272_000,
+        long=TokenRates(
+            input=_per_token("4.00"),
+            cache_write=_per_token("5.00"),
+            cache_read=_per_token("0.20"),
+            output=_per_token("15.00"),
+        ),
+    ),
+    # ── GPT-6 Sol ────────────────────────────────────────────────────
+    "openai.gpt-6-sol": OfficialProfilePricing(
+        model_id="openai.gpt-6-sol",
+        source_url=(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+            "model-card-openai-gpt-6-sol.html"
+        ),
+        short=TokenRates(
+            input=_per_token("2.20"),
+            cache_write=_per_token("2.75"),
+            cache_read=_per_token("0.22"),
+            output=_per_token("11.00"),
+        ),
+        long_context_threshold=272_000,
+        long=TokenRates(
+            input=_per_token("4.40"),
+            cache_write=_per_token("5.50"),
+            cache_read=_per_token("0.44"),
+            output=_per_token("16.50"),
+        ),
+    ),
     "global.openai.gpt-6-sol": OfficialProfilePricing(
         model_id="global.openai.gpt-6-sol",
         source_url=(
@@ -73,6 +135,48 @@ OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
             output=_per_token("15.00"),
         ),
     ),
+    # ── GPT-6 Luna ───────────────────────────────────────────────────
+    "openai.gpt-6-luna": OfficialProfilePricing(
+        model_id="openai.gpt-6-luna",
+        source_url=(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+            "model-card-openai-gpt-6-luna.html"
+        ),
+        short=TokenRates(
+            input=_per_token("0.11"),
+            cache_write=_per_token("0.1375"),
+            cache_read=_per_token("0.011"),
+            output=_per_token("0.55"),
+        ),
+        long_context_threshold=272_000,
+        long=TokenRates(
+            input=_per_token("0.22"),
+            cache_write=_per_token("0.275"),
+            cache_read=_per_token("0.022"),
+            output=_per_token("0.825"),
+        ),
+    ),
+    "global.openai.gpt-6-luna": OfficialProfilePricing(
+        model_id="global.openai.gpt-6-luna",
+        source_url=(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+            "model-card-openai-gpt-6-luna.html"
+        ),
+        short=TokenRates(
+            input=_per_token("0.10"),
+            cache_write=_per_token("0.125"),
+            cache_read=_per_token("0.01"),
+            output=_per_token("0.50"),
+        ),
+        long_context_threshold=272_000,
+        long=TokenRates(
+            input=_per_token("0.20"),
+            cache_write=_per_token("0.25"),
+            cache_read=_per_token("0.02"),
+            output=_per_token("0.75"),
+        ),
+    ),
+    # ── Grok 4.6 ─────────────────────────────────────────────────────
     "global.xai.grok-4.6": OfficialProfilePricing(
         model_id="global.xai.grok-4.6",
         source_url=(
@@ -85,6 +189,7 @@ OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
             output=_per_token("6.00"),
         ),
     ),
+    # ── GPT-6 Astra ──────────────────────────────────────────────────
     "us.openai.gpt-6-astra": OfficialProfilePricing(
         model_id="us.openai.gpt-6-astra",
         source_url=(
@@ -291,6 +396,42 @@ class ModelPricing:
                         Decimal(cache_read_input_tokens) * cache_read_price
                     )
                     return input_cost + output_cost + cache_write_cost + cache_read_cost
+
+        # Mantle models: fall back to OFFICIAL_PROFILE_PRICING when the DB
+        # row hasn't been created yet (new model discovered before the
+        # pricing page was scraped).  Try exact mantle ID first (has the
+        # correct 10% in-Region premium), then Global/US CRIS profiles.
+        if is_openai_mantle_model(model):
+            official_pricing = None
+            matched_id = model
+            for candidate in (model, f"global.{model}", f"us.{model}"):
+                official_pricing = get_official_profile_pricing(candidate)
+                if official_pricing is not None:
+                    matched_id = candidate
+                    break
+            if official_pricing is not None:
+                total_input_tokens = (
+                    prompt_tokens
+                    + cache_creation_input_tokens
+                    + cache_read_input_tokens
+                )
+                rates = official_pricing.rates_for_input_tokens(total_input_tokens)
+                cache_write_price = (
+                    rates.cache_write if rates.cache_write is not None else Decimal(0)
+                )
+                cache_read_price = (
+                    rates.cache_read if rates.cache_read is not None else rates.input
+                )
+                logger.info(
+                    f"Using model-card fallback pricing for mantle model {model} "
+                    f"(matched: {matched_id})"
+                )
+                return (
+                    Decimal(prompt_tokens) * rates.input
+                    + Decimal(completion_tokens) * rates.output
+                    + Decimal(cache_creation_input_tokens) * cache_write_price
+                    + Decimal(cache_read_input_tokens) * cache_read_price
+                )
 
         # If no database or pricing not found, raise error
         logger.error(f"No pricing found for model: {model}, region: {region}")
