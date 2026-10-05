@@ -146,7 +146,9 @@
 
           <template v-slot:body-cell-cost="props">
             <q-td :props="props">
-              <span class="text-weight-bold text-positive">${{ props.row.total_cost }}</span>
+              <span class="text-weight-bold text-positive"
+                >${{ formatCostUsd(props.row.total_cost) }}</span
+              >
             </q-td>
           </template>
         </q-table>
@@ -170,7 +172,7 @@ import { useDashboardStore } from 'src/stores/dashboard';
 import { useAuthStore } from 'src/stores/auth';
 import { api } from 'src/boot/axios';
 import { getApiBaseUrl } from 'src/utils/api';
-import { calculateRemainingLifetimeBalance } from 'src/utils/balance';
+import { calculateRemainingLifetimeBalance, formatCostUsd } from 'src/utils/balance';
 
 const tokensStore = useTokensStore();
 const dashboardStore = useDashboardStore();

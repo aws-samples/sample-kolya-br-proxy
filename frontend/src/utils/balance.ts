@@ -6,18 +6,26 @@ export interface LifetimeBalanceToken {
   team_id?: string | null;
 }
 
-const INTERNAL_SCALE = 10_000n;
-const UNITS_PER_CENT = 100n;
+// Matches the backend usage_records.cost_usd Numeric(20, 10) scale, so
+// remaining quotas derived from summed costs parse without loss.
+const SCALE_DIGITS = 10;
+const INTERNAL_SCALE = 10n ** BigInt(SCALE_DIGITS);
+const UNITS_PER_CENT = INTERNAL_SCALE / 100n;
 
 function parseUsdUnits(value: string): bigint {
-  const match = /^([+-]?)(\d+)(?:\.(\d{0,4}))?$/.exec(value.trim());
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(value.trim());
   if (!match) {
     throw new Error(`Invalid USD amount: ${value}`);
   }
 
   const sign = match[1] === '-' ? -1n : 1n;
   const whole = BigInt(match[2] ?? '0');
-  const fraction = BigInt((match[3] ?? '').padEnd(4, '0'));
+  const digits = match[3] ?? '';
+  let fraction = BigInt(digits.slice(0, SCALE_DIGITS).padEnd(SCALE_DIGITS, '0'));
+  // Round half-up any digits beyond the internal scale.
+  if ((digits[SCALE_DIGITS] ?? '0') >= '5') {
+    fraction += 1n;
+  }
   return sign * (whole * INTERNAL_SCALE + fraction);
 }
 
@@ -47,4 +55,26 @@ export function calculateRemainingLifetimeBalance(tokens: readonly LifetimeBalan
   }, 0n);
 
   return formatUsd(total);
+}
+
+/**
+ * Format a backend cost string (up to 10 decimals) for display, rounding
+ * half-up to `fractionDigits` without floating-point error.
+ */
+export function formatCostUsd(value: string | null | undefined, fractionDigits = 4): string {
+  let units: bigint;
+  try {
+    units = parseUsdUnits(value ?? '0');
+  } catch {
+    return String(value ?? '');
+  }
+  const step = 10n ** BigInt(SCALE_DIGITS - fractionDigits);
+  const negative = units < 0n;
+  const magnitude = negative ? -units : units;
+  const rounded = (magnitude + step / 2n) / step;
+  const divisor = 10n ** BigInt(fractionDigits);
+  const whole = rounded / divisor;
+  const fraction = (rounded % divisor).toString().padStart(fractionDigits, '0');
+  const sign = negative && rounded > 0n ? '-' : '';
+  return fractionDigits > 0 ? `${sign}${whole}.${fraction}` : `${sign}${whole}`;
 }
