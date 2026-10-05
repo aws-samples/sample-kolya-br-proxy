@@ -977,9 +977,13 @@ async function saveSettings() {
     const success = await tokensStore.updateToken(
       settingsToken.value.id,
       { token_metadata: metadata } as Partial<CreateTokenRequest>,
-      true,
     );
     if (success) {
+      Notify.create({
+        type: 'positive',
+        message: 'Token updated successfully',
+        position: 'top',
+      });
       showSettingsDialog.value = false;
     }
   } finally {

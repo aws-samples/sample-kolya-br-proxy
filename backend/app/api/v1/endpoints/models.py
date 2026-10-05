@@ -4,7 +4,7 @@ Models management endpoints (OpenAI compatible).
 
 import logging
 import time
-from typing import List
+from typing import Any, List, cast
 
 import aioboto3
 from botocore.config import Config
@@ -49,9 +49,12 @@ async def _fetch_bedrock_models():
 
     session = aioboto3.Session(**session_kwargs)
 
-    async with session.client(
-        service_name="bedrock", region_name=settings.AWS_REGION, config=config
-    ) as bedrock_client:
+    # aioboto3 builds clients dynamically, so Pyright cannot see their async
+    # context-manager protocol; type the factory result as Any locally.
+    client_context: Any = session.client(
+        "bedrock", region_name=settings.AWS_REGION, config=config
+    )
+    async with client_context as bedrock_client:
         response = await bedrock_client.list_foundation_models()
         return response.get("modelSummaries", [])
 
@@ -100,7 +103,7 @@ async def list_models(
         created = int(time.time())
         data = [
             ModelInfo(
-                id=m.model_name,
+                id=cast(str, m.model_name),
                 created=created,
                 owned_by="bedrock",
             )

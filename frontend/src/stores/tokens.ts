@@ -140,22 +140,10 @@ export const useTokensStore = defineStore('tokens', {
       }
     },
 
-    async updateToken(
-      tokenId: string,
-      data: Partial<CreateTokenRequest>,
-      showNotification = false,
-    ) {
+    /** Update a token and refresh the list; callers own any success message. */
+    async updateToken(tokenId: string, data: Partial<CreateTokenRequest>) {
       try {
         await api.put(`/admin/tokens/${tokenId}`, data);
-
-        if (showNotification) {
-          Notify.create({
-            type: 'positive',
-            message: 'Token updated successfully',
-            position: 'top',
-          });
-        }
-
         await this.fetchTokens(false, true);
         return true;
       } catch (error: unknown) {

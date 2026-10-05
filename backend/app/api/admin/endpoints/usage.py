@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -31,7 +31,7 @@ async def _get_accessible_token_ids(
     - admin with manage_api_keys=list: only those token IDs
     - admin with manage_api_keys="all"/True: None (sees all)
     """
-    if user.role == UserRole.SUPER_ADMIN:
+    if cast(UserRole, user.role) == UserRole.SUPER_ADMIN:
         return None
     allowed_ids = get_allowed_resource_ids(user, "manage_api_keys")
     if allowed_ids is None:
