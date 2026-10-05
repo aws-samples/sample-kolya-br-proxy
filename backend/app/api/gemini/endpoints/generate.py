@@ -384,7 +384,12 @@ async def _stream_proxy(
                                     "cachedContentTokenCount", 0
                                 )
                         except (json.JSONDecodeError, TypeError):
-                            pass
+                            # Usage metadata is best-effort; the chunk itself
+                            # was already forwarded to the client unchanged.
+                            logger.debug(
+                                "Skipping unparsable Gemini SSE usage line: "
+                                f"request_id={request_id}"
+                            )
 
     except httpx.TimeoutException:
         logger.error(f"Gemini stream timed out: request_id={request_id}")

@@ -54,6 +54,16 @@ class CognitoOAuthService:
             self.token_url = None
             self.user_info_url = None
 
+    @staticmethod
+    def _require(value: str | None) -> str:
+        """Return a configured value, or fail like the other unconfigured paths."""
+        if not value:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Cognito OAuth not configured",
+            )
+        return value
+
     def is_configured(self) -> bool:
         """Check if Cognito OAuth is configured."""
         return bool(
@@ -105,9 +115,9 @@ class CognitoOAuthService:
         """
         # HMAC-SHA256 required by AWS Cognito SECRET_HASH spec (not password hashing).
         # Not sensitive data — this is a protocol-mandated keyed MAC.
-        message = username + self.client_id
+        message = username + self._require(self.client_id)
         dig = hmac.new(  # lgtm[py/weak-sensitive-data-hashing]
-            self.client_secret.encode("utf-8"),
+            self._require(self.client_secret).encode("utf-8"),
             message.encode("utf-8"),
             "sha256",
         ).digest()
@@ -196,7 +206,9 @@ class CognitoOAuthService:
 
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(self.token_url, headers=headers, data=data)
+                response = await client.post(
+                    self._require(self.token_url), headers=headers, data=data
+                )
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPStatusError as e:
@@ -221,7 +233,9 @@ class CognitoOAuthService:
 
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.get(self.user_info_url, headers=headers)
+                response = await client.get(
+                    self._require(self.user_info_url), headers=headers
+                )
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPStatusError as e:

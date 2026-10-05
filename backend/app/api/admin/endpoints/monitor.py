@@ -9,7 +9,7 @@ from app.core.database import get_db
 from app.api.deps import require_permission
 from app.models.user import User
 from app.models.model_pricing import ModelPricing as ModelPricingModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from datetime import datetime, timedelta
 import logging
 
@@ -41,6 +41,7 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
 
     pricing_list = []
     for record in pricing_records:
+        last_updated = cast(Optional[datetime], record.last_updated)
         pricing_list.append(
             {
                 "model_id": record.model_id,
@@ -52,9 +53,7 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
                 "input_price_per_1m": str(record.input_price_per_token * 1_000_000),
                 "output_price_per_1m": str(record.output_price_per_token * 1_000_000),
                 "source": record.source,
-                "last_updated": record.last_updated.isoformat()
-                if record.last_updated
-                else None,
+                "last_updated": last_updated.isoformat() if last_updated else None,
             }
         )
 
@@ -101,14 +100,22 @@ async def get_pricing_table(
         else:
             logger.info("Returning cached pricing table")
 
-        # Add cache status to response
-        response = _pricing_cache.copy()
-        response["cache_info"]["is_cached"] = not force_refresh
-        response["cache_info"]["cache_age_seconds"] = int(
-            (datetime.utcnow() - _cache_timestamp).total_seconds()
-        )
+        cache, cached_at = _pricing_cache, _cache_timestamp
+        if cache is None or cached_at is None:  # populated above
+            raise RuntimeError("pricing cache was not populated")
 
-        return response
+        # Build per-request cache status without mutating the shared cache
+        # (a shallow copy would write these fields back into it).
+        return {
+            **cache,
+            "cache_info": {
+                **cache["cache_info"],
+                "is_cached": not force_refresh,
+                "cache_age_seconds": int(
+                    (datetime.utcnow() - cached_at).total_seconds()
+                ),
+            },
+        }
 
     except Exception as e:
         logger.error(f"Failed to get pricing table: {e}", exc_info=True)
