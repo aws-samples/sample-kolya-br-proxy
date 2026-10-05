@@ -20,6 +20,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model import Model
 from app.services.bedrock import BedrockClient
+from app.services.embedding_models import MARENGO_MODEL_ID, NOVA_MODEL_ID
 from app.services.gemini_client import GeminiClient, is_gemini_configured
 from app.services.mantle_models import get_mantle_models
 
@@ -98,6 +99,29 @@ def _get_model_id_from_cache(model_name: str) -> Optional[str]:
     return None
 
 
+_EMBEDDING_MODEL_NAMES = {
+    NOVA_MODEL_ID: "Amazon Nova Multimodal Embeddings (text + image)",
+    MARENGO_MODEL_ID: "TwelveLabs Marengo Embed 3.0 (text + image)",
+}
+
+
+def embedding_model_options() -> List[Dict]:
+    """Selectable entries for the two /v1/embeddings models."""
+    return [
+        {
+            "model_id": model_id,
+            "model_name": model_id,
+            "friendly_name": name,
+            "provider": "bedrock-embedding",
+            "is_cross_region": False,
+            "cross_region_type": None,
+            "streaming_supported": False,
+            "is_fallback": False,
+        }
+        for model_id, name in _EMBEDDING_MODEL_NAMES.items()
+    ]
+
+
 @router.get("/aws-available")
 async def list_aws_available_models(
     _current_user=Depends(require_permission("manage_models")),
@@ -172,6 +196,10 @@ async def list_aws_available_models(
         mantle_models = get_mantle_models()
         models.extend(mantle_models)
         logger.info(f"Added {len(mantle_models)} mantle models to available list")
+
+        # Embedding models run in KBR_EMBEDDING_REGION, which the chat profile
+        # cache does not cover (e.g. absent from us-west-2), so list them here.
+        models.extend(embedding_model_options())
 
         # Cache the results
         _set_aws_models_cache(models)

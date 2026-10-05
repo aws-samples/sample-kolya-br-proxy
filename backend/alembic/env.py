@@ -18,7 +18,7 @@ from alembic import context
 
 # Import your models here to ensure they are registered with SQLAlchemy
 from app.core.database import Base
-from app.models import user, token, usage, system_config  # noqa: F401
+from app.models import user, token, usage, system_config, embedding_pricing  # noqa: F401
 
 # Set up logging
 logger = logging.getLogger("alembic.env")

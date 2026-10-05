@@ -3,7 +3,7 @@
 Kolya BR Proxy 提供四组 API：
 
 | 分组 | 前缀 | 认证方式 | 用途 |
-|------|------|----------|------|
+| --- | --- | --- | --- |
 | Gateway API (OpenAI) | `/v1` | `Authorization: Bearer` | OpenAI 兼容的聊天补全 |
 | Gateway API (Anthropic) | `/v1` | `x-api-key` 请求头 | Anthropic Messages API 兼容 |
 | Gateway API (Responses) | `/v1` | `Authorization: Bearer` | 原生 OpenAI Responses API 透传（mantle / GPT-5.5 / GPT-5.4） |
@@ -20,7 +20,7 @@ Base URL 示例：
 
 所有 Gateway 端点需要在 `Authorization` 请求头中携带 API Token：
 
-```
+```text
 Authorization: Bearer kbr_<your_token>
 ```
 
@@ -31,7 +31,7 @@ Authorization: Bearer kbr_<your_token>
 **请求体** (`ChatCompletionRequest`)：
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| --- | --- | --- | --- |
 | `model` | string | *必填* | Bedrock 模型 ID（如 `global.anthropic.claude-sonnet-4-5-20250929-v1:0`、`us.amazon.nova-pro-v1:0`、`deepseek.r1-v1:0`） |
 | `messages` | array | *必填* | `ChatMessage` 对象数组 |
 | `stream` | boolean | `false` | 启用 SSE 流式输出 |
@@ -49,7 +49,7 @@ Authorization: Bearer kbr_<your_token>
 **Bedrock 扩展字段**（可通过请求体或 `X-Bedrock-*` 请求头设置）：
 
 | 字段 | 请求头 | 说明 |
-|------|--------|------|
+| --- | --- | --- |
 | `bedrock_guardrail_config` | `X-Bedrock-Guardrail-Id` + `X-Bedrock-Guardrail-Version` | 护栏配置 |
 | `bedrock_additional_model_request_fields` | `X-Bedrock-Additional-Fields` (JSON) | 额外模型请求字段 |
 | `bedrock_trace` | `X-Bedrock-Trace` | 追踪模式（`ENABLED` / `DISABLED`） |
@@ -76,7 +76,7 @@ Authorization: Bearer kbr_<your_token>
 **ChatMessage 结构**：
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
+| --- | --- | --- |
 | `role` | string | `system`、`user`、`assistant` 或 `tool` |
 | `content` | string \| array | 文本字符串或 `ContentPart` 数组（多模态） |
 | `name` | string | 可选的参与者名称 |
@@ -147,7 +147,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 
 **流式响应**（SSE `text/event-stream`）：
 
-```
+```text
 data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1700000000,"model":"...","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1700000000,"model":"...","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
@@ -175,7 +175,7 @@ data: [DONE]
 ```
 
 | 状态码 | 含义 |
-|--------|------|
+| --- | --- |
 | 400 | 请求无效（错误的模型名称、格式错误的请求体） |
 | 401 | 缺少或无效的 API Token |
 | 403 | Token 无权访问请求的模型 |
@@ -209,7 +209,7 @@ for chunk in stream:
 
 所有 Anthropic 兼容端点需要在 `x-api-key` 请求头中携带 API Key：
 
-```
+```text
 x-api-key: kbr_<your_token>
 ```
 
@@ -222,7 +222,7 @@ x-api-key: kbr_<your_token>
 **请求体** (`AnthropicMessagesRequest`)：
 
 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
+| --- | --- | --- | --- |
 | `model` | string | *必填* | Bedrock 模型 ID **或** Anthropic 短格式名称（如 `global.anthropic.claude-sonnet-4-5-20250929-v1:0` 或 `claude-sonnet-4-5-20250929`）。代理会自动归一化两种格式进行权限校验，并以 Bedrock ID 路由请求。 |
 | `messages` | array | *必填* | 消息对象数组（role: `user` 或 `assistant`） |
 | `max_tokens` | integer | *必填* | 最大生成 token 数 |
@@ -297,7 +297,7 @@ curl -X POST http://localhost:8000/v1/messages \
 
 **流式响应**（SSE `text/event-stream`，Anthropic 格式）：
 
-```
+```text
 event: message_start
 data: {"type":"message_start","message":{"id":"msg_...","type":"message","role":"assistant","content":[],"model":"...","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}
 
@@ -348,7 +348,7 @@ curl -X POST http://localhost:8000/v1/messages \
 ```
 
 | 状态码 | 错误类型 | 含义 |
-|--------|----------|------|
+| --- | --- | --- |
 | 400 | `invalid_request_error` | 请求无效（错误的模型名称、格式错误的请求体） |
 | 401 | `authentication_error` | 缺少或无效的 API Key |
 | 403 | `permission_error` | Token 无权访问请求的模型 |
@@ -437,7 +437,7 @@ export CLAUDE_MODEL="us.anthropic.claude-sonnet-4-5-20250514-v1:0"
 OpenAI **GPT-5.5**（`openai.gpt-5.5`）和 **GPT-5.4**（`openai.gpt-5.4`）由 AWS "mantle" 推理引擎通过原生 **OpenAI Responses API** 提供（`provider: openai-mantle`）。这两个模型可通过三条路径访问：
 
 | 路径 | 模式 |
-|------|------|
+| --- | --- |
 | `POST /v1/chat/completions` | OpenAI Chat Completions，与 Responses 格式相互转换 |
 | `POST /v1/messages` | Anthropic Messages，与 Responses 格式相互转换 |
 | `POST /v1/responses` | **原生 Responses 透传** —— 完整的 mantle 能力，无有损转换 |
@@ -453,7 +453,7 @@ chat/messages 两条路径会与 Responses 格式相互转换，因此会"扁平
 **请求体**：一个**开放 JSON 对象** —— 原样转发给 mantle。未知/新增的 Responses 字段会直接透传（无严格 schema）。常见的原生 Responses 字段：
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
+| --- | --- | --- |
 | `model` | string | *必填* —— 必须是 mantle 模型（如 `openai.gpt-5.6-luna`）。也接受省略 `openai.` 前缀的裸名（`gpt-5.6-luna`），会自动归一化 |
 | `input` | array | 输入项数组；每项含 `role` 及 `content` parts 数组（`input_text`、`output_text`、`input_image`） |
 | `stream` | boolean | 启用原生 Responses SSE 流式输出（默认 `false`） |
@@ -525,7 +525,7 @@ curl -X POST http://localhost:8000/v1/responses \
 
 **流式响应**（SSE `text/event-stream`，原生 Responses 具名事件，原样透传）：
 
-```
+```text
 event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":"Hello"}
 
@@ -550,11 +550,98 @@ data: {"type":"response.completed","response":{"id":"resp_...","status":"complet
 
 ---
 
+## 1e. 向量嵌入（POST /v1/embeddings）
+
+OpenAI 兼容的向量接口，支持**文本和图片**。两个模型都是多模态的，文本和图片会映射到同一个向量空间，可以用文本检索图片，也可以用图片检索文本。其他模型返回 **400**。
+
+| 模型 ID | 维度 | 说明 |
+| --- | --- | --- |
+| `amazon.nova-2-multimodal-embeddings-v1:0` | 256、384、1024、3072（默认） | `purpose` 对应 Nova 的 `embeddingPurpose`（默认 `GENERIC_INDEX`） |
+| `twelvelabs.marengo-embed-3-0-v1:0` | 512（固定） | 忽略 `purpose` |
+
+鉴权使用 `Authorization: Bearer` 或 `x-api-key`。模型必须在令牌的模型白名单中，调用 Bedrock 前会检查配额。
+
+### 请求
+
+`input` 可以是一个字符串，也可以是最多 96 项的列表。每一项生成一个向量，`data[i]` 对应 `input[i]`。图片以 `data:image/<png|jpeg|gif|webp>;base64,...` 的形式**直接放在请求里**，和给聊天模型发图片的方式相同：
+
+```json
+{
+  "model": "amazon.nova-2-multimodal-embeddings-v1:0",
+  "dimensions": 1024,
+  "input": [
+    "镜头里一个人在跑步",
+    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/..."}},
+    "data:image/png;base64,iVBORw0KGgo..."
+  ]
+}
+```
+
+| 写法 | 含义 |
+| --- | --- |
+| `"文本"` | 文本 |
+| `"data:image/...;base64,..."` | 图片（不会被当作文本处理） |
+| `{"type": "image_url", "image_url": {"url": "<data URI>"}}` | 图片（聊天接口的格式；`image_url` 也可以直接是 data URI 字符串） |
+| `{"image": "<data URI>"}` | 图片 |
+| `{"type": "text", "text": "..."}` 或 `{"text": "..."}` | 文本 |
+
+可选字段：`dimensions`；`purpose`（Nova 可选 `GENERIC_INDEX`、`GENERIC_RETRIEVAL`、`TEXT_RETRIEVAL`、`IMAGE_RETRIEVAL`、`DOCUMENT_RETRIEVAL`、`CLASSIFICATION`、`CLUSTERING`）；`encoding_format`（只支持 `"float"`）。建库和查询必须使用同一个模型和同一个 `dimensions`，不同模型或不同维度的向量不能互相比较。
+
+### 响应
+
+```json
+{
+  "object": "list",
+  "model": "amazon.nova-2-multimodal-embeddings-v1:0",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.012, -0.034, ...]},
+    {"object": "embedding", "index": 1, "embedding": [0.051, 0.007, ...]}
+  ],
+  "usage": {"prompt_tokens": 5, "total_tokens": 5}
+}
+```
+
+`usage` 只统计文本 token，图片按张计费（见下方计费说明）。
+
+### 错误
+
+| 状态码 | 原因 |
+| --- | --- |
+| 400 | 某一项格式错误（错误信息会指明是第几项，例如 `input[2]: image data is not valid base64`）；传了图片 URL（不会去下载 `http(s)://` 图片）；图片类型不支持；传了 token ID 数组；模型、维度或 purpose 不支持 |
+| 403 | 模型不在令牌的白名单中 |
+| 413 | 某张图片超过 `KBR_EMBEDDING_MAX_IMAGE_BYTES`（`code: image_too_large`，错误信息会指明是第几项） |
+| 429 | 超出配额，或被 Bedrock 限流 |
+| 502 / 503 / 504 | Bedrock 返回了无法解析的响应、服务不可用或超时 |
+
+### 配置
+
+| 变量 | 用途 |
+| --- | --- |
+| `KBR_EMBEDDING_REGION` | 向量模型调用的 Bedrock 区域（默认 `us-east-1`），与 `KBR_AWS_REGION` 无关。这两个模型并非在所有区域都有，us-west-2 就没有，所以部署在 us-west-2 的网关会把向量请求（包括文本和图片）发到 us-east-1 |
+| `KBR_EMBEDDING_MAX_IMAGE_BYTES` | 单张图片解码后的大小上限（默认 20 MiB） |
+
+网关的 IAM 角色需要在 `KBR_EMBEDDING_REGION` 中对这两个模型有 `bedrock:InvokeModel` 权限（现有的 `bedrock:*` 已经覆盖），不需要 S3 权限。
+
+Bedrock 侧的模型限制（返回 **400**）：Marengo Embed 3.0 要求图片至少 128×128 像素。
+
+### 计费
+
+按模态分别计价，与 AWS 对这两个模型的收费方式一致。单价存放在 `embedding_pricing` 表，由每日定价任务（UTC 02:00，服务启动和管理员手动刷新时也会执行）从 Bedrock 定价页及其公开价格 JSON 更新；刷新失败时沿用上次保存的价格。
+
+| 计费单位 | Nova Multimodal Embeddings | Marengo Embed 3.0 |
+| --- | --- | --- |
+| 文本 | 按 token（`text_token`） | 按请求次数（`text_request`） |
+| 图片 | 按张（`standard_image`） | 按张（`image`） |
+
+单价按请求实际路由的区域查找；该区域没有公布价格时（Nova 只在 us-east-1 有定价），改用其他已公布区域，并记录在 `pricing_region`。用量记录的 `request_metadata` 包含 `operation = "embedding"`、`input_types`、`billable_units` 和 `pricing_region`，不保存图片本身。`usage_records.cost_usd` 保留 10 位小数，不足一分钱的请求（一张 Nova 图片是 `$0.00006`）也会按实际金额记录。某个单位没有价格时，`note` 标记 `embedding_pricing_missing`；Nova 没有返回文本 token 数时，标记 `embedding_billable_units_unavailable`。这两类用量都按零费用计算。
+
+---
+
 ## 2. Admin API
 
 除 OAuth 登录 URL 外，所有 Admin 端点需要 JWT 访问令牌：
 
-```
+```text
 Authorization: Bearer <jwt_access_token>
 ```
 
@@ -563,14 +650,14 @@ Authorization: Bearer <jwt_access_token>
 Admin API 使用基于角色的访问控制，包含两个角色：
 
 | 角色 | 权限 |
-|------|------|
+| --- | --- |
 | `super_admin` | 完全访问所有端点和资源 |
 | `admin` | 受 `permissions` 对象控制的有限访问 |
 
 Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 
 | 权限 | 取值 | 控制范围 |
-|------|------|----------|
+| --- | --- | --- |
 | `manage_api_keys` | `true`/`"all"`、`[id, ...]`、`false` | API Token 增删改查 |
 | `manage_teams` | `true`/`"all"`、`[id, ...]`、`false` | 团队增删改查 |
 | `manage_models` | `true`/`"all"`、`[id, ...]`、`false` | 模型配置 |
@@ -584,7 +671,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 各端点所需权限：
 
 | 端点分组 | 所需权限 |
-|----------|----------|
+| --- | --- |
 | `/admin/tokens/*` | `manage_api_keys` |
 | `/admin/teams/*` | `manage_teams` |
 | `/admin/models/*` | `manage_models` |
@@ -601,7 +688,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 获取 Microsoft OAuth 授权 URL。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `redirect_uri` | query | string | 授权后的重定向 URI |
 
 **响应**：
@@ -618,7 +705,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 处理 Microsoft OAuth 回调。创建或关联用户账户。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `code` | query | string | Microsoft 返回的授权码 |
 | `redirect_uri` | query | string | 授权时使用的重定向 URI |
 | `state` | query | string | CSRF 防护的 state 参数 |
@@ -656,7 +743,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 获取 AWS Cognito OAuth 授权 URL。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `redirect_uri` | query | string | 授权后的重定向 URI |
 
 **响应**：与 Microsoft 登录结构相同。
@@ -666,7 +753,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 处理 AWS Cognito OAuth 回调。创建或关联用户账户。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `code` | query | string | Cognito 返回的授权码 |
 | `redirect_uri` | query | string | 授权时使用的重定向 URI |
 | `state` | query | string | CSRF 防护的 state 参数 |
@@ -749,7 +836,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `name` | string | 是 | Token 显示名称 |
 | `expires_at` | datetime | 否 | 过期时间 |
 | `quota_usd` | decimal | 否 | 使用配额（美元） |
@@ -791,7 +878,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 列出当前用户的所有 Token。
 
 | 参数 | 位置 | 类型 | 默认值 | 说明 |
-|------|------|------|--------|------|
+| --- | --- | --- | --- | --- |
 | `include_inactive` | query | boolean | `false` | 包含已停用/撤销的 Token |
 
 **响应**：`TokenResponse` 数组。
@@ -825,7 +912,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 ```
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
+| --- | --- | --- |
 | `name` | string | Token 显示名称 |
 | `expires_at` | datetime | 过期时间 |
 | `quota_usd` | decimal | 使用配额（美元） |
@@ -903,7 +990,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 列出数据库中已启用的模型。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `token_id` | query | string | 可选 -- 按 Token UUID 过滤 |
 
 **响应**：
@@ -952,7 +1039,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 获取当前用户的汇总用量统计。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `start_date` | query | datetime | 可选的自定义范围起始 |
 | `end_date` | query | datetime | 可选的自定义范围结束 |
 
@@ -975,7 +1062,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 按 API Token 分组的用量统计。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `token_id` | query | string | 可选过滤 |
 | `start_date` | query | datetime | 可选起始 |
 | `end_date` | query | datetime | 可选结束 |
@@ -987,7 +1074,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 按模型分组的用量统计。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `model` | query | string | 可选模型过滤 |
 | `start_date` | query | datetime | 可选起始 |
 | `end_date` | query | datetime | 可选结束 |
@@ -999,7 +1086,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 时间序列用量数据。
 
 | 参数 | 位置 | 类型 | 必填 | 说明 |
-|------|------|------|------|------|
+| --- | --- | --- | --- | --- |
 | `start_date` | query | datetime | 是 | 范围起始 |
 | `end_date` | query | datetime | 是 | 范围结束 |
 | `granularity` | query | string | 否 | `hourly`、`daily`（默认）、`weekly`、`monthly` |
@@ -1030,7 +1117,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 指定时间段内按 Token 汇总的用量。
 
 | 参数 | 位置 | 类型 | 必填 | 说明 |
-|------|------|------|------|------|
+| --- | --- | --- | --- | --- |
 | `start_date` | query | datetime | 是 | 范围起始 |
 | `end_date` | query | datetime | 是 | 范围结束 |
 
@@ -1053,7 +1140,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 多 Token 时间序列数据，用于图表叠加显示。
 
 | 参数 | 位置 | 类型 | 必填 | 说明 |
-|------|------|------|------|------|
+| --- | --- | --- | --- | --- |
 | `start_date` | query | datetime | 是 | 范围起始 |
 | `end_date` | query | datetime | 是 | 范围结束 |
 | `token_ids` | query | string | 是 | 逗号分隔的 Token UUID |
@@ -1085,7 +1172,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 分页列出审计日志，支持过滤。
 
 | 参数 | 位置 | 类型 | 默认值 | 说明 |
-|------|------|------|--------|------|
+| --- | --- | --- | --- | --- |
 | `page` | query | integer | `1` | 页码（从 1 开始） |
 | `page_size` | query | integer | `50` | 每页条数（最大 200） |
 | `user_id` | query | uuid | null | 按用户过滤 |
@@ -1125,7 +1212,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 按操作类型统计审计活动摘要。
 
 | 参数 | 位置 | 类型 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `start_date` | query | datetime | 可选起始日期 |
 | `end_date` | query | datetime | 可选结束日期 |
 
@@ -1150,7 +1237,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 所有管理员可见的活动动态。仅展示管理操作（Token/团队/模型/管理员的增删改），显示最近 N 天的记录。非 super_admin 用户无法看到 super_admin 的操作。
 
 | 参数 | 位置 | 类型 | 默认值 | 说明 |
-|------|------|------|--------|------|
+| --- | --- | --- | --- | --- |
 | `page` | query | integer | `1` | 页码（从 1 开始） |
 | `page_size` | query | integer | `50` | 每页条数（最大 100） |
 | `days` | query | integer | `7` | 回溯天数（1-30 天） |
@@ -1233,7 +1320,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `email` | string | 是 | 管理员邮箱 |
 | `username` | string | 是 | Cognito 登录用户名 |
 | `temp_password` | string | 是 | 临时密码（首次登录必须修改） |
@@ -1295,7 +1382,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `name` | string | 是 | 团队名称 |
 | `monthly_budget_usd` | decimal | 否 | 月度预算（美元） |
 | `description` | string | 否 | 团队描述 |
@@ -1346,7 +1433,7 @@ Admin 用户有一个 `permissions` JSON 对象，控制其可管理的资源：
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
+| --- | --- | --- | --- |
 | `token_id` | uuid | 是 | API Token UUID |
 | `allocated_usd` | decimal | 是 | 分配给成员的配额（美元） |
 

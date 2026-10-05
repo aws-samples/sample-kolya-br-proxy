@@ -5,22 +5,34 @@
 Unit tests for pricing system.
 """
 
-import pytest
-from decimal import Decimal
 from datetime import datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.models.model_pricing import ModelPricing
-from app.services.pricing_updater import PricingUpdater
 from app.services.pricing import ModelPricing as PricingService
-
+from app.services.pricing_updater import PricingUpdater
 
 # Test database setup
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+
+@pytest.fixture(autouse=True)
+def _offline_embedding_pricing():
+    """Keep update_all_pricing tests offline; embedding pricing has its own tests."""
+    with patch.object(
+        PricingUpdater,
+        "_update_embedding_pricing",
+        AsyncMock(return_value=0),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -135,7 +147,7 @@ class TestModelPricingModel:
 
         db_session.add(pricing2)
 
-        with pytest.raises(Exception):  # Should raise IntegrityError
+        with pytest.raises(IntegrityError):  # unique (model_id, region)
             await db_session.commit()
 
 
@@ -296,21 +308,23 @@ class TestPricingUpdater:
             },
         }
 
-        with patch(
-            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings", return_value=mock_settings
+            ),
+            patch("httpx.AsyncClient") as mock_client,
         ):
-            with patch("httpx.AsyncClient") as mock_client:
-                mock_response_obj = MagicMock()
-                mock_response_obj.raise_for_status = MagicMock()
-                mock_response_obj.json = MagicMock(return_value=mock_response)
+            mock_response_obj = MagicMock()
+            mock_response_obj.raise_for_status = MagicMock()
+            mock_response_obj.json = MagicMock(return_value=mock_response)
 
-                async def mock_get(*args, **kwargs):
-                    return mock_response_obj
+            async def mock_get(*args, **kwargs):
+                return mock_response_obj
 
-                mock_client.return_value.__aenter__.return_value.get = mock_get
+            mock_client.return_value.__aenter__.return_value.get = mock_get
 
-                pricing_data = await updater._fetch_from_price_list_api()
-                assert isinstance(pricing_data, list)
+            pricing_data = await updater._fetch_from_price_list_api()
+            assert isinstance(pricing_data, list)
 
     @pytest.mark.asyncio
     async def test_update_all_pricing_parses_modern_global_standard_dimensions(
@@ -392,27 +406,29 @@ class TestPricingUpdater:
         mock_settings = MagicMock()
         mock_settings.AWS_REGION = "us-east-1"
 
-        with patch(
-            "app.services.pricing_updater.get_settings", return_value=mock_settings
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings", return_value=mock_settings
+            ),
+            patch("httpx.AsyncClient") as mock_client,
         ):
-            with patch("httpx.AsyncClient") as mock_client:
-                mock_resp = MagicMock()
-                mock_resp.raise_for_status = MagicMock()
-                mock_resp.text = mock_html
-                mock_resp.json = MagicMock(return_value=mock_json)
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status = MagicMock()
+            mock_resp.text = mock_html
+            mock_resp.json = MagicMock(return_value=mock_json)
 
-                async def mock_gather(*args, **kwargs):
-                    return mock_resp, mock_resp, mock_resp
+            async def mock_gather(*args, **kwargs):
+                return mock_resp, mock_resp, mock_resp
 
-                import asyncio as _asyncio
+            import asyncio as _asyncio
 
-                with patch.object(_asyncio, "gather", side_effect=mock_gather):
-                    mock_client.return_value.__aenter__.return_value.get = AsyncMock(
-                        return_value=mock_resp
-                    )
-                    pricing_data = await updater._scrape_aws_pricing_page()
-                    # Empty HTML → no pricing extracted, but no crash
-                    assert isinstance(pricing_data, list)
+            with patch.object(_asyncio, "gather", side_effect=mock_gather):
+                mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+                    return_value=mock_resp
+                )
+                pricing_data = await updater._scrape_aws_pricing_page()
+                # Empty HTML → no pricing extracted, but no crash
+                assert isinstance(pricing_data, list)
 
     @pytest.mark.asyncio
     async def test_update_all_pricing_api_success(self, db_session):
@@ -431,18 +447,20 @@ class TestPricingUpdater:
             }
         ]
 
-        with patch(
-            "app.services.pricing_updater.get_settings", return_value=mock_settings
-        ):
-            with patch.object(
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings", return_value=mock_settings
+            ),
+            patch.object(
                 updater, "_fetch_from_price_list_api", return_value=mock_pricing_data
-            ):
-                with patch.object(updater, "_scrape_aws_pricing_page", return_value=[]):
-                    stats = await updater.update_all_pricing()
+            ),
+            patch.object(updater, "_scrape_aws_pricing_page", return_value=[]),
+        ):
+            stats = await updater.update_all_pricing()
 
-                    assert "api" in stats["source"]
-                    assert stats["updated"] == 1
-                    assert stats["failed"] == 0
+            assert "api" in stats["source"]
+            assert stats["updated"] == 1
+            assert stats["failed"] == 0
 
     @pytest.mark.asyncio
     async def test_update_all_pricing_fallback_to_scraper(self, db_session):
@@ -461,21 +479,23 @@ class TestPricingUpdater:
             }
         ]
 
-        with patch(
-            "app.services.pricing_updater.get_settings", return_value=mock_settings
-        ):
-            with patch.object(
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings", return_value=mock_settings
+            ),
+            patch.object(
                 updater,
                 "_fetch_from_price_list_api",
                 side_effect=Exception("API Error"),
-            ):
-                with patch.object(
-                    updater, "_scrape_aws_pricing_page", return_value=mock_pricing_data
-                ):
-                    stats = await updater.update_all_pricing()
+            ),
+            patch.object(
+                updater, "_scrape_aws_pricing_page", return_value=mock_pricing_data
+            ),
+        ):
+            stats = await updater.update_all_pricing()
 
-                    assert "aws-scraper" in stats["source"]
-                    assert stats["updated"] == 1
+            assert "aws-scraper" in stats["source"]
+            assert stats["updated"] == 1
 
     @pytest.mark.asyncio
     async def test_update_all_pricing_both_fail(self, db_session):
@@ -485,23 +505,25 @@ class TestPricingUpdater:
         mock_settings = MagicMock()
         mock_settings.AWS_REGION = "us-east-1"
 
-        with patch(
-            "app.services.pricing_updater.get_settings", return_value=mock_settings
-        ):
-            with patch.object(
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings", return_value=mock_settings
+            ),
+            patch.object(
                 updater,
                 "_fetch_from_price_list_api",
                 side_effect=Exception("API Error"),
-            ):
-                with patch.object(
-                    updater,
-                    "_scrape_aws_pricing_page",
-                    side_effect=Exception("Scraper Error"),
-                ):
-                    stats = await updater.update_all_pricing()
+            ),
+            patch.object(
+                updater,
+                "_scrape_aws_pricing_page",
+                side_effect=Exception("Scraper Error"),
+            ),
+        ):
+            stats = await updater.update_all_pricing()
 
-                    assert stats["updated"] == 0
-                    assert stats["failed"] == 2
+            assert stats["updated"] == 0
+            assert stats["failed"] == 2
 
     @pytest.mark.asyncio
     async def test_update_all_pricing_seeds_available_official_profiles(
@@ -855,18 +877,20 @@ class TestPricingIntegration:
         mock_settings.AWS_REGION = "us-east-1"
 
         # Step 3: Simulate auto-fetch from API when database is empty
-        with patch(
-            "app.services.pricing_updater.get_settings", return_value=mock_settings
-        ):
-            with patch.object(
+        with (
+            patch(
+                "app.services.pricing_updater.get_settings", return_value=mock_settings
+            ),
+            patch.object(
                 updater, "_fetch_from_price_list_api", return_value=mock_pricing_data
-            ):
-                with patch.object(updater, "_scrape_aws_pricing_page", return_value=[]):
-                    stats = await updater.update_all_pricing()
+            ),
+            patch.object(updater, "_scrape_aws_pricing_page", return_value=[]),
+        ):
+            stats = await updater.update_all_pricing()
 
-                    assert "api" in stats["source"]
-                    assert stats["updated"] == 3
-                    assert stats["failed"] == 0
+            assert "api" in stats["source"]
+            assert stats["updated"] == 3
+            assert stats["failed"] == 0
 
         # Step 4: Verify data was inserted into database
         result = await db_session.execute(select(ModelPricing))
