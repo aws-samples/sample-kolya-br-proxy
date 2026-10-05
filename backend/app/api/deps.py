@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportGeneralTypeIssues=false, reportArgumentType=false, reportAttributeAccessIssue=false
 """
 API dependencies for authentication and authorization.
 Provides dependency injection for database sessions, current user, and token validation.
@@ -460,7 +463,9 @@ def require_permission(permission: str):
             if not user_perms:
                 return current_user
             perm_value = user_perms.get(permission)
-            if perm_value is None or perm_value is False:
+            # Booleans by type, not equality: 0/1 are not False/True here
+            # (pinned by tests/test_permission_values.py).
+            if perm_value is None or (isinstance(perm_value, bool) and not perm_value):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Permission denied: {permission}",
@@ -488,7 +493,7 @@ def get_allowed_resource_ids(user: User, permission: str) -> Optional[list[str]]
     if not user_perms:
         return None
     perm_value = user_perms.get(permission)
-    if perm_value is True or perm_value == "all":
+    if (isinstance(perm_value, bool) and perm_value) or perm_value == "all":
         return None
     if isinstance(perm_value, list):
         return perm_value

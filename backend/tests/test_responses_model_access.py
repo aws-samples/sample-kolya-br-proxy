@@ -11,12 +11,14 @@ for authorization while the mantle canonical ID is still forwarded downstream.
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from app.api.v1.endpoints import responses as responses_module
+from app.models.token import APIToken
 
 
 def _http_request(body):
@@ -36,7 +38,9 @@ def _db_with_models(names):
 
 
 async def _call(requested_model, canonical, allowed_names):
-    token = SimpleNamespace(id="tok", user_id="usr", token_metadata=None)
+    token = cast(
+        APIToken, SimpleNamespace(id="tok", user_id="usr", token_metadata=None)
+    )
     db = _db_with_models(allowed_names)
     http_request = _http_request({"model": requested_model, "stream": False})
 
@@ -75,7 +79,7 @@ async def test_region_prefixed_grant_authorises(requested, canonical, granted):
     _result, passthrough = await _call(requested, canonical, allowed_names=[granted])
     # Authorised → forwarded to mantle with the canonical (bare) ID.
     passthrough.assert_awaited_once()
-    forwarded_body = passthrough.await_args.args[0]
+    forwarded_body = passthrough.await_args_list[0].args[0]
     assert forwarded_body["model"] == canonical
 
 

@@ -165,6 +165,23 @@ class PricingUpdater:
             logger.warning(f"Failed to apply AWS model-card pricing: {e}")
             stats["failed"] += 1
 
+        # 4b. Per-modality embedding prices (text tokens/requests, images,
+        #     audio/video seconds) live in their own table. Reported in
+        #     separate stats so token-pricing "failed" keeps its meaning;
+        #     a failure here keeps previously stored embedding prices.
+        stats["embedding_count"] = 0
+        stats["embedding_failed"] = False
+        try:
+            embedding_count = await self._update_embedding_pricing()
+            stats["embedding_count"] = embedding_count
+            if embedding_count:
+                stats["sources"].append("aws-embedding-pricing")
+                logger.info(f"Updated {embedding_count} embedding pricing records")
+        except Exception as e:
+            await self.db.rollback()
+            stats["embedding_failed"] = True
+            logger.warning(f"Failed to update embedding pricing: {e}")
+
         # 5. Clean up stale cross-region pricing entries
         await self.cleanup_stale_cross_region_entries()
 
@@ -181,6 +198,13 @@ class PricingUpdater:
         )
 
         return stats
+
+    async def _update_embedding_pricing(self) -> int:
+        from app.services.embedding_pricing import (  # pyright: ignore[reportMissingImports]
+            update_embedding_pricing,
+        )
+
+        return await update_embedding_pricing(self.db)
 
     async def ensure_official_profile_pricing(self) -> int:
         """Insert source-backed prices for locally available exact profiles.

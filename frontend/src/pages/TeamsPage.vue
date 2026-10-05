@@ -42,7 +42,7 @@
 
             <template v-slot:body-cell-used="props">
               <q-td :props="props">
-                <div>${{ props.row.total_used_usd }}</div>
+                <div>${{ formatCostUsd(props.row.total_used_usd) }}</div>
                 <q-linear-progress
                   :value="getBudgetProgress(props.row)"
                   :color="getBudgetColor(props.row)"
@@ -148,7 +148,7 @@
         <q-card class="col">
           <q-card-section>
             <div class="text-caption text-grey-7">Total Used</div>
-            <div class="text-h5">${{ selectedTeam.total_used_usd }}</div>
+            <div class="text-h5">${{ formatCostUsd(selectedTeam.total_used_usd) }}</div>
           </q-card-section>
         </q-card>
         <q-card class="col">
@@ -676,6 +676,7 @@ import { useAlertsStore, TEAM_RULES, getRuleLabel } from 'src/stores/alerts';
 import type { CreateAlertRulePayload } from 'src/stores/alerts';
 import { Dialog, Notify } from 'quasar';
 import { extractErrorMessage } from 'src/utils/error';
+import { formatCostUsd } from 'src/utils/balance';
 import type { TeamListItem, TeamMember } from 'src/stores/teams';
 
 const teamsStore = useTeamsStore();

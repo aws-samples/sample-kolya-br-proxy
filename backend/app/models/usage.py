@@ -1,3 +1,6 @@
+# Pyright cannot model runtime scalar values on this module's legacy SQLAlchemy
+# declarative Column attributes. Remove these overrides with the Mapped[] migration.
+# pyright: reportGeneralTypeIssues=false, reportReturnType=false
 """Usage tracking model for API usage and billing."""
 
 from datetime import datetime
@@ -51,8 +54,10 @@ class UsageRecord(Base):
     cache_creation_input_tokens = Column(Integer, default=0, nullable=False)
     cache_read_input_tokens = Column(Integer, default=0, nullable=False)
 
-    # Cost information
-    cost_usd = Column(Numeric(10, 4), default=Decimal("0.0000"), nullable=False)
+    # Cost information. Scale 10 matches model_pricing per-token prices so
+    # sub-cent requests (e.g. a short embedding at ~$0.0000014) are not
+    # rounded to zero.
+    cost_usd = Column(Numeric(20, 10), default=Decimal("0"), nullable=False)
 
     # Record classification: "usage" (real API call) or "adjustment" (admin debit/credit)
     record_type = Column(String(20), nullable=False, server_default="usage")

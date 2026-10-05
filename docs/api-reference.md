@@ -3,7 +3,7 @@
 Kolya BR Proxy exposes four API groups:
 
 | Group | Prefix | Auth | Purpose |
-|-------|--------|------|---------|
+| --- | --- | --- | --- |
 | Gateway API (OpenAI) | `/v1` | `Authorization: Bearer` | OpenAI-compatible chat completions |
 | Gateway API (Anthropic) | `/v1` | `x-api-key` header | Anthropic Messages API compatible |
 | Gateway API (Responses) | `/v1` | `Authorization: Bearer` | Native OpenAI Responses API passthrough (mantle / GPT-5.5 / GPT-5.4) |
@@ -20,7 +20,7 @@ Base URL examples:
 
 All Gateway endpoints require an API token in the `Authorization` header:
 
-```
+```text
 Authorization: Bearer kbr_<your_token>
 ```
 
@@ -31,7 +31,7 @@ Create a chat completion. Accepts OpenAI-format requests and proxies them to AWS
 **Request body** (`ChatCompletionRequest`):
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `model` | string | *required* | Bedrock model ID (e.g. `global.anthropic.claude-sonnet-4-5-20250929-v1:0`, `us.amazon.nova-pro-v1:0`, `deepseek.r1-v1:0`) |
 | `messages` | array | *required* | Array of `ChatMessage` objects |
 | `stream` | boolean | `false` | Enable SSE streaming |
@@ -49,7 +49,7 @@ Create a chat completion. Accepts OpenAI-format requests and proxies them to AWS
 **Bedrock extension fields** (set via body or `X-Bedrock-*` headers):
 
 | Field | Header | Description |
-|-------|--------|-------------|
+| --- | --- | --- |
 | `bedrock_guardrail_config` | `X-Bedrock-Guardrail-Id` + `X-Bedrock-Guardrail-Version` | Guardrail configuration |
 | `bedrock_additional_model_request_fields` | `X-Bedrock-Additional-Fields` (JSON) | Extra model request fields |
 | `bedrock_trace` | `X-Bedrock-Trace` | Trace mode (`ENABLED` / `DISABLED`) |
@@ -76,7 +76,7 @@ The `effort` parameter (`low` / `medium` / `high`) controls how much thinking ef
 **ChatMessage schema**:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `role` | string | `system`, `user`, `assistant`, or `tool` |
 | `content` | string \| array | Text string or array of `ContentPart` (multimodal) |
 | `name` | string | Optional participant name |
@@ -147,7 +147,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 
 **Streaming response** (SSE `text/event-stream`):
 
-```
+```text
 data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1700000000,"model":"...","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-...","object":"chat.completion.chunk","created":1700000000,"model":"...","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
@@ -175,7 +175,7 @@ The gateway supports OpenAI-compatible tool use. Tool call deltas stream increme
 ```
 
 | Status | Meaning |
-|--------|---------|
+| --- | --- |
 | 400 | Invalid request (bad model name, malformed body) |
 | 401 | Missing or invalid API token |
 | 403 | Token lacks access to requested model |
@@ -209,7 +209,7 @@ for chunk in stream:
 
 All Anthropic-compatible endpoints require an API key in the `x-api-key` header:
 
-```
+```text
 x-api-key: kbr_<your_token>
 ```
 
@@ -222,7 +222,7 @@ Create a message. Accepts Anthropic Messages API format requests and proxies the
 **Request body** (`AnthropicMessagesRequest`):
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `model` | string | *required* | Bedrock model ID **or** Anthropic short name (e.g. `global.anthropic.claude-sonnet-4-5-20250929-v1:0` or `claude-sonnet-4-5-20250929`). The proxy normalizes both formats for access control and routes using the Bedrock ID. |
 | `messages` | array | *required* | Array of message objects (role: `user` or `assistant`) |
 | `max_tokens` | integer | *required* | Maximum tokens to generate |
@@ -297,7 +297,7 @@ curl -X POST http://localhost:8000/v1/messages \
 
 **Streaming response** (SSE `text/event-stream`, Anthropic format):
 
-```
+```text
 event: message_start
 data: {"type":"message_start","message":{"id":"msg_...","type":"message","role":"assistant","content":[],"model":"...","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}
 
@@ -383,7 +383,7 @@ For persistent configuration, add to `~/.claude/settings.json`:
 ```
 
 | Status | Error Type | Meaning |
-|--------|-----------|---------|
+| --- | --- | --- |
 | 400 | `invalid_request_error` | Invalid request (bad model name, malformed body) |
 | 401 | `authentication_error` | Missing or invalid API key |
 | 403 | `permission_error` | Token lacks access to requested model |
@@ -461,7 +461,7 @@ The API key determines the token scope. The client cannot supply a `token_id` or
 
 ### GET /v1/usage/quota
 
-Returns the authoritative quota snapshot used by gateway enforcement. Monetary values are decimal strings in USD so clients do not lose precision.
+Returns the authoritative quota snapshot used by gateway enforcement. Monetary values are decimal strings in USD so clients do not lose precision. Usage costs are stored with ten decimal places (`numeric(20, 10)`), so amounts derived from them can carry up to ten fractional digits (for example `"24.9999986500"`); parse them as decimals rather than assuming two or four digits.
 
 ```json
 {
@@ -510,7 +510,7 @@ Quota semantics:
 Returns UTC daily usage for the authenticated API key. The range is half-open (`start_date <= timestamp < end_date`) and limited to 90 days.
 
 | Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `start_date` | ISO 8601 datetime | yes | Inclusive range start; a missing timezone is interpreted as UTC |
 | `end_date` | ISO 8601 datetime | yes | Exclusive range end; a missing timezone is interpreted as UTC |
 
@@ -549,7 +549,7 @@ Days without usage are omitted. Consumers can zero-fill missing UTC dates before
 OpenAI **GPT-5.5** (`openai.gpt-5.5`) and **GPT-5.4** (`openai.gpt-5.4`) are served by AWS's "mantle" inference engine through the native **OpenAI Responses API** (`provider: openai-mantle`). These models can be reached three ways:
 
 | Path | Mode |
-|------|------|
+| --- | --- |
 | `POST /v1/chat/completions` | OpenAI Chat Completions, translated to/from the Responses format |
 | `POST /v1/messages` | Anthropic Messages, translated to/from the Responses format |
 | `POST /v1/responses` | **Native Responses passthrough** — full mantle capability surface, no lossy conversion |
@@ -565,7 +565,7 @@ Requires the same `Authorization: Bearer kbr_<token>` auth, token quota enforcem
 **Request body**: an **open JSON object** — forwarded to mantle verbatim. Unknown/new Responses fields pass straight through (no strict schema). Common native Responses fields:
 
 | Field | Type | Description |
-|-------|------|-------------|
+| --- | --- | --- |
 | `model` | string | *required* -- must be a mantle model (e.g. `openai.gpt-5.6-luna`). The bare name without the `openai.` prefix (`gpt-5.6-luna`) is also accepted and normalized. |
 | `input` | array | Input items; each has a `role` and a `content` array of parts (`input_text`, `output_text`, `input_image`) |
 | `stream` | boolean | Enable native Responses SSE streaming (default `false`) |
@@ -637,7 +637,7 @@ curl -X POST http://localhost:8000/v1/responses \
 
 **Streaming response** (SSE `text/event-stream`, native Responses named events, passed through unchanged):
 
-```
+```text
 event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":"Hello"}
 
@@ -662,11 +662,98 @@ Same status codes as `/v1/chat/completions`. Additionally, **400** is returned w
 
 ---
 
+## 1e. Embeddings (POST /v1/embeddings)
+
+OpenAI-compatible embeddings for **text and images**. Both supported models are multimodal: text and images map into one vector space, so a text query can retrieve images and vice versa. Any other model returns **400**.
+
+| Model ID | Dimensions | Notes |
+| --- | --- | --- |
+| `amazon.nova-2-multimodal-embeddings-v1:0` | 256, 384, 1024, 3072 (default) | `purpose` maps to Nova `embeddingPurpose` (default `GENERIC_INDEX`) |
+| `twelvelabs.marengo-embed-3-0-v1:0` | 512 (fixed) | `purpose` is ignored |
+
+Authenticate with `Authorization: Bearer` or `x-api-key`. The model must be in the token's model allowlist, and the token's quota is enforced before calling Bedrock.
+
+### Request
+
+`input` is a string or a list of up to 96 items. Each item produces exactly one embedding, and `data[i]` corresponds to `input[i]`. Images are sent **inline** as `data:image/<png|jpeg|gif|webp>;base64,...` data URIs, the same way images are sent to chat models:
+
+```json
+{
+  "model": "amazon.nova-2-multimodal-embeddings-v1:0",
+  "dimensions": 1024,
+  "input": [
+    "a runner on a track",
+    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/..."}},
+    "data:image/png;base64,iVBORw0KGgo..."
+  ]
+}
+```
+
+| Item form | Meaning |
+| --- | --- |
+| `"text"` | Text |
+| `"data:image/...;base64,..."` | Image (never embedded as text) |
+| `{"type": "image_url", "image_url": {"url": "<data URI>"}}` | Image (chat format; `image_url` may also be the data URI string) |
+| `{"image": "<data URI>"}` | Image |
+| `{"type": "text", "text": "..."}` or `{"text": "..."}` | Text |
+
+Optional fields: `dimensions`, `purpose` (Nova: `GENERIC_INDEX`, `GENERIC_RETRIEVAL`, `TEXT_RETRIEVAL`, `IMAGE_RETRIEVAL`, `DOCUMENT_RETRIEVAL`, `CLASSIFICATION`, `CLUSTERING`), `encoding_format` (`"float"` only). Use the same model and `dimensions` for everything you index and query; vectors from different models or sizes are not comparable.
+
+### Response
+
+```json
+{
+  "object": "list",
+  "model": "amazon.nova-2-multimodal-embeddings-v1:0",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": [0.012, -0.034, ...]},
+    {"object": "embedding", "index": 1, "embedding": [0.051, 0.007, ...]}
+  ],
+  "usage": {"prompt_tokens": 5, "total_tokens": 5}
+}
+```
+
+`usage` reports text tokens only; images are billed per image (see Billing).
+
+### Errors
+
+| Status | Cause |
+| --- | --- |
+| 400 | Malformed item (the message names it, for example `input[2]: image data is not valid base64`), image URLs (`http(s)://` images are not fetched), unsupported image type, token-ID arrays, unsupported model, dimensions, or purpose |
+| 403 | Model not in the token's allowlist |
+| 413 | An image is larger than `KBR_EMBEDDING_MAX_IMAGE_BYTES` (`code: image_too_large`, message names the item) |
+| 429 | Quota exceeded or Bedrock throttling |
+| 502 / 503 / 504 | Bedrock returned an unreadable response, is unavailable, or timed out |
+
+### Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `KBR_EMBEDDING_REGION` | Bedrock region for embeddings (default `us-east-1`). Independent of `KBR_AWS_REGION`: neither model is served in some regions, including us-west-2, so a gateway in us-west-2 sends embedding requests (text and images) to us-east-1 |
+| `KBR_EMBEDDING_MAX_IMAGE_BYTES` | Maximum decoded size of one inline image (default 20 MiB) |
+
+The gateway IAM role needs `bedrock:InvokeModel` for the two models in `KBR_EMBEDDING_REGION` (covered by the existing `bedrock:*` grant). No S3 access is required.
+
+Model limits enforced by Bedrock (returned as **400**): Marengo Embed 3.0 requires images of at least 128×128 pixels.
+
+### Billing
+
+Embeddings are billed per modality, matching how AWS charges these models. Unit prices live in the `embedding_pricing` table and are refreshed by the daily pricing job (02:00 UTC, also on startup and admin-triggered refreshes) from the Bedrock pricing page and its public price JSON. A failed refresh keeps the last stored prices.
+
+| Unit | Nova Multimodal Embeddings | Marengo Embed 3.0 |
+| --- | --- | --- |
+| Text | per token (`text_token`) | per request (`text_request`) |
+| Image | per image (`standard_image`) | per image (`image`) |
+
+Prices are looked up for the routed region; when AWS publishes none there (Nova is priced only in us-east-1), another published region is used and recorded as `pricing_region`. Usage records carry `request_metadata.operation = "embedding"`, `input_types`, `billable_units`, and `pricing_region`; images themselves are never stored. `usage_records.cost_usd` keeps ten decimal places, so sub-cent requests (one Nova image is `$0.00006`) are recorded exactly. A record is flagged in `note` when a unit has no stored price (`embedding_pricing_missing`) or Nova returned no text token count (`embedding_billable_units_unavailable`); those units contribute zero cost.
+
+---
+
 ## 2. Admin API
 
 All Admin endpoints (except OAuth login URLs) require a JWT access token:
 
-```
+```text
 Authorization: Bearer <jwt_access_token>
 ```
 
@@ -675,14 +762,14 @@ Authorization: Bearer <jwt_access_token>
 The Admin API uses role-based access control with two roles:
 
 | Role | Access |
-|------|--------|
+| --- | --- |
 | `super_admin` | Full access to all endpoints and resources |
 | `admin` | Scoped access controlled by `permissions` object |
 
 Admin users have a `permissions` JSON object that controls what they can manage:
 
 | Permission | Values | Controls |
-|-----------|--------|----------|
+| --- | --- | --- |
 | `manage_api_keys` | `true`/`"all"`, `[id, ...]`, `false` | API token CRUD |
 | `manage_teams` | `true`/`"all"`, `[id, ...]`, `false` | Team CRUD |
 | `manage_models` | `true`/`"all"`, `[id, ...]`, `false` | Model configuration |
@@ -696,7 +783,7 @@ Admin users have a `permissions` JSON object that controls what they can manage:
 Endpoints are guarded by permission requirements:
 
 | Endpoint Group | Required Permission |
-|----------------|-------------------|
+| --- | --- |
 | `/admin/tokens/*` | `manage_api_keys` |
 | `/admin/teams/*` | `manage_teams` |
 | `/admin/models/*` | `manage_models` |
@@ -713,7 +800,7 @@ Endpoints are guarded by permission requirements:
 Get Microsoft OAuth authorization URL.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `redirect_uri` | query | string | Redirect URI after authorization |
 
 **Response**:
@@ -730,7 +817,7 @@ Get Microsoft OAuth authorization URL.
 Handle Microsoft OAuth callback. Creates or links user account.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `code` | query | string | Authorization code from Microsoft |
 | `redirect_uri` | query | string | Redirect URI used in authorization |
 | `state` | query | string | State parameter for CSRF protection |
@@ -768,7 +855,7 @@ Handle Microsoft OAuth callback. Creates or links user account.
 Get AWS Cognito OAuth authorization URL.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `redirect_uri` | query | string | Redirect URI after authorization |
 
 **Response**: Same structure as Microsoft login.
@@ -778,7 +865,7 @@ Get AWS Cognito OAuth authorization URL.
 Handle AWS Cognito OAuth callback. Creates or links user account.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `code` | query | string | Authorization code from Cognito |
 | `redirect_uri` | query | string | Redirect URI used in authorization |
 | `state` | query | string | State parameter for CSRF protection |
@@ -857,7 +944,7 @@ Create a new API token. The token prefix is hardcoded as `sk-ant-api03` and cann
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `name` | string | yes | Token display name |
 | `description` | string | no | Token description |
 | `expires_at` | datetime | no | Expiration timestamp |
@@ -900,7 +987,7 @@ Create a new API token. The token prefix is hardcoded as `sk-ant-api03` and cann
 List all tokens for the current user.
 
 | Parameter | In | Type | Default | Description |
-|-----------|-----|------|---------|-------------|
+| --- | --- | --- | --- | --- |
 | `include_inactive` | query | boolean | `false` | Include inactive/revoked tokens |
 
 **Response**: Array of `TokenResponse`.
@@ -995,7 +1082,7 @@ Results are cached in-memory for 12 hours.
 List enabled models from the database.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `token_id` | query | string | Optional -- filter by token UUID |
 
 **Response**:
@@ -1044,7 +1131,7 @@ Soft-delete a model configuration.
 Get aggregated usage statistics for the current user.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `start_date` | query | datetime | Optional custom range start |
 | `end_date` | query | datetime | Optional custom range end |
 
@@ -1067,7 +1154,7 @@ Get aggregated usage statistics for the current user.
 Usage statistics grouped by API token.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `token_id` | query | string | Optional filter |
 | `start_date` | query | datetime | Optional start |
 | `end_date` | query | datetime | Optional end |
@@ -1079,7 +1166,7 @@ Usage statistics grouped by API token.
 Usage statistics grouped by model.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `model` | query | string | Optional model filter |
 | `start_date` | query | datetime | Optional start |
 | `end_date` | query | datetime | Optional end |
@@ -1091,7 +1178,7 @@ Usage statistics grouped by model.
 Time-series usage data.
 
 | Parameter | In | Type | Required | Description |
-|-----------|-----|------|----------|-------------|
+| --- | --- | --- | --- | --- |
 | `start_date` | query | datetime | yes | Range start |
 | `end_date` | query | datetime | yes | Range end |
 | `granularity` | query | string | no | `hourly`, `daily` (default), `weekly`, `monthly` |
@@ -1122,7 +1209,7 @@ Time-series usage data.
 Per-token usage summary for a time period.
 
 | Parameter | In | Type | Required | Description |
-|-----------|-----|------|----------|-------------|
+| --- | --- | --- | --- | --- |
 | `start_date` | query | datetime | yes | Range start |
 | `end_date` | query | datetime | yes | Range end |
 
@@ -1145,7 +1232,7 @@ Per-token usage summary for a time period.
 Multi-token time-series data for chart overlays.
 
 | Parameter | In | Type | Required | Description |
-|-----------|-----|------|----------|-------------|
+| --- | --- | --- | --- | --- |
 | `start_date` | query | datetime | yes | Range start |
 | `end_date` | query | datetime | yes | Range end |
 | `token_ids` | query | string | yes | Comma-separated token UUIDs |
@@ -1177,7 +1264,7 @@ Multi-token time-series data for chart overlays.
 List audit logs with pagination and filters.
 
 | Parameter | In | Type | Default | Description |
-|-----------|-----|------|---------|-------------|
+| --- | --- | --- | --- | --- |
 | `page` | query | integer | `1` | Page number (1-based) |
 | `page_size` | query | integer | `50` | Items per page (max 200) |
 | `user_id` | query | uuid | null | Filter by user |
@@ -1217,7 +1304,7 @@ List audit logs with pagination and filters.
 Audit activity summary with counts by action type.
 
 | Parameter | In | Type | Description |
-|-----------|-----|------|-------------|
+| --- | --- | --- | --- |
 | `start_date` | query | datetime | Optional from date |
 | `end_date` | query | datetime | Optional to date |
 
@@ -1242,7 +1329,7 @@ Audit activity summary with counts by action type.
 Activity feed visible to all admins. Shows only management operations (token/team/model/admin CRUD) from the last N days. Non-super_admin users cannot see actions performed by super_admins.
 
 | Parameter | In | Type | Default | Description |
-|-----------|-----|------|---------|-------------|
+| --- | --- | --- | --- | --- |
 | `page` | query | integer | `1` | Page number (1-based) |
 | `page_size` | query | integer | `50` | Items per page (max 100) |
 | `days` | query | integer | `7` | Lookback window (1-30 days) |
@@ -1325,7 +1412,7 @@ Invite a new admin. Creates a Cognito user with a temporary password and a local
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `email` | string | yes | Admin email address |
 | `username` | string | yes | Cognito login username |
 | `temp_password` | string | yes | Temporary password (must change on first login) |
@@ -1388,7 +1475,7 @@ Create a new team.
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `name` | string | yes | Team name |
 | `monthly_budget_usd` | decimal | yes | Monthly budget in USD |
 | `monthly_reset_policy` | string | no | `"reset"` (default) or `"rollover"` |

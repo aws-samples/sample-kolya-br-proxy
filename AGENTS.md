@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus MCP
 
-This project is indexed by GitNexus as **kolya-br-proxy** (750 symbols, 1646 relationships, 49 execution flows).
+This project is indexed by GitNexus as **kolya-br-proxy** (2076 symbols, 5820 relationships, 150 execution flows).
 
 ## Always Start Here
 
@@ -14,7 +14,7 @@ This project is indexed by GitNexus as **kolya-br-proxy** (750 symbols, 1646 rel
 ## Skills
 
 | Task | Read this skill file |
-|------|---------------------|
+| --- | --- |
 | Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
 | Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
 | Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |

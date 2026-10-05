@@ -55,7 +55,8 @@ async def readiness_check(db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
     # Check database connectivity
     try:
         result = await db.execute(text("SELECT 1"))
-        await result.fetchone()
+        # AsyncSession.execute returns a buffered Result; fetchone() is sync.
+        result.fetchone()
         components["database"] = {"status": "healthy", "message": "Connected"}
         logger.debug("Database health check passed")
     except Exception as e:

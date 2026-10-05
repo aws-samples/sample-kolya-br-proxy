@@ -5,7 +5,7 @@ Cloud-native configuration following Twelve-Factor App principles.
 
 import functools
 import os
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings
@@ -116,6 +116,17 @@ class Settings(BaseSettings):
         default=10,
         description="Token bucket: maximum burst size. In Redis mode this is the global burst; "
         "in local mode it is per-Pod burst.",
+    )
+    EMBEDDING_REGION: str = Field(
+        default="us-east-1",
+        description="Bedrock region for /v1/embeddings. Nova Multimodal Embeddings and "
+        "Marengo Embed 3.0 are not served in every region (not in us-west-2), so "
+        "embeddings are routed here independently of AWS_REGION.",
+    )
+    EMBEDDING_MAX_IMAGE_BYTES: int = Field(
+        default=20 * 1024 * 1024,
+        ge=1,
+        description="Maximum decoded size of one inline image in /v1/embeddings.",
     )
     PROMPT_CACHE_AUTO_INJECT: bool = Field(
         default=False,
@@ -357,7 +368,12 @@ def get_settings() -> Settings:
     require a pod restart to take effect, so caching is safe and avoids
     redundant env file reads and Pydantic validation on every call.
     """
-    return Settings()
+    # Required fields (DATABASE_URL, JWT_SECRET_KEY) are populated from KBR_* env
+    # at runtime, which static checkers cannot see. Passing no overrides through
+    # an empty kwargs mapping is identical to Settings() but avoids a false
+    # "missing arguments" error.
+    no_overrides: dict[str, Any] = {}
+    return Settings(**no_overrides)
 
 
 def get_environment() -> str:

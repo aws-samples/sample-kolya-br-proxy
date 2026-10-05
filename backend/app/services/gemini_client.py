@@ -102,8 +102,10 @@ async def build_gemini_url_and_headers(
         )
         token = await _get_vertex_access_token()
         return url, {"Authorization": f"Bearer {token}"}
-    url = f"{GEMINI_BASE_URL}/{model_id}:{method}?key={settings.GEMINI_API_KEY}"
-    return url, {}
+    # Send the key as a header, not a ?key= query parameter: URLs end up in
+    # httpx/proxy access logs, headers do not.
+    url = f"{GEMINI_BASE_URL}/{model_id}:{method}"
+    return url, {"x-goog-api-key": settings.GEMINI_API_KEY or ""}
 
 
 # Gemini finishReason → OpenAI finish_reason
@@ -142,6 +144,7 @@ def _format_model_entry(model_id: str, display_name: str) -> Optional[Dict]:
     Returns None if the model should be filtered out (non-Gemini-2+, embedding, etc).
     """
     m = re.match(r"gemini-([0-9]+)", model_id)
+    # pi-lens-ignore: unchecked-numeric-parse-python -- group is [0-9]+ by regex
     if not m or int(m.group(1)) < 2:
         return None
     if any(kw in model_id for kw in _EXCLUDED_KEYWORDS):
@@ -499,6 +502,7 @@ def _gemini_response_to_openai(
     return {
         "id": request_id,
         "object": "chat.completion",
+        # pi-lens-ignore: unchecked-numeric-parse-python -- time.time() is a float
         "created": int(time.time()),
         "model": model,
         "choices": choices,
@@ -588,10 +592,18 @@ def extract_cached_tokens(response: dict) -> int:
     if isinstance(details, list):
         for item in details:
             if isinstance(item, dict) and "cached_tokens" in item:
-                return int(item["cached_tokens"])
+                return _token_count(item["cached_tokens"])
     elif isinstance(details, dict):
-        return int(details.get("cached_tokens", 0))
+        return _token_count(details.get("cached_tokens", 0))
     return 0
+
+
+def _token_count(value: Any) -> int:
+    """Upstream usage counts are advisory; malformed values count as 0."""
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def extract_cached_tokens_from_chunk(data: dict) -> Optional[int]:
@@ -630,12 +642,13 @@ class GeminiClient:
     @classmethod
     async def _list_models_aistudio(cls, api_key: str) -> List[Dict]:
         """Fetch models from AI Studio (personal API key)."""
-        url = f"{GEMINI_BASE_URL}?key={api_key}&pageSize=100"
+        headers = {"x-goog-api-key": api_key}
+        params: Dict[str, Any] = {"pageSize": 100}
         models = []
 
         async with httpx.AsyncClient(timeout=30) as client:
-            while url:
-                resp = await client.get(url)
+            while True:
+                resp = await client.get(GEMINI_BASE_URL, params=params, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -650,12 +663,9 @@ class GeminiClient:
                         models.append(entry)
 
                 next_token = data.get("nextPageToken")
-                url = (
-                    f"{GEMINI_BASE_URL}?key={api_key}&pageSize=100"
-                    f"&pageToken={next_token}"
-                    if next_token
-                    else None
-                )
+                if not next_token:
+                    break
+                params = {"pageSize": 100, "pageToken": next_token}
 
         models.sort(key=lambda m: m["model_id"])
         logger.info(f"Fetched {len(models)} Gemini models from AI Studio")
@@ -732,6 +742,7 @@ class GeminiClient:
 
         gemini_body = _openai_to_gemini_payload(payload)
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
+        # pi-lens-ignore: unchecked-numeric-parse-python -- time.time() is a float
         created = int(time.time())
 
         async with httpx.AsyncClient(timeout=3600) as client:
