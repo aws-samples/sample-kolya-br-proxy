@@ -9,6 +9,10 @@
 #   ./build-and-push.sh frontend           # Build and push frontend only
 #   ./build-and-push.sh --tag v1.2.3       # Use custom tag
 #   ./build-and-push.sh --skip-login       # Skip ECR login (if already logged in)
+#
+# Frontend builds bake the API URL into the bundle at build time and REQUIRE:
+#   VITE_API_BASE_URL=https://api.example.com ./build-and-push.sh frontend
+#   ./build-and-push.sh frontend --api-url https://api.example.com
 
 set -e
 
@@ -46,6 +50,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_LOGIN=true
             shift
             ;;
+        --api-url)
+            VITE_API_BASE_URL="$2"
+            shift 2
+            ;;
         --help|-h)
             echo "Usage: $0 [backend|frontend] [--tag TAG] [--region REGION] [--skip-login]"
             echo ""
@@ -55,6 +63,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --tag TAG        Use custom image tag (default: latest + timestamp)"
             echo "  --region REGION  AWS region (default: us-west-2)"
             echo "  --skip-login     Skip ECR login step"
+            echo "  --api-url URL    Frontend API base URL (or set VITE_API_BASE_URL); required for frontend"
             echo "  --help           Show this help"
             exit 0
             ;;
@@ -92,6 +101,21 @@ print_warning() {
 print_info() {
     echo -e "${BLUE}ℹ️  $1${NC}"
 }
+
+# Frontend bundles fall back to http://localhost:8000 when the API URL is
+# missing, which silently breaks a deployed site (CORS failures). Fail fast.
+if [[ "$BUILD_TARGET" != "backend" ]]; then
+    if [[ -z "${VITE_API_BASE_URL:-}" ]]; then
+        print_error "VITE_API_BASE_URL is required to build the frontend."
+        echo "  Example: VITE_API_BASE_URL=https://api.example.com $0 frontend"
+        echo "       or: $0 frontend --api-url https://api.example.com"
+        exit 1
+    fi
+    if [[ "$VITE_API_BASE_URL" == *localhost* || "$VITE_API_BASE_URL" == *127.0.0.1* ]]; then
+        print_error "VITE_API_BASE_URL points to localhost: $VITE_API_BASE_URL"
+        exit 1
+    fi
+fi
 
 # Get AWS account ID
 print_header "Docker Build and Push to ECR"
@@ -221,12 +245,26 @@ build_frontend() {
 
     cd "$SCRIPT_DIR/frontend"
 
-    if docker build --no-cache --network host --platform linux/arm64 -t "$image_latest" -t "$image_timestamp" . ; then
+    print_info "API base URL: $VITE_API_BASE_URL"
+
+    if docker build --no-cache --network host --platform linux/arm64 \
+        --build-arg VITE_API_BASE_URL="$VITE_API_BASE_URL" \
+        -t "$image_latest" -t "$image_timestamp" . ; then
         print_success "Frontend image built successfully"
     else
         print_error "Frontend image build failed"
         return 1
     fi
+
+    # Guard against a bundle that still targets localhost.
+    local cid
+    cid=$(docker create "$image_latest")
+    if docker cp "$cid:/usr/share/nginx/html/assets" - 2>/dev/null | grep -aq "localhost:8000"; then
+        docker rm "$cid" >/dev/null
+        print_error "Built frontend bundle still references localhost:8000; refusing to push"
+        return 1
+    fi
+    docker rm "$cid" >/dev/null
 
     print_step "Pushing frontend image to ECR..."
     print_info "Pushing: $image_latest"
