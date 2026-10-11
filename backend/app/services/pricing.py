@@ -233,12 +233,22 @@ OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
     ),
 }
 
+# Mantle uses the canonical model ID while Bedrock Runtime uses the US Geo CRIS
+# inference-profile ID.  The GPT-5.6 Sol model card publishes identical
+# In-Region and Geo CRIS rates, so both invocation IDs must share one pricing
+# policy.  Keep aliases outside OFFICIAL_PROFILE_PRICING: the updater intersects
+# that mapping with locally available inference profiles when seeding DB rows.
+OFFICIAL_PRICING_ALIASES: dict[str, str] = {
+    "openai.gpt-5.6-sol": "us.openai.gpt-5.6-sol",
+}
+
 
 def get_official_profile_pricing(
     model_id: str,
 ) -> OfficialProfilePricing | None:
-    """Return model-card pricing only for an exact profile ID."""
-    return OFFICIAL_PROFILE_PRICING.get(model_id)
+    """Return model-card pricing for an exact profile or approved alias."""
+    pricing_id = OFFICIAL_PRICING_ALIASES.get(model_id, model_id)
+    return OFFICIAL_PROFILE_PRICING.get(pricing_id)
 
 
 class ModelPricing:
