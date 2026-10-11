@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { calculateRemainingLifetimeBalance, formatCostUsd } from 'src/utils/balance';
+import { calculateRemainingLifetimeBalance, formatCostUsd } from '@/utils/balance';
 
 describe('calculateRemainingLifetimeBalance', () => {
   it('sums active standalone lifetime remaining quota', () => {

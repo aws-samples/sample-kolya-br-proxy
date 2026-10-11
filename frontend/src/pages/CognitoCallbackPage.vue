@@ -16,8 +16,8 @@
 <script setup lang="ts">
 import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useAuthStore } from 'src/stores/auth';
-import { api } from 'src/boot/axios';
+import { useAuthStore } from '@/stores/auth';
+import { api } from '@/boot/axios';
 import { Notify } from 'quasar';
 
 const router = useRouter();

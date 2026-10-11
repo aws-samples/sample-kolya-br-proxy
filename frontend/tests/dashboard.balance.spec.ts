@@ -30,13 +30,13 @@ const stores = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('src/stores/tokens', () => ({ useTokensStore: () => stores.tokens }));
-vi.mock('src/stores/dashboard', () => ({ useDashboardStore: () => stores.dashboard }));
-vi.mock('src/stores/auth', () => ({ useAuthStore: () => stores.auth }));
-vi.mock('src/boot/axios', () => ({ api: { get: vi.fn() } }));
-vi.mock('src/utils/api', () => ({ getApiBaseUrl: () => 'http://localhost' }));
+vi.mock('@/stores/tokens', () => ({ useTokensStore: () => stores.tokens }));
+vi.mock('@/stores/dashboard', () => ({ useDashboardStore: () => stores.dashboard }));
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => stores.auth }));
+vi.mock('@/boot/axios', () => ({ api: { get: vi.fn() } }));
+vi.mock('@/utils/api', () => ({ getApiBaseUrl: () => 'http://localhost' }));
 
-import DashboardPage from 'src/pages/DashboardPage.vue';
+import DashboardPage from '@/pages/DashboardPage.vue';
 
 describe('Dashboard lifetime balance card', () => {
   beforeEach(() => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { getModelProvider } from 'src/utils/model-provider';
+import { getModelProvider } from '@/utils/model-provider';
 
 describe('getModelProvider', () => {
   it('recognizes OpenAI behind a cross-region inference profile', () => {

@@ -1,4 +1,4 @@
-import { boot } from 'quasar/wrappers';
+import { defineBoot } from '#q-app';
 import axios, { type AxiosInstance } from 'axios';
 import { Notify } from 'quasar';
 
@@ -187,7 +187,7 @@ api.interceptors.response.use(
   },
 );
 
-export default boot(({ app }) => {
+export default defineBoot(({ app }) => {
   // Make axios available globally
   app.config.globalProperties.$axios = axios;
   app.config.globalProperties.$api = api;

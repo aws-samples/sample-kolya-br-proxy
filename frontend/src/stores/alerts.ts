@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
-import { api } from 'src/boot/axios';
+import { api } from '@/boot/axios';
 import { Notify } from 'quasar';
-import { extractErrorMessage } from 'src/utils/error';
+import { extractErrorMessage } from '@/utils/error';
 
 export interface AlertRule {
   id: string;

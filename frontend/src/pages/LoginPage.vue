@@ -48,7 +48,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue';
-import { api } from 'src/boot/axios';
+import { api } from '@/boot/axios';
 import { Notify } from 'quasar';
 
 const loadingCognito = ref(false);

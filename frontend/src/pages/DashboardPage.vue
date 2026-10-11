@@ -167,12 +167,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { Notify } from 'quasar';
-import { useTokensStore } from 'src/stores/tokens';
-import { useDashboardStore } from 'src/stores/dashboard';
-import { useAuthStore } from 'src/stores/auth';
-import { api } from 'src/boot/axios';
-import { getApiBaseUrl } from 'src/utils/api';
-import { calculateRemainingLifetimeBalance, formatCostUsd } from 'src/utils/balance';
+import { useTokensStore } from '@/stores/tokens';
+import { useDashboardStore } from '@/stores/dashboard';
+import { useAuthStore } from '@/stores/auth';
+import { api } from '@/boot/axios';
+import { getApiBaseUrl } from '@/utils/api';
+import { calculateRemainingLifetimeBalance, formatCostUsd } from '@/utils/balance';
 
 const tokensStore = useTokensStore();
 const dashboardStore = useDashboardStore();

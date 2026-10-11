@@ -36,7 +36,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { Resources } from 'src/types/permissions';
+import type { Resources } from '@/types/permissions';
 
 const ALL_VALUE = '__all__';
 

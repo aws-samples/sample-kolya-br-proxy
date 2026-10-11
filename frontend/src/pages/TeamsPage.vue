@@ -669,15 +669,15 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useTeamsStore } from 'src/stores/teams';
-import { useTokensStore } from 'src/stores/tokens';
-import { useModelsStore } from 'src/stores/models';
-import { useAlertsStore, TEAM_RULES, getRuleLabel } from 'src/stores/alerts';
-import type { CreateAlertRulePayload } from 'src/stores/alerts';
+import { useTeamsStore } from '@/stores/teams';
+import { useTokensStore } from '@/stores/tokens';
+import { useModelsStore } from '@/stores/models';
+import { useAlertsStore, TEAM_RULES, getRuleLabel } from '@/stores/alerts';
+import type { CreateAlertRulePayload } from '@/stores/alerts';
 import { Dialog, Notify } from 'quasar';
-import { extractErrorMessage } from 'src/utils/error';
-import { formatCostUsd } from 'src/utils/balance';
-import type { TeamListItem, TeamMember } from 'src/stores/teams';
+import { extractErrorMessage } from '@/utils/error';
+import { formatCostUsd } from '@/utils/balance';
+import type { TeamListItem, TeamMember } from '@/stores/teams';
 
 const teamsStore = useTeamsStore();
 const tokensStore = useTokensStore();

@@ -1,7 +1,7 @@
-import { boot } from 'quasar/wrappers';
+import { defineBoot } from '#q-app';
 import { createPinia } from 'pinia';
 
-export default boot(({ app }) => {
+export default defineBoot(({ app }) => {
   const pinia = createPinia();
   app.use(pinia);
 });
