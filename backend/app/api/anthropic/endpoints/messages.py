@@ -976,32 +976,60 @@ async def _stream_gemini_as_anthropic(
 def _anthropic_to_openai_messages(
     request_data: "AnthropicMessagesRequest",
 ) -> list[dict]:
-    """Flatten Anthropic-format messages to OpenAI-style messages.
+    """Convert Anthropic messages to OpenAI parts without losing cache markers."""
 
-    Mirrors the conversion used by the Gemini path: system prompt → system
-    message, and each message's text content blocks are joined into a single
-    string. The MantleClient handles the OpenAI→Responses translation downstream.
-    """
+    def text_content(blocks: list, separator: str, role: str) -> str | list[dict]:
+        text_blocks: list[dict] = []
+        for block in blocks:
+            if hasattr(block, "model_dump"):
+                raw = block.model_dump(exclude_none=True)
+            elif isinstance(block, dict):
+                raw = block
+            else:
+                continue
+
+            if raw.get("cache_control") and role == "assistant":
+                raise ValueError(
+                    "Explicit prompt cache breakpoints are not supported "
+                    "on assistant content for Responses API models"
+                )
+            if raw.get("cache_control") and raw.get("type") != "text":
+                raise ValueError(
+                    "Explicit prompt cache breakpoints are not supported on "
+                    f"Anthropic {raw.get('type', 'unknown')} blocks when routing "
+                    "to Responses API models"
+                )
+            if raw.get("type") == "text":
+                text_blocks.append(raw)
+
+        if not any(block.get("cache_control") for block in text_blocks):
+            return separator.join(block.get("text", "") for block in text_blocks)
+
+        converted: list[dict] = []
+        for raw in text_blocks:
+            text = raw.get("text", "")
+            if converted:
+                text = f"{separator}{text}"
+            part = {"type": "text", "text": text}
+            if raw.get("cache_control"):
+                part["cache_control"] = raw["cache_control"]
+            converted.append(part)
+        return converted
+
     openai_messages: list[dict] = []
     if request_data.system:
-        system_text = (
+        system_content = (
             request_data.system
             if isinstance(request_data.system, str)
-            else " ".join(b.text for b in request_data.system if hasattr(b, "text"))
+            else text_content(request_data.system, separator=" ", role="system")
         )
-        if system_text:
-            openai_messages.append({"role": "system", "content": system_text})
+        if system_content:
+            openai_messages.append({"role": "system", "content": system_content})
 
     for msg in request_data.messages:
         content = msg.content
         if isinstance(content, list):
-            texts = []
-            for block in content:
-                if hasattr(block, "text"):
-                    texts.append(block.text)
-                elif isinstance(block, dict) and block.get("type") == "text":
-                    texts.append(block.get("text", ""))
-            content = "\n".join(texts) if texts else ""
+            content = text_content(content, separator="\n", role=msg.role)
         openai_messages.append({"role": msg.role, "content": content})
 
     return openai_messages
@@ -1026,6 +1054,7 @@ async def _handle_mantle_via_anthropic(
         MantleClient,
         extract_cache_write_tokens,
         extract_cached_tokens,
+        validate_responses_cache_markers,
     )
 
     openai_messages = _anthropic_to_openai_messages(request_data)
@@ -1038,6 +1067,10 @@ async def _handle_mantle_via_anthropic(
         payload["temperature"] = request_data.temperature
     if request_data.max_tokens:
         payload["max_tokens"] = request_data.max_tokens
+
+    # Validate before constructing StreamingResponse so invalid requests return
+    # HTTP 400 instead of opening an SSE stream and then emitting an error.
+    validate_responses_cache_markers(payload)
 
     if request_data.stream:
         return StreamingResponse(

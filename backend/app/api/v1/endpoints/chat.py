@@ -47,6 +47,7 @@ from app.services.mantle_client import (
     extract_cache_write_tokens_from_chunk as _mantle_extract_cache_write_tokens_from_chunk,
     extract_cached_tokens as _mantle_extract_cached_tokens,
     extract_cached_tokens_from_chunk as _mantle_extract_cached_tokens_from_chunk,
+    validate_responses_cache_markers,
 )
 from app.services.mantle_models import (
     is_openai_mantle_model,
@@ -610,6 +611,9 @@ async def _handle_mantle_request(
     the request is routed (and SigV4-signed) to the model's region automatically.
     """
     payload = request_data.model_dump(exclude_none=True)
+    # Validate before constructing StreamingResponse so invalid requests return
+    # HTTP 400 rather than a successful SSE stream containing an error event.
+    validate_responses_cache_markers(payload)
 
     if request_data.stream:
         return StreamingResponse(

@@ -1092,7 +1092,15 @@ class BedrockClient:
 
         # --- optional scalar fields ---
         if request.system:
-            body["system"] = request.system
+            if isinstance(request.system, str):
+                body["system"] = request.system
+            else:
+                body["system"] = [
+                    part.model_dump(exclude_none=True)
+                    if isinstance(part, BedrockContentPart)
+                    else part
+                    for part in request.system
+                ]
         if request.temperature is not None:
             body["temperature"] = request.temperature
         if request.top_p is not None:
@@ -1118,6 +1126,8 @@ class BedrockClient:
                     and BedrockClient._supports_strict_tools(model_id)
                 ):
                     tool_dict["strict"] = t.strict
+                if t.cache_control:
+                    tool_dict["cache_control"] = t.cache_control
                 body["tools"].append(tool_dict)
         if request.tool_choice:
             body["tool_choice"] = request.tool_choice
@@ -1129,6 +1139,13 @@ class BedrockClient:
         # --- prompt caching ---
         if request.prompt_caching:
             body.update(request.prompt_caching)
+
+        client_breakpoints = len(BedrockClient._collect_cache_blocks(body))
+        if client_breakpoints > BedrockClient.MAX_CACHE_BREAKPOINTS:
+            raise ValueError(
+                f"At most {BedrockClient.MAX_CACHE_BREAKPOINTS} prompt cache "
+                "breakpoints are allowed"
+            )
 
         # --- auto-inject prompt cache breakpoints ---
         should_inject = request.auto_cache  # per-request override
@@ -1327,7 +1344,14 @@ class BedrockClient:
 
         # --- system ---
         if request.system:
-            params["system"] = [{"text": request.system}]
+            if isinstance(request.system, str):
+                params["system"] = [{"text": request.system}]
+            else:
+                params["system"] = [
+                    {"text": part.text or ""}
+                    for part in request.system
+                    if part.type == "text"
+                ]
 
         # --- inferenceConfig ---
         no_sampling = model_id and BedrockClient._is_no_sampling_model(model_id)

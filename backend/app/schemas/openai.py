@@ -4,7 +4,14 @@ OpenAI API compatible request/response schemas.
 
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class PromptCacheControl(BaseModel):
+    """Anthropic-compatible explicit prompt-cache marker."""
+
+    type: Literal["ephemeral"]
+    ttl: Optional[Literal["5m", "1h"]] = None
 
 
 class ContentPart(BaseModel):
@@ -13,6 +20,7 @@ class ContentPart(BaseModel):
     type: Literal["text", "image_url"]
     text: Optional[str] = None
     image_url: Optional[Dict[str, str]] = None
+    cache_control: Optional[PromptCacheControl] = None
 
 
 class ToolCall(BaseModel):
@@ -75,6 +83,24 @@ class ChatCompletionRequest(BaseModel):
     bedrock_request_metadata: Optional[Dict[str, str]] = None
     bedrock_auto_cache: Optional[bool] = None  # None = use server default
     bedrock_cache_ttl: Optional[str] = None  # Per-request TTL override ("5m" or "1h")
+
+    @model_validator(mode="after")
+    def _validate_cache_breakpoint_limit(self):
+        count = sum(
+            1
+            for message in self.messages
+            if isinstance(message.content, list)
+            for part in message.content
+            if part.cache_control is not None
+        )
+        count += sum(
+            1
+            for tool in self.tools or []
+            if isinstance(tool, dict) and tool.get("cache_control")
+        )
+        if count > 4:
+            raise ValueError("At most 4 prompt cache breakpoints are allowed")
+        return self
 
 
 class ChatCompletionChoice(BaseModel):

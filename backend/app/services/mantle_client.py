@@ -32,17 +32,49 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def validate_responses_cache_markers(payload: Dict[str, Any]) -> None:
+    """Reject too many markers and content types unsupported by Responses."""
+    breakpoint_count = 0
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        marked_parts = [
+            part
+            for part in content
+            if isinstance(part, dict) and part.get("cache_control")
+        ]
+        breakpoint_count += len(marked_parts)
+        if marked_parts and message.get("role") == "assistant":
+            raise ValueError(
+                "Explicit prompt cache breakpoints are not supported "
+                "on assistant content for Responses API models"
+            )
+
+    if breakpoint_count > 4:
+        raise ValueError("At most 4 prompt cache breakpoints are allowed")
+
+
 def _content_part_to_responses(part: Dict[str, Any]) -> Dict[str, Any]:
     """Convert one OpenAI ContentPart dict to a Responses API input part."""
     ptype = part.get("type")
+    converted: Dict[str, Any]
     if ptype == "text":
-        return {"type": "input_text", "text": part.get("text", "")}
-    if ptype == "image_url":
+        converted = {"type": "input_text", "text": part.get("text", "")}
+    elif ptype == "image_url":
         url = (part.get("image_url") or {}).get("url", "")
         # Responses API takes the data-URL / URL directly on input_image.
-        return {"type": "input_image", "image_url": url}
-    # Unknown type — best-effort text fallback
-    return {"type": "input_text", "text": str(part.get("text", ""))}
+        converted = {"type": "input_image", "image_url": url}
+    else:
+        # Unknown type — best-effort text fallback
+        converted = {"type": "input_text", "text": str(part.get("text", ""))}
+
+    cache_control = part.get("cache_control")
+    if isinstance(cache_control, dict) and cache_control.get("type") == "ephemeral":
+        converted["prompt_cache_breakpoint"] = {"mode": "explicit"}
+    return converted
 
 
 def _msg_content_to_input_parts(content: Any, output: bool) -> List[Dict[str, Any]]:
@@ -60,8 +92,14 @@ def _msg_content_to_input_parts(content: Any, output: bool) -> List[Dict[str, An
         parts = []
         for p in content:
             if isinstance(p, dict):
-                # Assistant text parts must use output_text in the Responses API.
+                # Assistant text parts must use output_text in the Responses API,
+                # which does not support explicit prompt-cache breakpoints.
                 if output and p.get("type") == "text":
+                    if p.get("cache_control"):
+                        raise ValueError(
+                            "Explicit prompt cache breakpoints are not supported "
+                            "on assistant content for Responses API models"
+                        )
                     parts.append({"type": "output_text", "text": p.get("text", "")})
                 else:
                     parts.append(_content_part_to_responses(p))
@@ -128,6 +166,18 @@ def _openai_messages_to_input(
             )
 
     return input_items
+
+
+def _has_explicit_prompt_cache_breakpoint(input_items: List[Dict[str, Any]]) -> bool:
+    """Return whether converted Responses input contains a client breakpoint."""
+    for item in input_items:
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and "prompt_cache_breakpoint" in part:
+                return True
+    return False
 
 
 def _openai_tools_to_responses(
@@ -231,11 +281,17 @@ def _openai_to_responses(payload: Dict[str, Any]) -> Dict[str, Any]:
     OpenAI-only fields (frequency_penalty, n, presence_penalty, etc.) are
     silently ignored.
     """
+    validate_responses_cache_markers(payload)
     messages = payload.get("messages") or []
+    input_items = _openai_messages_to_input(messages)
     body: Dict[str, Any] = {
         "model": payload.get("model", ""),
-        "input": _openai_messages_to_input(messages),
+        "input": input_items,
     }
+    if _has_explicit_prompt_cache_breakpoint(input_items):
+        # Explicit mode disables the automatic latest-message breakpoint, so
+        # only prefixes selected by the client incur cache-write charges.
+        body["prompt_cache_options"] = {"mode": "explicit"}
 
     if payload.get("max_tokens") is not None:
         body["max_output_tokens"] = payload["max_tokens"]
