@@ -2,19 +2,18 @@
 # callback-style background task manager. Remove after their typing migrations.
 # pyright: reportArgumentType=false
 """
-OpenAI Responses API endpoint (native passthrough for AWS mantle).
+OpenAI Responses API endpoint (native Bedrock passthrough).
 
-Mantle-served OpenAI models (see the mantle_models registry) go through the
+Supported OpenAI models go through either the Mantle or Bedrock Runtime
 **OpenAI Responses API**. The OpenAI-compatible ``/v1/chat/completions`` and the
 Anthropic ``/v1/messages`` endpoints translate to/from the Responses format,
 which necessarily flattens Responses-only features (built-in tools, multimodal
 output, etc.).
 
-This endpoint instead forwards a *native* Responses request body to mantle
-verbatim and returns the native response, so clients that speak the Responses
-API get mantle's full capability surface with no lossy conversion. It is the
-only path that will transparently gain new mantle features (e.g. image
-generation) the moment AWS enables them — no code change required.
+This endpoint instead forwards a *native* Responses request body verbatim and
+returns the native response, so clients that speak the Responses API avoid
+lossy protocol conversion. Canonical IDs target Mantle; US/Global profile IDs
+target Bedrock Runtime and preserve their routing semantics.
 
 The request body is accepted as an open JSON object (not a strict schema) for
 exactly that reason: unknown/new Responses fields pass straight through.
@@ -41,7 +40,8 @@ from app.services.bedrock import match_allowed_model
 from app.services.mantle_client import MantleClient
 from app.services.mantle_models import (
     get_mantle_model_regions,
-    resolve_mantle_model_id,
+    is_openai_runtime_responses_model,
+    resolve_responses_model_id,
 )
 
 router = APIRouter()
@@ -100,25 +100,26 @@ async def create_response(
     stream = bool(body.get("stream", False))
 
     logger.info(
-        f"Responses request: model={requested_model}, stream={stream}, "
-        f"request_id={request_id}, token_id={token.id}",
+        "Responses request: model=%s, stream=%s",
+        requested_model,
+        stream,
     )
 
-    # Only mantle models have a Responses backend. Accept both the canonical
-    # ``openai.``-prefixed ID and the bare form clients often send.
-    model = resolve_mantle_model_id(requested_model)
+    # Canonical/bare IDs use Mantle; US/Global system inference profiles use
+    # the Bedrock Runtime OpenAI Responses endpoint without being normalized.
+    model = resolve_responses_model_id(requested_model)
     if model is None:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Model '{requested_model}' is not available on the Responses API. "
-                f"Available models: {sorted(get_mantle_model_regions())}; "
+                f"Available model families: {sorted(get_mantle_model_regions())}; "
                 "use /v1/chat/completions for other models."
             ),
         )
 
-    # Forward the canonical ID downstream so mantle receives a name it knows,
-    # regardless of which spelling the client used.
+    # Forward the resolved target: canonical for Mantle, exact profile ID for
+    # Runtime so cross-Region routing and pricing semantics remain intact.
     body["model"] = model
 
     # Quota + model access (same checks as the other gateway endpoints).
@@ -139,12 +140,14 @@ async def create_response(
         )
         allowed_model_names = [m.model_name for m in result.scalars().all()]
     # Connection returned to the pool here — the stream below holds none.
-    # Authorise ignoring the cross-region inference-profile prefix: the same
-    # model may be granted under its Bedrock profile ID (``us.openai.gpt-6-
-    # astra``) while ``resolve_mantle_model_id`` yields the bare mantle form
-    # (``openai.gpt-6-astra``). Match on the prefix-stripped form; the mantle
-    # canonical ``model`` is what stays in ``body`` for the downstream call.
-    if match_allowed_model(model, allowed_model_names) is None:
+    # Runtime profile scope is security- and residency-sensitive: a US grant
+    # must not authorize a Global request (or vice versa). Canonical Mantle IDs
+    # retain the legacy prefix-tolerant access behavior.
+    if is_openai_runtime_responses_model(model):
+        authorized = model in allowed_model_names
+    else:
+        authorized = match_allowed_model(model, allowed_model_names) is not None
+    if not authorized:
         raise HTTPException(
             status_code=403,
             detail=f"Token does not have access to model: {model}. "
@@ -168,10 +171,14 @@ async def create_response(
     try:
         response_data = await MantleClient.responses_passthrough(body)
     except httpx.HTTPStatusError as e:
-        logger.error(f"mantle Responses error: {e}")
+        logger.error(
+            "Bedrock Responses error: model=%s, status=%s",
+            model,
+            e.response.status_code,
+        )
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"mantle API error: status {e.response.status_code}",
+            detail=f"Bedrock Responses API error: status {e.response.status_code}",
         )
 
     usage = _usage_from_response(response_data.get("usage") or {})
@@ -196,8 +203,8 @@ async def create_response(
     if usage["cached"]:
         cache_info += f", cached={usage['cached']}"
     logger.info(
-        f"Responses successful: request_id={request_id}, "
-        f"duration={round(duration, 3)}s, prompt={usage['non_cached_prompt']}, "
+        f"Responses successful: duration={round(duration, 3)}s, "
+        f"prompt={usage['non_cached_prompt']}, "
         f"completion={usage['completion']}{cache_info}"
     )
 
@@ -211,7 +218,7 @@ async def _stream_responses(
     token: APIToken,
     start_time: float,
 ) -> AsyncGenerator[bytes, None]:
-    """Forward mantle's native Responses SSE verbatim, billing from usage events.
+    """Forward native Bedrock Responses SSE verbatim, billing from usage events.
 
     The raw SSE bytes are passed through unchanged; we also buffer line-by-line
     to find the ``response.completed`` / ``response.incomplete`` event and read
@@ -250,8 +257,8 @@ async def _stream_responses(
 
     try:
         async for raw in MantleClient.responses_passthrough_stream(body):
-            # Forward upstream bytes unchanged
-            yield raw
+            # Parse usage before yielding: if the client disconnects while the
+            # final chunk is suspended at yield, the finally block can still bill it.
             last_heartbeat = time.time()
 
             # Sniff usage from completed/incomplete events without mutating output
@@ -277,43 +284,34 @@ async def _stream_responses(
                     resp_obj = event.get("response") or {}
                     usage = _usage_from_response(resp_obj.get("usage") or {})
 
+            # Forward upstream bytes unchanged after local accounting.
+            yield raw
+
             # Heartbeat to keep idle connections alive
             if time.time() - last_heartbeat > settings.STREAM_HEARTBEAT_INTERVAL:
                 yield b": heartbeat\n\n"
                 last_heartbeat = time.time()
 
     except httpx.HTTPStatusError as e:
-        upstream_request_id = (
-            e.response.headers.get("x-amzn-requestid")
-            or e.response.headers.get("x-amz-request-id")
-            or e.response.headers.get("x-request-id")
-            or "-"
-        )
-        upstream_detail = str(e).replace("\r", " ").replace("\n", " ")[:500]
         logger.error(
-            "mantle Responses stream error: model=%s, gateway_request_id=%s, "
-            "status=%s, upstream_request_id=%s, upstream_detail=%r",
+            "Bedrock Responses stream error: model=%s, status=%s",
             model,
-            request_id,
             e.response.status_code,
-            upstream_request_id,
-            upstream_detail,
-            exc_info=True,
         )
         err = {
             "type": "error",
             "error": {
                 "type": "server_error",
-                "message": f"mantle API error: status {e.response.status_code}",
+                "message": f"Bedrock Responses API error: status {e.response.status_code}",
             },
         }
         yield f"event: error\ndata: {json.dumps(err)}\n\n".encode("utf-8")
         return
-    except Exception as e:
+    except Exception as error:
         logger.error(
-            f"mantle Responses streaming failed: model={model}, "
-            f"request_id={request_id}, error={e}",
-            exc_info=True,
+            "Bedrock Responses streaming failed: model=%s, error_type=%s",
+            model,
+            type(error).__name__,
         )
         err = {
             "type": "error",
@@ -333,7 +331,7 @@ async def _stream_responses(
     if usage["cached"]:
         cache_info += f", cached={usage['cached']}"
     logger.info(
-        f"Responses streaming successful: request_id={request_id}, "
-        f"duration={round(duration, 3)}s, prompt={usage['non_cached_prompt']}, "
+        f"Responses streaming successful: duration={round(duration, 3)}s, "
+        f"prompt={usage['non_cached_prompt']}, "
         f"completion={usage['completion']}{cache_info}"
     )

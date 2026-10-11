@@ -74,6 +74,26 @@ OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
             output=_per_token("33.00"),
         ),
     ),
+    "global.openai.gpt-5.6-sol": OfficialProfilePricing(
+        model_id="global.openai.gpt-5.6-sol",
+        source_url=(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+            "model-card-openai-gpt-56-sol.html"
+        ),
+        short=TokenRates(
+            input=_per_token("4.00"),
+            cache_write=_per_token("5.00"),
+            cache_read=_per_token("0.40"),
+            output=_per_token("20.00"),
+        ),
+        long_context_threshold=272_000,
+        long=TokenRates(
+            input=_per_token("8.00"),
+            cache_write=_per_token("10.00"),
+            cache_read=_per_token("0.80"),
+            output=_per_token("30.00"),
+        ),
+    ),
     # ── GPT-6.1 Sol ──────────────────────────────────────────────────
     "openai.gpt-6.1-sol": OfficialProfilePricing(
         model_id="openai.gpt-6.1-sol",
@@ -251,6 +271,32 @@ def get_official_profile_pricing(
     return OFFICIAL_PROFILE_PRICING.get(pricing_id)
 
 
+def _calculate_official_cost(
+    pricing: OfficialProfilePricing,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cache_creation_input_tokens: int,
+    cache_read_input_tokens: int,
+) -> Decimal:
+    """Calculate authoritative model-card pricing without requiring a DB row."""
+    total_input_tokens = (
+        prompt_tokens + cache_creation_input_tokens + cache_read_input_tokens
+    )
+    rates = pricing.rates_for_input_tokens(total_input_tokens)
+    if cache_creation_input_tokens and rates.cache_write is None:
+        raise ValueError(
+            f"AWS does not publish a cache-write price for {pricing.model_id}"
+        )
+    cache_write_price = rates.cache_write or Decimal(0)
+    cache_read_price = rates.cache_read or rates.input
+    return (
+        Decimal(prompt_tokens) * rates.input
+        + Decimal(completion_tokens) * rates.output
+        + Decimal(cache_creation_input_tokens) * cache_write_price
+        + Decimal(cache_read_input_tokens) * cache_read_price
+    )
+
+
 class ModelPricing:
     """Model pricing configuration and cost calculation."""
 
@@ -350,6 +396,20 @@ class ModelPricing:
             effective_write_ttl, self.CACHE_WRITE_MULTIPLIER["5m"]
         )
 
+        # Model-card rates are authoritative and complete enough to calculate
+        # cost even if the updater has not seeded (or temporarily lost) its DB
+        # row. This prevents successful profile requests from being recorded at
+        # zero cost after a profile-cache or pricing refresh failure.
+        official_pricing = get_official_profile_pricing(model)
+        if official_pricing is not None:
+            return _calculate_official_cost(
+                official_pricing,
+                prompt_tokens,
+                completion_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+            )
+
         # Try to get pricing from database
         if self.db:
             from app.services.pricing_updater import PricingUpdater
@@ -359,39 +419,6 @@ class ModelPricing:
 
             if pricing:
                 input_price_per_token, output_price_per_token = pricing
-
-                # Exact profile policies preserve AWS distinctions that the
-                # legacy two-column DB row cannot represent: long-context
-                # bands and model-specific cache dimensions. The DB row still
-                # gates availability and powers the admin pricing API.
-                official_pricing = get_official_profile_pricing(model)
-                if official_pricing is not None:
-                    total_input_tokens = (
-                        prompt_tokens
-                        + cache_creation_input_tokens
-                        + cache_read_input_tokens
-                    )
-                    rates = official_pricing.rates_for_input_tokens(total_input_tokens)
-                    if cache_creation_input_tokens and rates.cache_write is None:
-                        raise ValueError(
-                            f"AWS does not publish a cache-write price for {model}"
-                        )
-                    cache_write_price = (
-                        rates.cache_write
-                        if rates.cache_write is not None
-                        else Decimal(0)
-                    )
-                    cache_read_price = (
-                        rates.cache_read
-                        if rates.cache_read is not None
-                        else rates.input
-                    )
-                    return (
-                        Decimal(prompt_tokens) * rates.input
-                        + Decimal(completion_tokens) * rates.output
-                        + Decimal(cache_creation_input_tokens) * cache_write_price
-                        + Decimal(cache_read_input_tokens) * cache_read_price
-                    )
 
                 input_cost = Decimal(prompt_tokens) * input_price_per_token
                 output_cost = Decimal(completion_tokens) * output_price_per_token
@@ -427,42 +454,6 @@ class ModelPricing:
                         Decimal(cache_read_input_tokens) * cache_read_price
                     )
                     return input_cost + output_cost + cache_write_cost + cache_read_cost
-
-        # Mantle models: fall back to OFFICIAL_PROFILE_PRICING when the DB
-        # row hasn't been created yet (new model discovered before the
-        # pricing page was scraped).  Try exact mantle ID first (has the
-        # correct 10% in-Region premium), then Global/US CRIS profiles.
-        if is_openai_mantle_model(model):
-            official_pricing = None
-            matched_id = model
-            for candidate in (model, f"global.{model}", f"us.{model}"):
-                official_pricing = get_official_profile_pricing(candidate)
-                if official_pricing is not None:
-                    matched_id = candidate
-                    break
-            if official_pricing is not None:
-                total_input_tokens = (
-                    prompt_tokens
-                    + cache_creation_input_tokens
-                    + cache_read_input_tokens
-                )
-                rates = official_pricing.rates_for_input_tokens(total_input_tokens)
-                cache_write_price = (
-                    rates.cache_write if rates.cache_write is not None else Decimal(0)
-                )
-                cache_read_price = (
-                    rates.cache_read if rates.cache_read is not None else rates.input
-                )
-                logger.info(
-                    f"Using model-card fallback pricing for mantle model {model} "
-                    f"(matched: {matched_id})"
-                )
-                return (
-                    Decimal(prompt_tokens) * rates.input
-                    + Decimal(completion_tokens) * rates.output
-                    + Decimal(cache_creation_input_tokens) * cache_write_price
-                    + Decimal(cache_read_input_tokens) * cache_read_price
-                )
 
         # If no database or pricing not found, raise error
         logger.error(f"No pricing found for model: {model}, region: {region}")

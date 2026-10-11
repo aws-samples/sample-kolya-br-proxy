@@ -1,9 +1,8 @@
 """Routing tests for the OPENAI_GPT_BACKEND switch.
 
-GPT (openai.gpt-5.x) models default to the mantle Responses API. Setting
-OPENAI_GPT_BACKEND="runtime" must make them bypass the mantle branch and fall
-through to the standard bedrock-runtime converse path instead — while leaving
-the default ("mantle") behaviour untouched.
+GPT models default to the Mantle Responses API. GPT-5.6 Sol always remains on
+Responses so explicit cache controls cannot be silently stripped by Converse;
+the legacy switch still applies to other canonical GPT model IDs.
 """
 
 from contextlib import asynccontextmanager
@@ -11,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.api.v1.endpoints import chat as chat_module
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
@@ -98,13 +98,45 @@ async def test_mantle_backend_routes_gpt_to_mantle():
 
 
 @pytest.mark.asyncio
-async def test_runtime_backend_bypasses_mantle_and_uses_converse():
+async def test_runtime_backend_does_not_bypass_responses_for_gpt56_sol():
     request = _request("openai.gpt-5.6-sol")
     result, mantle, bedrock_client = await _call(
         request, allowed_names=["openai.gpt-5.6-sol"], backend="runtime"
     )
 
-    # Runtime switch: mantle handler skipped, standard bedrock path taken.
-    assert result != "mantle"
-    mantle.assert_not_awaited()
-    bedrock_client.invoke.assert_awaited_once()
+    assert result == "mantle"
+    mantle.assert_awaited_once()
+    bedrock_client.invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    ["us.openai.gpt-5.6-sol", "global.openai.gpt-5.6-sol"],
+)
+@pytest.mark.parametrize("backend", ["mantle", "runtime"])
+async def test_inference_profiles_always_use_runtime_responses(model, backend):
+    request = _request(model)
+    result, responses_handler, bedrock_client = await _call(
+        request, allowed_names=[model], backend=backend
+    )
+
+    assert result == "mantle"
+    responses_handler.assert_awaited_once()
+    forwarded_request = responses_handler.await_args.kwargs["request_data"]
+    assert forwarded_request.model == model
+    bedrock_client.invoke.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_global_profile_is_not_authorized_by_us_profile_grant():
+    request = _request("global.openai.gpt-5.6-sol")
+
+    with pytest.raises(HTTPException) as caught:
+        await _call(
+            request,
+            allowed_names=["us.openai.gpt-5.6-sol"],
+            backend="mantle",
+        )
+
+    assert caught.value.status_code == 403

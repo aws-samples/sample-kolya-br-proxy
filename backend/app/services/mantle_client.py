@@ -18,10 +18,16 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
-from app.services.mantle_models import MANTLE_BASE_URL, resolve_mantle_region
+from app.core.config import get_settings
+from app.services.mantle_models import (
+    MANTLE_BASE_URL,
+    is_openai_runtime_responses_model,
+    resolve_mantle_region,
+)
 from app.services.mantle_signing import signed_headers
 
 logger = logging.getLogger(__name__)
@@ -51,6 +57,13 @@ def validate_responses_cache_markers(payload: Dict[str, Any]) -> None:
             raise ValueError(
                 "Explicit prompt cache breakpoints are not supported "
                 "on assistant content for Responses API models"
+            )
+
+    for tool in payload.get("tools") or []:
+        if isinstance(tool, dict) and tool.get("cache_control"):
+            raise ValueError(
+                "Explicit prompt cache breakpoints are not supported directly on tool "
+                "definitions; place the breakpoint on a following text or image block"
             )
 
     if breakpoint_count > 4:
@@ -128,12 +141,16 @@ def _openai_messages_to_input(
         # ── tool result ─────────────────────────────────────────────────────
         if role == "tool":
             raw = content or ""
-            output_str = raw if isinstance(raw, str) else json.dumps(raw)
+            output = (
+                _msg_content_to_input_parts(raw, output=False)
+                if isinstance(raw, list)
+                else (raw if isinstance(raw, str) else json.dumps(raw))
+            )
             input_items.append(
                 {
                     "type": "function_call_output",
                     "call_id": msg.get("tool_call_id", ""),
-                    "output": output_str,
+                    "output": output,
                 }
             )
             continue
@@ -199,6 +216,8 @@ def _openai_tools_to_responses(
                 decl["description"] = fn["description"]
             if fn.get("parameters"):
                 decl["parameters"] = fn["parameters"]
+            if fn.get("strict") is not None:
+                decl["strict"] = fn["strict"]
             out.append(decl)
     return out or None
 
@@ -393,7 +412,7 @@ def _responses_to_openai(
     text, tool_calls = _output_to_message(output)
 
     if tool_calls:
-        msg_content: Any = None  # OpenAI spec: null content when tool_calls present
+        msg_content: Any = text if text is not None else None
         finish_reason = "tool_calls"
     else:
         msg_content = text if text is not None else ""
@@ -466,19 +485,93 @@ def extract_cache_write_tokens_from_chunk(data: dict) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
-# MantleClient
+# Bedrock OpenAI Responses upstream
 # ---------------------------------------------------------------------------
+
+BEDROCK_RUNTIME_OPENAI_BASE_URL = (
+    "https://bedrock-runtime.{region}.amazonaws.com/openai/v1"
+)
+
+
+@dataclass(frozen=True)
+class ResponsesEndpoint:
+    """Resolved upstream without collapsing profile routing semantics."""
+
+    url: str
+    region: str
+    sigv4_service: str
+    backend: str
+
+
+def _log_request_structure(body: dict, target: ResponsesEndpoint) -> None:
+    """Log routing and cache shape without logging prompt or tool contents."""
+    breakpoint_count = 0
+    content_types: set[str] = set()
+
+    def walk(value: Any) -> None:
+        nonlocal breakpoint_count
+        if isinstance(value, dict):
+            if "prompt_cache_breakpoint" in value:
+                breakpoint_count += 1
+            item_type = value.get("type")
+            if isinstance(item_type, str):
+                content_types.add(item_type)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(body.get("input") or [])
+    cache_options = body.get("prompt_cache_options")
+    cache_mode = (
+        cache_options.get("mode", "implicit")
+        if isinstance(cache_options, dict)
+        else "implicit"
+    )
+    logger.info(
+        "OpenAI Responses upstream: backend=%s, model=%s, region=%s, "
+        "stream=%s, cache_mode=%s, breakpoints=%d, input_types=%s",
+        target.backend,
+        body.get("model", ""),
+        target.region,
+        bool(body.get("stream")),
+        cache_mode,
+        breakpoint_count,
+        sorted(content_types),
+    )
 
 
 class MantleClient:
-    """Client for the OpenAI Responses API served by AWS mantle."""
+    """Client for OpenAI Responses on Bedrock Mantle and Runtime.
+
+    The historical class name is retained for compatibility. Canonical model
+    IDs use Mantle; geographic/global inference profiles use the Bedrock
+    Runtime OpenAI-compatible endpoint and remain unchanged end to end.
+    """
 
     @staticmethod
-    def _endpoint(model: str) -> Tuple[str, str]:
-        """Return (url, region) for the /responses endpoint of *model*."""
+    def _endpoint(model: str) -> ResponsesEndpoint:
+        """Resolve the correct Responses endpoint and SigV4 service."""
+        settings = get_settings()
+        if is_openai_runtime_responses_model(model):
+            region = settings.AWS_REGION
+            base = BEDROCK_RUNTIME_OPENAI_BASE_URL.format(region=region)
+            return ResponsesEndpoint(
+                url=f"{base}/responses",
+                region=region,
+                sigv4_service="bedrock",
+                backend="bedrock-runtime-responses",
+            )
+
         region = resolve_mantle_region(model)
         base = MANTLE_BASE_URL.format(region=region)
-        return f"{base}/responses", region
+        return ResponsesEndpoint(
+            url=f"{base}/responses",
+            region=region,
+            sigv4_service=settings.MANTLE_SIGV4_SERVICE,
+            backend="bedrock-mantle-responses",
+        )
 
     # ------------------------------------------------------------------
     # Native Responses API passthrough (no protocol conversion)
@@ -508,23 +601,32 @@ class MantleClient:
     async def responses_passthrough(cls, body: dict) -> dict:
         """Non-streaming native Responses request — body forwarded verbatim."""
         model = body.get("model", "")
-        url, region = cls._endpoint(model)
+        target = cls._endpoint(model)
         send_body = dict(body)
         send_body["stream"] = False
         cls._strip_unsupported_params(send_body)
+        _log_request_structure(send_body, target)
         body_bytes = json.dumps(send_body).encode("utf-8")
-        headers = await signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers(
+            "POST",
+            target.url,
+            body_bytes,
+            target.region,
+            service=target.sigv4_service,
+        )
 
         async with httpx.AsyncClient(timeout=3600) as client:
-            resp = await client.post(url, headers=headers, content=body_bytes)
+            resp = await client.post(target.url, headers=headers, content=body_bytes)
 
         if resp.status_code != 200:
             logger.error(
-                f"mantle Responses error: status={resp.status_code}, "
-                f"region={region}, body={resp.text[:500]}"
+                "OpenAI Responses error: status=%s, backend=%s, region=%s",
+                resp.status_code,
+                target.backend,
+                target.region,
             )
             raise httpx.HTTPStatusError(
-                f"mantle API returned {resp.status_code}: {resp.text[:200]}",
+                f"OpenAI Responses API returned {resp.status_code}",
                 request=resp.request,
                 response=resp,
             )
@@ -537,28 +639,34 @@ class MantleClient:
     ) -> AsyncGenerator[bytes, None]:
         """Streaming native Responses request — raw SSE bytes forwarded verbatim.
 
-        Yields the upstream SSE stream unchanged so the client receives mantle's
-        native Responses events. Usage for billing is extracted by the caller
+        Yields the upstream SSE stream unchanged so the client receives native
+        Responses events. Usage for billing is extracted by the caller
         from the ``response.completed`` / ``response.incomplete`` events.
         """
         model = body.get("model", "")
-        url, region = cls._endpoint(model)
+        target = cls._endpoint(model)
         send_body = dict(body)
         send_body["stream"] = True
         cls._strip_unsupported_params(send_body)
+        _log_request_structure(send_body, target)
         body_bytes = json.dumps(send_body).encode("utf-8")
-        headers = await signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers(
+            "POST",
+            target.url,
+            body_bytes,
+            target.region,
+            service=target.sigv4_service,
+        )
         headers["Accept"] = "text/event-stream"
 
         async with httpx.AsyncClient(timeout=3600) as client:
             async with client.stream(
-                "POST", url, headers=headers, content=body_bytes
+                "POST", target.url, headers=headers, content=body_bytes
             ) as resp:
                 if resp.status_code != 200:
-                    error_body = await resp.aread()
+                    await resp.aread()
                     raise httpx.HTTPStatusError(
-                        f"mantle stream error {resp.status_code}: "
-                        f"{error_body[:200].decode(errors='replace')}",
+                        f"OpenAI Responses stream returned {resp.status_code}",
                         request=resp.request,
                         response=resp,
                     )
@@ -568,25 +676,34 @@ class MantleClient:
 
     @classmethod
     async def invoke(cls, payload: dict) -> dict:
-        """Non-streaming request to the mantle /responses endpoint."""
+        """Non-streaming request to the selected Bedrock Responses endpoint."""
         model = payload.get("model", "")
-        url, region = cls._endpoint(model)
+        target = cls._endpoint(model)
         body = _openai_to_responses(payload)
         body["stream"] = False
+        _log_request_structure(body, target)
         body_bytes = json.dumps(body).encode("utf-8")
-        headers = await signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers(
+            "POST",
+            target.url,
+            body_bytes,
+            target.region,
+            service=target.sigv4_service,
+        )
         request_id = f"chatcmpl-{uuid.uuid4().hex}"
 
         async with httpx.AsyncClient(timeout=3600) as client:
-            resp = await client.post(url, headers=headers, content=body_bytes)
+            resp = await client.post(target.url, headers=headers, content=body_bytes)
 
         if resp.status_code != 200:
             logger.error(
-                f"mantle API error: status={resp.status_code}, "
-                f"region={region}, body={resp.text[:500]}"
+                "OpenAI Responses error: status=%s, backend=%s, region=%s",
+                resp.status_code,
+                target.backend,
+                target.region,
             )
             raise httpx.HTTPStatusError(
-                f"mantle API returned {resp.status_code}: {resp.text[:200]}",
+                f"OpenAI Responses API returned {resp.status_code}",
                 request=resp.request,
                 response=resp,
             )
@@ -595,7 +712,7 @@ class MantleClient:
 
     @classmethod
     async def invoke_stream(cls, payload: dict) -> AsyncGenerator[str, None]:
-        """Streaming request to the mantle /responses endpoint.
+        """Streaming request to the selected Bedrock Responses endpoint.
 
         The Responses API streams *named* SSE events. We translate:
           response.output_text.delta            → content delta
@@ -605,11 +722,18 @@ class MantleClient:
         into OpenAI chat.completion.chunk SSE lines.
         """
         model = payload.get("model", "")
-        url, region = cls._endpoint(model)
+        target = cls._endpoint(model)
         body = _openai_to_responses(payload)
         body["stream"] = True
+        _log_request_structure(body, target)
         body_bytes = json.dumps(body).encode("utf-8")
-        headers = await signed_headers("POST", url, body_bytes, region)
+        headers = await signed_headers(
+            "POST",
+            target.url,
+            body_bytes,
+            target.region,
+            service=target.sigv4_service,
+        )
         headers["Accept"] = "text/event-stream"
 
         chunk_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -631,13 +755,12 @@ class MantleClient:
 
         async with httpx.AsyncClient(timeout=3600) as client:
             async with client.stream(
-                "POST", url, headers=headers, content=body_bytes
+                "POST", target.url, headers=headers, content=body_bytes
             ) as resp:
                 if resp.status_code != 200:
-                    error_body = await resp.aread()
+                    await resp.aread()
                     raise httpx.HTTPStatusError(
-                        f"mantle stream error {resp.status_code}: "
-                        f"{error_body[:200].decode(errors='replace')}",
+                        f"OpenAI Responses stream returned {resp.status_code}",
                         request=resp.request,
                         response=resp,
                     )
@@ -722,8 +845,23 @@ class MantleClient:
 
                     elif etype == "response.failed" or etype == "error":
                         resp_obj = event.get("response") or {}
-                        err = resp_obj.get("error") or event.get("error") or {}
-                        logger.error(f"mantle stream failed: {err}")
-                        yield _chunk({}, "stop")
+                        error = resp_obj.get("error") or event.get("error") or {}
+                        logger.error(
+                            "Responses stream failed: backend=%s, model=%s, "
+                            "error_type=%s, error_code=%s",
+                            target.backend,
+                            model,
+                            error.get("type", "unknown"),
+                            error.get("code", "unknown"),
+                        )
+                        public_error = {
+                            "error": {
+                                "message": "Bedrock Responses stream failed",
+                                "type": error.get("type", "server_error"),
+                                "code": error.get("code", "upstream_failed"),
+                            }
+                        }
+                        yield f"data: {json.dumps(public_error)}\n\n"
+                        return
 
         yield "data: [DONE]\n\n"

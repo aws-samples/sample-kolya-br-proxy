@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, cast
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -225,9 +226,18 @@ async def _global_exception_handler(request: Request, exc: Exception):
 
 
 async def _validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Handle validation errors with detailed logging."""
-    logger.error(f"Validation error: {exc.errors()}")
-    logger.error(f"Request body: {exc.body}")
+    """Handle validation errors without leaking bodies or cascading to 500."""
+    errors = []
+    for error in exc.errors():
+        safe_error = {
+            key: value for key, value in error.items() if key not in {"input", "ctx"}
+        }
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            safe_error["ctx"] = {key: str(value) for key, value in context.items()}
+        errors.append(safe_error)
+    errors = jsonable_encoder(errors)
+    logger.error("Validation error: %s", errors)
 
     if _is_anthropic_request(request):
         return JSONResponse(
@@ -236,7 +246,7 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
                 "type": "error",
                 "error": {
                     "type": "invalid_request_error",
-                    "message": f"Validation error: {exc.errors()}",
+                    "message": f"Validation error: {errors}",
                 },
             },
         )
@@ -247,7 +257,7 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
             "error": {
                 "message": "Validation error",
                 "type": "invalid_request_error",
-                "details": exc.errors(),
+                "details": errors,
             }
         },
     )

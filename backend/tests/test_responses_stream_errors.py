@@ -32,7 +32,7 @@ def _upstream_error() -> httpx.HTTPStatusError:
 
 
 @pytest.mark.asyncio
-async def test_prestream_mantle_error_is_observable_without_leaking_to_client(caplog):
+async def test_prestream_responses_error_is_observable_without_leaking(caplog):
     calls = 0
 
     async def stream(_body):
@@ -60,13 +60,13 @@ async def test_prestream_mantle_error_is_observable_without_leaking_to_client(ca
 
     output = b"".join(chunks).decode()
     assert calls == 1
-    assert "mantle API error: status 500" in output
+    assert "Bedrock Responses API error: status 500" in output
     assert "temporary upstream failure" not in output
     assert "aws-request-123" not in output
-    assert "gateway_request_id=gateway-request-456" in caplog.text
-    assert "upstream_request_id=aws-request-123" in caplog.text
-    assert (
-        "upstream_detail='mantle stream error 500: temporary upstream failure'"
-        in caplog.text
-    )
+    assert "model=openai.gpt-5.6-sol" in caplog.text
+    assert "status=500" in caplog.text
+    assert "gateway-request-456" not in caplog.text
+    assert "aws-request-123" not in caplog.text
+    assert "temporary upstream failure" not in caplog.text
+    assert "upstream_detail" not in caplog.text
     record_usage.assert_not_called()

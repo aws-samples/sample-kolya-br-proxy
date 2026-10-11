@@ -2,14 +2,14 @@
 # method is awaitable. Remove this override when upstream typing is corrected.
 # pyright: reportGeneralTypeIssues=false
 """
-SigV4 signing for AWS mantle (OpenAI-on-Bedrock) HTTP requests.
+SigV4 signing for OpenAI-compatible Amazon Bedrock HTTP requests.
 
-Lives in its own module so both the registry (``mantle_models``, discovery
-probes) and the inference client (``mantle_client``) can import it at module
+Lives in its own module so the Mantle registry and the shared Responses client
+can import it at module
 level without creating a cycle between them.
 """
 
-from typing import Dict
+from typing import Dict, Optional
 
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
@@ -18,9 +18,13 @@ from app.core.config import get_settings
 
 
 async def signed_headers(
-    method: str, url: str, body_bytes: bytes, region: str
+    method: str,
+    url: str,
+    body_bytes: bytes,
+    region: str,
+    service: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Return SigV4-signed headers for a mantle request.
+    """Return SigV4-signed headers for a Bedrock HTTP request.
 
     Credentials come from the shared BedrockClient aioboto3 session (reuses the
     EKS Pod IRSA/STS chain, including a SessionToken → ``X-Amz-Security-Token``).
@@ -34,15 +38,15 @@ async def signed_headers(
     session = BedrockClient.get_instance().session
     creds = await session.get_credentials()
     if creds is None:
-        raise RuntimeError("No AWS credentials available to sign mantle request")
+        raise RuntimeError("No AWS credentials available to sign Bedrock request")
     frozen = await creds.get_frozen_credentials()
 
-    service = get_settings().MANTLE_SIGV4_SERVICE
+    signing_service = service or get_settings().MANTLE_SIGV4_SERVICE
     aws_req = AWSRequest(
         method=method,
         url=url,
         data=body_bytes,
         headers={"Content-Type": "application/json"},
     )
-    SigV4Auth(frozen, service, region).add_auth(aws_req)
+    SigV4Auth(frozen, signing_service, region).add_auth(aws_req)
     return dict(aws_req.headers)

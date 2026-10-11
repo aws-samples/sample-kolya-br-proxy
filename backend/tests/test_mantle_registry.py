@@ -66,6 +66,37 @@ class TestResolveModelId:
         assert mm.resolve_mantle_model_id("gpt-oss-120b") is None
 
 
+class TestResolveResponsesModelId:
+    @pytest.mark.parametrize(
+        "model_id",
+        ["us.openai.gpt-5.6-sol", "global.openai.gpt-5.6-sol"],
+    )
+    def test_runtime_profile_is_preserved(self, model_id):
+        assert mm.resolve_responses_model_id(model_id) == model_id
+        assert mm.is_openai_runtime_responses_model(model_id)
+        assert not mm.is_openai_mantle_model(model_id)
+
+    def test_canonical_and_bare_ids_still_resolve_to_mantle(self):
+        assert (
+            mm.resolve_responses_model_id("openai.gpt-5.6-sol") == "openai.gpt-5.6-sol"
+        )
+        assert mm.resolve_responses_model_id("gpt-5.6-sol") == "openai.gpt-5.6-sol"
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "eu.openai.gpt-5.6-sol",
+            "global.openai.gpt-5.6-luna",
+            "global.openai.gpt-6-sol",
+            "global.openai.gpt-oss-120b",
+            "global.openai.unknown",
+        ],
+    )
+    def test_unsupported_profiles_are_not_responses_models(self, model_id):
+        assert mm.resolve_responses_model_id(model_id) is None
+        assert not mm.is_openai_runtime_responses_model(model_id)
+
+
 class TestDisplayNames:
     @pytest.mark.parametrize(
         "model_id,expected",
