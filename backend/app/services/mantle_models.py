@@ -73,6 +73,14 @@ MANTLE_BASE_URL = "https://bedrock-mantle.{region}.api.aws/openai/v1"
 # mantle host, NOT under the /openai/v1 prefix used for inference.
 MANTLE_LIST_MODELS_URL = "https://bedrock-mantle.{region}.api.aws/v1/models"
 
+# Runtime Responses support is endpoint- and model-specific. Keep exact IDs
+# rather than assuming every discovered Mantle family supports Geo/Global
+# profiles on the Runtime OpenAI-compatible endpoint.
+RUNTIME_RESPONSES_MODEL_IDS = {
+    "us.openai.gpt-5.6-sol",
+    "global.openai.gpt-5.6-sol",
+}
+
 
 def get_mantle_model_regions() -> Dict[str, List[str]]:
     """Effective registry: static seed, overridden per model by discovery."""
@@ -235,6 +243,35 @@ def resolve_mantle_model_id(model_id: str) -> Optional[str]:
     if prefixed in _model_regions:
         return prefixed
     return None
+
+
+def is_openai_runtime_responses_model(model_id: str) -> bool:
+    """Return whether *model_id* is a supported Runtime Responses profile.
+
+    Bedrock Runtime requires the exact geographic or global system inference
+    profile ID.  It must not be canonicalized to the in-Region Mantle ID because
+    that would change routing, residency, and pricing semantics.
+    """
+    return model_id in RUNTIME_RESPONSES_MODEL_IDS
+
+
+def resolve_responses_model_id(model_id: str) -> Optional[str]:
+    """Resolve any model ID supported by a Bedrock Responses endpoint.
+
+    Canonical/bare names resolve to the Mantle model ID. Geographic and global
+    Runtime profile IDs are returned unchanged so their routing contract is
+    preserved.
+    """
+    if is_openai_runtime_responses_model(model_id):
+        return model_id
+    return resolve_mantle_model_id(model_id)
+
+
+def should_use_responses_api(model_id: str, configured_backend: str) -> bool:
+    """Choose Responses without routing GPT-5.6 Sol through Converse."""
+    if model_id == "openai.gpt-5.6-sol" or is_openai_runtime_responses_model(model_id):
+        return True
+    return is_openai_mantle_model(model_id) and configured_backend == "mantle"
 
 
 def resolve_mantle_region(model_id: str) -> str:

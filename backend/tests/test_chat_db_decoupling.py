@@ -75,7 +75,7 @@ async def test_db_session_released_before_streaming():
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
         patch.object(chat_module, "session_scope", fake_scope),
         patch.object(chat_module, "_is_gemini_model", return_value=False),
-        patch.object(chat_module, "is_openai_mantle_model", return_value=False),
+        patch.object(chat_module, "resolve_responses_model_id", return_value=None),
         patch.object(
             chat_module.BedrockClient, "get_instance", return_value=bedrock_client
         ),
@@ -121,7 +121,9 @@ async def test_responses_session_released_before_streaming():
     with (
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
         patch.object(responses_module, "session_scope", fake_scope),
-        patch.object(responses_module, "resolve_mantle_model_id", return_value=model),
+        patch.object(
+            responses_module, "resolve_responses_model_id", return_value=model
+        ),
         patch.object(responses_module, "match_allowed_model", return_value=model),
         patch.object(
             responses_module.MantleClient,

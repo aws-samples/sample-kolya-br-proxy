@@ -32,7 +32,10 @@ from app.services.background_tasks import BackgroundTaskManager
 from app.core.metrics import emit_request_metrics
 from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import is_gemini_model as _is_gemini_model
-from app.services.mantle_models import is_openai_mantle_model as _is_mantle_model
+from app.services.mantle_models import (
+    resolve_responses_model_id,
+    should_use_responses_api,
+)
 from app.services.pricing import ModelPricing
 from app.services.trace_store import TraceRecord, TraceStore
 
@@ -182,13 +185,15 @@ async def create_message(
                 start_time=start_time,
             )
 
-        # Route mantle-served OpenAI models to the Responses API, unless the
-        # global switch sends GPT through bedrock-runtime converse instead
-        # (fall through to the standard invoke pipeline below).
-        if (
-            _is_mantle_model(request_data.model)
-            and get_openai_gpt_backend() == "mantle"
-        ):
+        # Preserve US/Global profile IDs for Bedrock Runtime Responses. The
+        # canonical GPT-5.6 Sol ID is also forced onto Mantle Responses; the
+        # legacy backend switch still applies to other canonical GPT models.
+        responses_model = resolve_responses_model_id(request_data.model)
+        use_responses = responses_model is not None and should_use_responses_api(
+            responses_model, get_openai_gpt_backend()
+        )
+        if use_responses:
+            request_data.model = responses_model
             return await _handle_mantle_via_anthropic(
                 request_data=request_data,
                 request_id=request_id,
@@ -973,66 +978,246 @@ async def _stream_gemini_as_anthropic(
 # ---------------------------------------------------------------------------
 
 
-def _anthropic_to_openai_messages(
-    request_data: "AnthropicMessagesRequest",
-) -> list[dict]:
-    """Convert Anthropic messages to OpenAI parts without losing cache markers."""
+def _block_dict(block) -> dict:
+    if hasattr(block, "model_dump"):
+        return block.model_dump(exclude_none=True)
+    return block if isinstance(block, dict) else {}
 
-    def text_content(blocks: list, separator: str, role: str) -> str | list[dict]:
-        text_blocks: list[dict] = []
-        for block in blocks:
-            if hasattr(block, "model_dump"):
-                raw = block.model_dump(exclude_none=True)
-            elif isinstance(block, dict):
-                raw = block
-            else:
-                continue
 
-            if raw.get("cache_control") and role == "assistant":
-                raise ValueError(
-                    "Explicit prompt cache breakpoints are not supported "
-                    "on assistant content for Responses API models"
-                )
-            if raw.get("cache_control") and raw.get("type") != "text":
-                raise ValueError(
-                    "Explicit prompt cache breakpoints are not supported on "
-                    f"Anthropic {raw.get('type', 'unknown')} blocks when routing "
-                    "to Responses API models"
-                )
-            if raw.get("type") == "text":
-                text_blocks.append(raw)
+def _anthropic_input_content(blocks: list, separator: str) -> str | list[dict]:
+    """Convert Anthropic text/image blocks to OpenAI input content."""
+    raw_blocks = [_block_dict(block) for block in blocks]
+    structured = any(
+        block.get("type") != "text" or block.get("cache_control")
+        for block in raw_blocks
+    )
+    if not structured:
+        return separator.join(block.get("text", "") for block in raw_blocks)
 
-        if not any(block.get("cache_control") for block in text_blocks):
-            return separator.join(block.get("text", "") for block in text_blocks)
-
-        converted: list[dict] = []
-        for raw in text_blocks:
+    converted: list[dict] = []
+    text_seen = False
+    for raw in raw_blocks:
+        block_type = raw.get("type")
+        if block_type == "text":
             text = raw.get("text", "")
-            if converted:
+            if text_seen:
                 text = f"{separator}{text}"
             part = {"type": "text", "text": text}
             if raw.get("cache_control"):
                 part["cache_control"] = raw["cache_control"]
             converted.append(part)
-        return converted
+            text_seen = True
+        elif block_type == "image":
+            source = raw.get("source") or {}
+            if source.get("type") == "base64":
+                image_url = (
+                    f"data:{source.get('media_type', 'image/jpeg')};base64,"
+                    f"{source.get('data', '')}"
+                )
+            elif source.get("type") == "url" and source.get("url"):
+                image_url = source["url"]
+            else:
+                raise ValueError("Anthropic image source must be base64 or URL")
+            part = {
+                "type": "image_url",
+                "image_url": {"url": image_url},
+            }
+            if raw.get("cache_control"):
+                part["cache_control"] = raw["cache_control"]
+            converted.append(part)
+        else:
+            raise ValueError(
+                f"Anthropic {block_type or 'unknown'} block is not valid "
+                "as Responses input content"
+            )
+    return converted
 
+
+def _tool_result_content(raw: dict) -> str | list[dict]:
+    content = raw.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return _anthropic_input_content(content, separator="\n")
+    return ""
+
+
+def _anthropic_to_openai_messages(
+    request_data: "AnthropicMessagesRequest",
+) -> list[dict]:
+    """Convert Anthropic messages without dropping images or tool turns."""
     openai_messages: list[dict] = []
     if request_data.system:
         system_content = (
             request_data.system
             if isinstance(request_data.system, str)
-            else text_content(request_data.system, separator=" ", role="system")
+            else _anthropic_input_content(request_data.system, separator=" ")
         )
         if system_content:
             openai_messages.append({"role": "system", "content": system_content})
 
-    for msg in request_data.messages:
-        content = msg.content
-        if isinstance(content, list):
-            content = text_content(content, separator="\n", role=msg.role)
-        openai_messages.append({"role": msg.role, "content": content})
+    for message in request_data.messages:
+        if isinstance(message.content, str):
+            openai_messages.append({"role": message.role, "content": message.content})
+            continue
+
+        raw_blocks = [_block_dict(block) for block in message.content]
+        if message.role == "assistant":
+            if any(block.get("cache_control") for block in raw_blocks):
+                raise ValueError(
+                    "Explicit prompt cache breakpoints are not supported "
+                    "on assistant content for Responses API models"
+                )
+            text_blocks = [block for block in raw_blocks if block.get("type") == "text"]
+            unsupported = [
+                block.get("type")
+                for block in raw_blocks
+                if block.get("type") not in {"text", "tool_use"}
+            ]
+            if unsupported:
+                raise ValueError(
+                    f"Anthropic {unsupported[0]} assistant blocks are not supported"
+                )
+            assistant: dict = {
+                "role": "assistant",
+                "content": "\n".join(block.get("text", "") for block in text_blocks),
+            }
+            tool_calls = []
+            for block in raw_blocks:
+                if block.get("type") == "tool_use":
+                    tool_calls.append(
+                        {
+                            "id": block.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": block.get("name", ""),
+                                "arguments": json.dumps(block.get("input") or {}),
+                            },
+                        }
+                    )
+            if tool_calls:
+                assistant["tool_calls"] = tool_calls
+            openai_messages.append(assistant)
+            continue
+
+        pending_input: list[dict] = []
+
+        def flush_input() -> None:
+            if pending_input:
+                openai_messages.append(
+                    {
+                        "role": "user",
+                        "content": _anthropic_input_content(
+                            list(pending_input), separator="\n"
+                        ),
+                    }
+                )
+                pending_input.clear()
+
+        for block in raw_blocks:
+            block_type = block.get("type")
+            if block_type in {"text", "image"}:
+                pending_input.append(block)
+            elif block_type == "tool_result":
+                flush_input()
+                if block.get("cache_control"):
+                    raise ValueError(
+                        "Explicit prompt cache breakpoints are not supported "
+                        "on Anthropic tool_result blocks for Responses models"
+                    )
+                openai_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": block.get("tool_use_id", ""),
+                        "content": _tool_result_content(block),
+                    }
+                )
+            else:
+                raise ValueError(
+                    f"Anthropic {block_type or 'unknown'} user blocks are not supported"
+                )
+        flush_input()
 
     return openai_messages
+
+
+def _anthropic_to_openai_payload(
+    request_data: "AnthropicMessagesRequest",
+) -> dict:
+    """Build the Chat-shaped payload consumed by the Responses translator."""
+    payload: dict = {
+        "model": request_data.model,
+        "messages": _anthropic_to_openai_messages(request_data),
+        "max_tokens": request_data.max_tokens,
+    }
+    if request_data.temperature is not None:
+        payload["temperature"] = request_data.temperature
+    if request_data.top_p is not None:
+        payload["top_p"] = request_data.top_p
+
+    if request_data.tools:
+        tools = []
+        for tool in request_data.tools:
+            if tool.cache_control:
+                raise ValueError(
+                    "Explicit prompt cache breakpoints are not supported directly "
+                    "on tool definitions; place the breakpoint on a following "
+                    "text or image input block"
+                )
+            function = {
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": tool.input_schema,
+            }
+            if tool.strict is not None:
+                function["strict"] = tool.strict
+            tools.append({"type": "function", "function": function})
+        payload["tools"] = tools
+
+    choice = request_data.tool_choice
+    if isinstance(choice, dict):
+        choice_type = choice.get("type")
+        if choice_type == "auto":
+            payload["tool_choice"] = "auto"
+        elif choice_type == "any":
+            payload["tool_choice"] = "required"
+        elif choice_type == "tool" and choice.get("name"):
+            payload["tool_choice"] = {
+                "type": "function",
+                "function": {"name": choice["name"]},
+            }
+    return payload
+
+
+def _openai_response_to_anthropic_content(message: dict) -> tuple[list[dict], str]:
+    """Convert one Chat-shaped assistant message back to Anthropic blocks."""
+    content: list[dict] = []
+    text = message.get("content")
+    if isinstance(text, str) and text:
+        content.append({"type": "text", "text": text})
+
+    for tool_call in message.get("tool_calls") or []:
+        function = tool_call.get("function") or {}
+        arguments = function.get("arguments") or "{}"
+        try:
+            tool_input = json.loads(arguments)
+        except (TypeError, ValueError):
+            tool_input = {"_raw": str(arguments)}
+        if not isinstance(tool_input, dict):
+            tool_input = {"value": tool_input}
+        content.append(
+            {
+                "type": "tool_use",
+                "id": tool_call.get("id", ""),
+                "name": function.get("name", ""),
+                "input": tool_input,
+            }
+        )
+
+    if not content:
+        content.append({"type": "text", "text": ""})
+    stop_reason = "tool_use" if message.get("tool_calls") else "end_turn"
+    return content, stop_reason
 
 
 async def _handle_mantle_via_anthropic(
@@ -1057,16 +1242,7 @@ async def _handle_mantle_via_anthropic(
         validate_responses_cache_markers,
     )
 
-    openai_messages = _anthropic_to_openai_messages(request_data)
-
-    payload = {
-        "model": request_data.model,
-        "messages": openai_messages,
-    }
-    if request_data.temperature is not None:
-        payload["temperature"] = request_data.temperature
-    if request_data.max_tokens:
-        payload["max_tokens"] = request_data.max_tokens
+    payload = _anthropic_to_openai_payload(request_data)
 
     # Validate before constructing StreamingResponse so invalid requests return
     # HTTP 400 instead of opening an SSE stream and then emitting an error.
@@ -1094,15 +1270,13 @@ async def _handle_mantle_via_anthropic(
     except httpx.HTTPStatusError as e:
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"mantle API error: status {e.response.status_code}",
+            detail=f"Bedrock Responses API error: status {e.response.status_code}",
         )
 
     choices = response_data.get("choices", [])
     usage = response_data.get("usage", {})
-    content_text = ""
-    if choices:
-        msg = choices[0].get("message", {})
-        content_text = msg.get("content", "") or ""
+    response_message = choices[0].get("message", {}) if choices else {}
+    content, stop_reason = _openai_response_to_anthropic_content(response_message)
 
     cached_tokens = extract_cached_tokens(response_data)
     cache_write_tokens = extract_cache_write_tokens(response_data)
@@ -1126,8 +1300,7 @@ async def _handle_mantle_via_anthropic(
 
     duration = time.time() - start_time
     logger.info(
-        f"Anthropic→mantle non-streaming done: request_id={request_id}, "
-        f"duration={round(duration, 3)}s, "
+        f"Anthropic→Responses non-streaming done: duration={round(duration, 3)}s, "
         f"prompt={non_cached_prompt}, completion={completion_tokens}"
     )
 
@@ -1135,9 +1308,9 @@ async def _handle_mantle_via_anthropic(
         "id": request_id,
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "text", "text": content_text}],
+        "content": content,
         "model": request_data.model,
-        "stop_reason": "end_turn",
+        "stop_reason": stop_reason,
         "usage": {
             "input_tokens": non_cached_prompt,
             "output_tokens": completion_tokens,
@@ -1154,12 +1327,7 @@ async def _stream_mantle_as_anthropic(
     token: APIToken,
     start_time: float,
 ) -> AsyncGenerator[str, None]:
-    """
-    Stream a mantle (OpenAI) response converted to Anthropic SSE format.
-
-    MantleClient.invoke_stream yields OpenAI-format SSE chunks; we convert each
-    to Anthropic streaming events (mirrors the Gemini streaming bridge).
-    """
+    """Convert OpenAI Responses SSE chunks to Anthropic streaming events."""
     import json as _json
 
     from app.services.mantle_client import (
@@ -1172,10 +1340,12 @@ async def _stream_mantle_as_anthropic(
     total_completion_tokens = 0
     total_cached_tokens = 0
     total_cache_write_tokens = 0
-    block_started = False
+    next_block_index = 0
+    text_block_index: int | None = None
+    tool_calls: dict[int, dict[str, str]] = {}
+    stop_reason = "end_turn"
 
     try:
-        # Send message_start event
         yield (
             "event: message_start\n"
             f"data: {_json.dumps({'type': 'message_start', 'message': {'id': request_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
@@ -1185,13 +1355,14 @@ async def _stream_mantle_as_anthropic(
             for line in chunk.splitlines():
                 if not line.startswith("data: ") or line.strip() == "data: [DONE]":
                     continue
-
                 try:
                     data = _json.loads(line[6:])
                 except (ValueError, TypeError):
                     continue
 
-                # Extract usage
+                if data.get("error"):
+                    raise RuntimeError("Upstream Bedrock Responses stream failed")
+
                 usage = data.get("usage")
                 if usage:
                     total_prompt_tokens = usage.get(
@@ -1207,80 +1378,112 @@ async def _stream_mantle_as_anthropic(
                     if cache_write is not None:
                         total_cache_write_tokens = cache_write
 
-                # Extract text delta
-                choices = data.get("choices", [])
+                choices = data.get("choices") or []
                 if not choices:
                     continue
-                delta = choices[0].get("delta", {})
+                choice = choices[0]
+                finish_reason = choice.get("finish_reason")
+                if finish_reason == "tool_calls":
+                    stop_reason = "tool_use"
+                elif finish_reason == "length":
+                    stop_reason = "max_tokens"
+
+                delta = choice.get("delta") or {}
                 text = delta.get("content")
-                if not isinstance(text, str) or not text:
-                    continue
-
-                # Send content_block_start on first text
-                if not block_started:
+                if isinstance(text, str) and text:
+                    if text_block_index is None:
+                        text_block_index = next_block_index
+                        next_block_index += 1
+                        yield (
+                            "event: content_block_start\n"
+                            f"data: {_json.dumps({'type': 'content_block_start', 'index': text_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        )
                     yield (
-                        "event: content_block_start\n"
-                        f"data: {_json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        "event: content_block_delta\n"
+                        f"data: {_json.dumps({'type': 'content_block_delta', 'index': text_block_index, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
                     )
-                    block_started = True
 
-                # Send content_block_delta
-                yield (
-                    "event: content_block_delta\n"
-                    f"data: {_json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
-                )
+                for tool_call in delta.get("tool_calls") or []:
+                    call_index = int(tool_call.get("index", 0))
+                    function = tool_call.get("function") or {}
+                    buffered = tool_calls.setdefault(
+                        call_index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if tool_call.get("id"):
+                        buffered["id"] = tool_call["id"]
+                    if function.get("name"):
+                        buffered["name"] = function["name"]
+                    if isinstance(function.get("arguments"), str):
+                        buffered["arguments"] += function["arguments"]
 
-        # Close content block
-        if block_started:
+        if tool_calls:
+            stop_reason = "tool_use"
+
+        if text_block_index is not None:
             yield (
                 "event: content_block_stop\n"
-                f"data: {_json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                f"data: {_json.dumps({'type': 'content_block_stop', 'index': text_block_index})}\n\n"
             )
 
-        # Send message_delta with usage
+        # OpenAI may interleave deltas for parallel tool calls. Buffer them and
+        # emit complete Anthropic blocks sequentially so block lifecycles never
+        # overlap (start → deltas → stop for each index).
+        for call_index in sorted(tool_calls):
+            tool_call = tool_calls[call_index]
+            block_index = next_block_index
+            next_block_index += 1
+            yield (
+                "event: content_block_start\n"
+                f"data: {_json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'tool_use', 'id': tool_call['id'], 'name': tool_call['name'], 'input': {}}})}\n\n"
+            )
+            if tool_call["arguments"]:
+                yield (
+                    "event: content_block_delta\n"
+                    f"data: {_json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'input_json_delta', 'partial_json': tool_call['arguments']}})}\n\n"
+                )
+            yield (
+                "event: content_block_stop\n"
+                f"data: {_json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+            )
         yield (
             "event: message_delta\n"
-            f"data: {_json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn'}, 'usage': {'output_tokens': total_completion_tokens}})}\n\n"
+            f"data: {_json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason}, 'usage': {'output_tokens': total_completion_tokens}})}\n\n"
         )
-
-        # Send message_stop
         yield (
             f"event: message_stop\ndata: {_json.dumps({'type': 'message_stop'})}\n\n"
         )
 
-    except Exception as e:
+    except Exception as error:
         logger.error(
-            f"Anthropic→mantle streaming failed: model={model}, "
-            f"request_id={request_id}, error={e}",
-            exc_info=True,
+            "Anthropic→Responses streaming failed: model=%s, error_type=%s",
+            model,
+            type(error).__name__,
         )
         yield (
             "event: error\n"
             f"data: {_json.dumps({'type': 'error', 'error': {'type': 'server_error', 'message': 'Internal server error'}})}\n\n"
         )
+    finally:
+        non_cached_prompt = max(
+            0,
+            total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
+        )
+        background_tasks.create_task(
+            record_usage(
+                token_id=token.id,
+                user_id=token.user_id,
+                model=model,
+                request_id=request_id,
+                prompt_tokens=non_cached_prompt,
+                completion_tokens=total_completion_tokens,
+                cache_creation_input_tokens=total_cache_write_tokens,
+                cache_read_input_tokens=total_cached_tokens,
+            ),
+            task_name=f"record_usage_{request_id}",
+        )
 
-    # Record each input category exactly once.
-    non_cached_prompt = max(
-        0,
-        total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
-    )
-    background_tasks.create_task(
-        record_usage(
-            token_id=token.id,
-            user_id=token.user_id,
-            model=model,
-            request_id=request_id,
-            prompt_tokens=non_cached_prompt,
-            completion_tokens=total_completion_tokens,
-            cache_creation_input_tokens=total_cache_write_tokens,
-            cache_read_input_tokens=total_cached_tokens,
-        ),
-        task_name=f"record_usage_{request_id}",
-    )
-
-    duration = time.time() - start_time
-    logger.info(
-        f"Anthropic→mantle streaming done: request_id={request_id}, "
-        f"duration={round(duration, 3)}s, "
-        f"prompt={non_cached_prompt}, completion={total_completion_tokens}"
-    )
+        duration = time.time() - start_time
+        logger.info(
+            f"Anthropic→Responses streaming finished: duration={round(duration, 3)}s, "
+            f"prompt={non_cached_prompt}, completion={total_completion_tokens}"
+        )

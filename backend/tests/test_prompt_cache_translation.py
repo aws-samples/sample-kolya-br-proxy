@@ -28,10 +28,18 @@ def _responses_body(request: ChatCompletionRequest) -> dict:
     return _openai_to_responses(request.model_dump(exclude_none=True))
 
 
-def test_chat_sol_maps_cache_control_to_explicit_responses_breakpoint():
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai.gpt-5.6-sol",
+        "us.openai.gpt-5.6-sol",
+        "global.openai.gpt-5.6-sol",
+    ],
+)
+def test_chat_sol_maps_cache_control_to_explicit_responses_breakpoint(model):
     request = ChatCompletionRequest.model_validate(
         {
-            "model": "openai.gpt-5.6-sol",
+            "model": model,
             "messages": [
                 {"role": "system", "content": [_marked_text("shared prefix")]},
                 {
@@ -51,6 +59,37 @@ def test_chat_sol_maps_cache_control_to_explicit_responses_breakpoint():
         "prompt_cache_breakpoint": {"mode": "explicit"},
     }
     assert "prompt_cache_breakpoint" not in body["input"][1]["content"][0]
+    assert body["model"] == model
+
+
+def test_chat_sol_maps_image_cache_control_to_supported_input_image_breakpoint():
+    request = ChatCompletionRequest.model_validate(
+        {
+            "model": "global.openai.gpt-5.6-sol",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AA=="},
+                            "cache_control": CACHE_CONTROL,
+                        },
+                        {"type": "text", "text": "dynamic suffix"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    body = _responses_body(request)
+
+    assert body["prompt_cache_options"] == {"mode": "explicit"}
+    assert body["input"][0]["content"][0] == {
+        "type": "input_image",
+        "image_url": "data:image/png;base64,AA==",
+        "prompt_cache_breakpoint": {"mode": "explicit"},
+    }
 
 
 def test_chat_rejects_more_than_four_cache_breakpoints():
@@ -259,6 +298,28 @@ def test_messages_sol_preserves_message_cache_control():
         "mode": "explicit"
     }
     assert "prompt_cache_breakpoint" not in body["input"][0]["content"][1]
+
+
+def test_chat_sol_rejects_breakpoint_directly_on_tool_definition():
+    request = ChatCompletionRequest.model_validate(
+        {
+            "model": "global.openai.gpt-5.6-sol",
+            "messages": [{"role": "user", "content": "question"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "parameters": {"type": "object"},
+                    },
+                    "cache_control": CACHE_CONTROL,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="not supported directly on tool"):
+        _responses_body(request)
 
 
 def test_chat_sol_rejects_breakpoint_on_assistant_output_content():

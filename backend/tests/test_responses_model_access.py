@@ -52,7 +52,7 @@ async def _call(requested_model, canonical, allowed_names):
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
         patch.object(responses_module, "session_scope", fake_scope),
         patch.object(
-            responses_module, "resolve_mantle_model_id", return_value=canonical
+            responses_module, "resolve_responses_model_id", return_value=canonical
         ),
         patch.object(
             responses_module.MantleClient,
@@ -81,6 +81,27 @@ async def test_region_prefixed_grant_authorises(requested, canonical, granted):
     passthrough.assert_awaited_once()
     forwarded_body = passthrough.await_args_list[0].args[0]
     assert forwarded_body["model"] == canonical
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile", ["us.openai.gpt-5.6-sol", "global.openai.gpt-5.6-sol"]
+)
+async def test_runtime_profile_is_forwarded_without_canonicalization(profile):
+    _result, passthrough = await _call(profile, profile, allowed_names=[profile])
+    forwarded_body = passthrough.await_args_list[0].args[0]
+    assert forwarded_body["model"] == profile
+
+
+@pytest.mark.asyncio
+async def test_global_profile_is_not_authorized_by_us_profile_grant():
+    with pytest.raises(HTTPException) as exc:
+        await _call(
+            "global.openai.gpt-5.6-sol",
+            "global.openai.gpt-5.6-sol",
+            allowed_names=["us.openai.gpt-5.6-sol"],
+        )
+    assert exc.value.status_code == 403
 
 
 @pytest.mark.asyncio

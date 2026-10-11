@@ -535,6 +535,7 @@ class TestPricingUpdater:
         profile_cache = MagicMock()
         profile_cache._local_profile_ids = {
             "global.openai.gpt-6-sol",
+            "global.openai.gpt-5.6-sol",
             "global.xai.grok-4.6",
             "us.openai.gpt-5.6-sol",
             "us.openai.gpt-6-astra",
@@ -562,12 +563,13 @@ class TestPricingUpdater:
         ):
             stats = await updater.update_all_pricing()
 
-        assert stats["model_card_count"] == 4
-        assert stats["updated"] == 4
+        assert stats["model_card_count"] == 5
+        assert stats["updated"] == 5
         assert "aws-model-card" in stats["sources"]
 
         expected = {
             "global.openai.gpt-6-sol": ("0.000002", "0.000010", "0.0000002"),
+            "global.openai.gpt-5.6-sol": ("0.000004", "0.000020", "0.0000004"),
             "global.xai.grok-4.6": ("0.000002", "0.000006", "0.0000005"),
             "us.openai.gpt-5.6-sol": ("0.0000044", "0.000022", "0.00000044"),
             "us.openai.gpt-6-astra": ("0.000011", "0.000055", "0.0000011"),
@@ -644,6 +646,34 @@ class TestPricingService:
         assert cost == Decimal("0.0011132")
 
     @pytest.mark.asyncio
+    async def test_calculate_global_gpt_56_sol_uses_global_rates(self, db_session):
+        """Global CRIS keeps its lower model-card rates and exact identity."""
+        model_id = "global.openai.gpt-5.6-sol"
+        await PricingUpdater(db_session)._save_pricing_data(
+            [
+                {
+                    "model_id": model_id,
+                    "region": "us-east-1",
+                    "input_price_per_token": Decimal("0.0000044"),
+                    "output_price_per_token": Decimal("0.000022"),
+                    "cached_input_price_per_token": Decimal("0.00000044"),
+                }
+            ],
+            "legacy-scraper",
+        )
+
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=100,
+            completion_tokens=20,
+            cache_creation_input_tokens=40,
+            cache_read_input_tokens=30,
+            region="us-east-1",
+        )
+
+        assert cost == Decimal("0.001012")
+
+    @pytest.mark.asyncio
     async def test_calculate_gpt_56_sol_canonical_id_uses_current_rates(
         self, db_session
     ):
@@ -708,6 +738,22 @@ class TestPricingService:
         )
 
         assert cost == Decimal("2.38821088")
+
+    @pytest.mark.asyncio
+    async def test_calculate_global_gpt_56_sol_uses_long_context_rates(
+        self, db_session
+    ):
+        model_id = "global.openai.gpt-5.6-sol"
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=270_000,
+            completion_tokens=10,
+            cache_creation_input_tokens=1_000,
+            cache_read_input_tokens=1_001,
+            region="us-east-1",
+        )
+
+        assert cost == Decimal("2.1711008")
 
     @pytest.mark.asyncio
     async def test_calculate_grok_uses_official_cache_read_rate(self, db_session):

@@ -50,8 +50,9 @@ from app.services.mantle_client import (
     validate_responses_cache_markers,
 )
 from app.services.mantle_models import (
-    is_openai_mantle_model,
-    resolve_mantle_model_id,
+    is_openai_runtime_responses_model,
+    resolve_responses_model_id,
+    should_use_responses_api,
 )
 from app.core.metrics import emit_request_metrics
 from app.services.pricing import ModelPricing
@@ -199,7 +200,6 @@ async def create_chat_completion(
         f"messages={len(request_data.messages)}, stream={request_data.stream}, "
         f"request_id={request_id}, token_id={token.id}",
     )
-    logger.debug(f"Full request data: {request_data.model_dump()}")
 
     try:
         from sqlalchemy import select
@@ -236,25 +236,32 @@ async def create_chat_completion(
                 detail="Token does not have access to any models",
             )
 
-        # Clients often send the bare mantle name (``gpt-5.6-sol``) while the
-        # gateway stores the canonical ``openai.``-prefixed ID. Rewrite to the
-        # canonical form so both the access check below and the mantle routing
-        # (is_openai_mantle_model) match; non-mantle models are left untouched.
-        canonical_model = resolve_mantle_model_id(request_data.model)
-        if canonical_model is not None:
-            request_data.model = canonical_model
+        # Resolve the exact Responses target before access matching. Bare names
+        # become canonical Mantle IDs, while US/Global Runtime profile IDs stay
+        # unchanged to preserve residency, routing, and pricing semantics.
+        responses_model = resolve_responses_model_id(request_data.model)
+        access_model = responses_model or request_data.model
 
-        # Match against the token's allowed models, ignoring the cross-region
-        # inference-profile prefix so a bare ``openai.gpt-6-astra`` authorises
-        # against a granted ``us.openai.gpt-6-astra`` (and vice versa). Rewrite
-        # to the granted ID so the exact profile Bedrock expects is forwarded.
-        matched_model = match_allowed_model(request_data.model, allowed_model_names)
+        # Match against the token's allowed models using the gateway's existing
+        # model-grant compatibility rules. The matched DB value is used only on
+        # non-Responses paths; Responses keeps the client's resolved target.
+        if is_openai_runtime_responses_model(access_model):
+            matched_model = (
+                access_model if access_model in allowed_model_names else None
+            )
+        else:
+            matched_model = match_allowed_model(access_model, allowed_model_names)
         if matched_model is None:
             raise HTTPException(
                 status_code=403,
-                detail=f"Token does not have access to model: {request_data.model}. Allowed models: {allowed_model_names}",
+                detail=f"Token does not have access to model: {access_model}. Allowed models: {allowed_model_names}",
             )
-        request_data.model = matched_model
+
+        responses_backend = get_openai_gpt_backend()
+        use_responses = responses_model is not None and should_use_responses_api(
+            responses_model, responses_backend
+        )
+        request_data.model = responses_model if use_responses else matched_model
 
         # Route Gemini models to Google API directly
         if _is_gemini_model(request_data.model):
@@ -265,14 +272,10 @@ async def create_chat_completion(
                 start_time=start_time,
             )
 
-        # Route mantle-served OpenAI models to the Responses API directly.
-        # The OPENAI_GPT_BACKEND switch lets operators send these GPT models
-        # through the standard bedrock-runtime converse path instead: when set
-        # to "runtime" we skip the mantle branch and fall through below.
-        if (
-            is_openai_mantle_model(request_data.model)
-            and get_openai_gpt_backend() == "mantle"
-        ):
+        # Canonical IDs use Mantle when configured. US/Global inference
+        # profiles always use the Bedrock Runtime OpenAI Responses endpoint;
+        # sending them through boto3 Converse would discard explicit markers.
+        if use_responses:
             return await _handle_mantle_request(
                 request_data=request_data,
                 request_id=request_id,
@@ -631,10 +634,14 @@ async def _handle_mantle_request(
     try:
         response_data = await MantleClient.invoke(payload)
     except httpx.HTTPStatusError as e:
-        logger.error(f"mantle API error: {e}")
+        logger.error(
+            "Bedrock Responses API error: model=%s, status=%s",
+            request_data.model,
+            e.response.status_code,
+        )
         raise HTTPException(
             status_code=e.response.status_code,
-            detail=f"mantle API error: status {e.response.status_code}",
+            detail=f"Bedrock Responses API error: status {e.response.status_code}",
         )
 
     # Extract usage including cached tokens for billing.
@@ -667,8 +674,7 @@ async def _handle_mantle_request(
     if cached_tokens:
         cache_info += f", cached={cached_tokens}"
     logger.info(
-        f"mantle completion successful: request_id={request_id}, "
-        f"duration={round(duration, 3)}s, "
+        f"Responses completion successful: duration={round(duration, 3)}s, "
         f"prompt={non_cached_prompt}, completion={completion_tokens}{cache_info}"
     )
 
@@ -706,11 +712,8 @@ async def stream_mantle_completion(
                 yield ": heartbeat\n\n"
                 last_heartbeat = current_time
 
-            # Forward OpenAI-format SSE chunk produced by invoke_stream
-            yield chunk
-            last_heartbeat = current_time
-
-            # Extract usage for billing (appears on the final chunk)
+            # Extract usage before yielding so disconnects at the final chunk
+            # cannot skip billing in the finally block.
             for line in chunk.splitlines():
                 if line.startswith("data: ") and line.strip() != "data: [DONE]":
                     try:
@@ -734,24 +737,29 @@ async def stream_mantle_completion(
                     except Exception:
                         pass
 
+            # Forward OpenAI-format SSE chunk produced by invoke_stream.
+            yield chunk
+            last_heartbeat = current_time
+
     except httpx.HTTPStatusError as e:
         logger.error(
-            f"mantle stream error: model={model}, request_id={request_id}, "
-            f"status={e.response.status_code}",
-            exc_info=True,
+            "Responses stream error: model=%s, status=%s",
+            model,
+            e.response.status_code,
         )
         error_response = ErrorResponse(
             error=ErrorDetail(
-                message=f"mantle API error: status {e.response.status_code}",
+                message=f"Bedrock Responses API error: status {e.response.status_code}",
                 type="server_error",
                 code=str(e.response.status_code),
             )
         )
         yield f"data: {error_response.model_dump_json()}\n\n"
-    except Exception as e:
+    except Exception as error:
         logger.error(
-            f"mantle streaming failed: model={model}, request_id={request_id}, error={e}",
-            exc_info=True,
+            "Responses streaming failed: model=%s, error_type=%s",
+            model,
+            type(error).__name__,
         )
         error_response = ErrorResponse(
             error=ErrorDetail(
@@ -762,38 +770,38 @@ async def stream_mantle_completion(
         )
         yield f"data: {error_response.model_dump_json()}\n\n"
 
-    # Split the Responses total into uncached, cache-read, and cache-write input.
-    non_cached_prompt = max(
-        0,
-        total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
-    )
+    finally:
+        # Record usage even when the downstream client closes the generator at
+        # a yielded chunk after upstream usage has already been parsed.
+        non_cached_prompt = max(
+            0,
+            total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
+        )
+        background_tasks.create_task(
+            record_usage(
+                token_id=token.id,
+                user_id=token.user_id,
+                model=model,
+                request_id=request_id,
+                prompt_tokens=non_cached_prompt,
+                completion_tokens=total_completion_tokens,
+                cache_creation_input_tokens=total_cache_write_tokens,
+                cache_read_input_tokens=total_cached_tokens,
+            ),
+            task_name=f"record_usage_{request_id}",
+        )
 
-    # Record usage
-    background_tasks.create_task(
-        record_usage(
-            token_id=token.id,
-            user_id=token.user_id,
-            model=model,
-            request_id=request_id,
-            prompt_tokens=non_cached_prompt,
-            completion_tokens=total_completion_tokens,
-            cache_creation_input_tokens=total_cache_write_tokens,
-            cache_read_input_tokens=total_cached_tokens,
-        ),
-        task_name=f"record_usage_{request_id}",
-    )
-
-    duration = time.time() - start_time
-    cache_info = ""
-    if total_cache_write_tokens:
-        cache_info += f", cache_write={total_cache_write_tokens}"
-    if total_cached_tokens:
-        cache_info += f", cached={total_cached_tokens}"
-    logger.info(
-        f"mantle streaming successful: request_id={request_id}, "
-        f"duration={round(duration, 3)}s, "
-        f"prompt={non_cached_prompt}, completion={total_completion_tokens}{cache_info}"
-    )
+        duration = time.time() - start_time
+        cache_info = ""
+        if total_cache_write_tokens:
+            cache_info += f", cache_write={total_cache_write_tokens}"
+        if total_cached_tokens:
+            cache_info += f", cached={total_cached_tokens}"
+        logger.info(
+            f"Responses streaming finished: duration={round(duration, 3)}s, "
+            f"prompt={non_cached_prompt}, "
+            f"completion={total_completion_tokens}{cache_info}"
+        )
 
 
 async def stream_chat_completion(

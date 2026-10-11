@@ -130,7 +130,7 @@ async def _call_bedrock(request, allowed_names):
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
         patch.object(chat_module, "session_scope", fake_scope),
         patch.object(chat_module, "_is_gemini_model", return_value=False),
-        patch.object(chat_module, "is_openai_mantle_model", return_value=False),
+        patch.object(chat_module, "resolve_responses_model_id", return_value=None),
         patch.object(
             chat_module.BedrockClient,
             "get_instance",
