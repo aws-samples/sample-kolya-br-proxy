@@ -22,7 +22,7 @@
     "quasar": "^2.35.0",
     "vue": "^3.5.43",
     "vue-chartjs": "^5.3.3",
-    "vue-router": "^4.0.12"
+    "vue-router": "^5.4.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.14.0",
