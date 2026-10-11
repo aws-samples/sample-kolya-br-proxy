@@ -2,221 +2,34 @@
 Pricing service for calculating model usage costs.
 """
 
-from dataclasses import dataclass
 from typing import Optional
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
+from app.services.openai_gpt_catalog import gpt_official_pricing
+from app.services.pricing_types import OfficialProfilePricing, TokenRates
+from app.services.pricing_types import per_token as _per_token
+
+__all__ = [
+    "OFFICIAL_PROFILE_PRICING",
+    "ModelPricing",
+    "OfficialProfilePricing",
+    "TokenRates",
+    "get_official_profile_pricing",
+]
+
 logger = logging.getLogger(__name__)
 
 # Gemini implicit cache: if no explicit cached price in DB, use 25% of input price
 GEMINI_CACHE_READ_FALLBACK_RATIO = Decimal("0.25")
-_ONE_MILLION = Decimal("1000000")
 
-
-def _per_token(price_per_million: str) -> Decimal:
-    return Decimal(price_per_million) / _ONE_MILLION
-
-
-@dataclass(frozen=True)
-class TokenRates:
-    """Per-token rates for one context-length band."""
-
-    input: Decimal
-    output: Decimal
-    cache_read: Decimal | None = None
-    cache_write: Decimal | None = None
-
-
-@dataclass(frozen=True)
-class OfficialProfilePricing:
-    """AWS model-card rates for one exact inference profile."""
-
-    model_id: str
-    source_url: str
-    short: TokenRates
-    long_context_threshold: int | None = None
-    long: TokenRates | None = None
-
-    def rates_for_input_tokens(self, input_tokens: int) -> TokenRates:
-        """Select the rate band AWS applies to the entire request."""
-        if (
-            self.long is not None
-            and self.long_context_threshold is not None
-            and input_tokens > self.long_context_threshold
-        ):
-            return self.long
-        return self.short
-
-
-# Source-backed fallbacks for profiles omitted from the public Price List file.
-# Exact profile IDs are intentional: Global and Geo CRIS rates differ.
+# Source-backed pricing for exact model/profile IDs that the public Price List
+# file omits or prices ambiguously. GPT entries come from the GPT catalog, which
+# also drives routing and prompt-cache capability, so the three cannot drift.
+# Exact IDs are intentional: Global and Geo CRIS rates differ.
 OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
-    # ── GPT-5.6 Sol ──────────────────────────────────────────────────
-    "us.openai.gpt-5.6-sol": OfficialProfilePricing(
-        model_id="us.openai.gpt-5.6-sol",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-56-sol.html"
-        ),
-        short=TokenRates(
-            input=_per_token("4.40"),
-            cache_write=_per_token("5.50"),
-            cache_read=_per_token("0.44"),
-            output=_per_token("22.00"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("8.80"),
-            cache_write=_per_token("11.00"),
-            cache_read=_per_token("0.88"),
-            output=_per_token("33.00"),
-        ),
-    ),
-    "global.openai.gpt-5.6-sol": OfficialProfilePricing(
-        model_id="global.openai.gpt-5.6-sol",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-56-sol.html"
-        ),
-        short=TokenRates(
-            input=_per_token("4.00"),
-            cache_write=_per_token("5.00"),
-            cache_read=_per_token("0.40"),
-            output=_per_token("20.00"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("8.00"),
-            cache_write=_per_token("10.00"),
-            cache_read=_per_token("0.80"),
-            output=_per_token("30.00"),
-        ),
-    ),
-    # ── GPT-6.1 Sol ──────────────────────────────────────────────────
-    "openai.gpt-6.1-sol": OfficialProfilePricing(
-        model_id="openai.gpt-6.1-sol",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-6-1-sol.html"
-        ),
-        short=TokenRates(
-            input=_per_token("2.20"),
-            cache_write=_per_token("2.75"),
-            cache_read=_per_token("0.11"),
-            output=_per_token("11.00"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("4.40"),
-            cache_write=_per_token("5.50"),
-            cache_read=_per_token("0.22"),
-            output=_per_token("16.50"),
-        ),
-    ),
-    "global.openai.gpt-6.1-sol": OfficialProfilePricing(
-        model_id="global.openai.gpt-6.1-sol",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-6-1-sol.html"
-        ),
-        short=TokenRates(
-            input=_per_token("2.00"),
-            cache_write=_per_token("2.50"),
-            cache_read=_per_token("0.10"),
-            output=_per_token("10.00"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("4.00"),
-            cache_write=_per_token("5.00"),
-            cache_read=_per_token("0.20"),
-            output=_per_token("15.00"),
-        ),
-    ),
-    # ── GPT-6 Sol ────────────────────────────────────────────────────
-    "openai.gpt-6-sol": OfficialProfilePricing(
-        model_id="openai.gpt-6-sol",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-6-sol.html"
-        ),
-        short=TokenRates(
-            input=_per_token("2.20"),
-            cache_write=_per_token("2.75"),
-            cache_read=_per_token("0.22"),
-            output=_per_token("11.00"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("4.40"),
-            cache_write=_per_token("5.50"),
-            cache_read=_per_token("0.44"),
-            output=_per_token("16.50"),
-        ),
-    ),
-    "global.openai.gpt-6-sol": OfficialProfilePricing(
-        model_id="global.openai.gpt-6-sol",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-6-sol.html"
-        ),
-        short=TokenRates(
-            input=_per_token("2.00"),
-            cache_write=_per_token("2.50"),
-            cache_read=_per_token("0.20"),
-            output=_per_token("10.00"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("4.00"),
-            cache_write=_per_token("5.00"),
-            cache_read=_per_token("0.40"),
-            output=_per_token("15.00"),
-        ),
-    ),
-    # ── GPT-6 Luna ───────────────────────────────────────────────────
-    "openai.gpt-6-luna": OfficialProfilePricing(
-        model_id="openai.gpt-6-luna",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-6-luna.html"
-        ),
-        short=TokenRates(
-            input=_per_token("0.11"),
-            cache_write=_per_token("0.1375"),
-            cache_read=_per_token("0.011"),
-            output=_per_token("0.55"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("0.22"),
-            cache_write=_per_token("0.275"),
-            cache_read=_per_token("0.022"),
-            output=_per_token("0.825"),
-        ),
-    ),
-    "global.openai.gpt-6-luna": OfficialProfilePricing(
-        model_id="global.openai.gpt-6-luna",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-6-luna.html"
-        ),
-        short=TokenRates(
-            input=_per_token("0.10"),
-            cache_write=_per_token("0.125"),
-            cache_read=_per_token("0.01"),
-            output=_per_token("0.50"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("0.20"),
-            cache_write=_per_token("0.25"),
-            cache_read=_per_token("0.02"),
-            output=_per_token("0.75"),
-        ),
-    ),
+    **gpt_official_pricing(),
     # ── Grok 4.6 ─────────────────────────────────────────────────────
     "global.xai.grok-4.6": OfficialProfilePricing(
         model_id="global.xai.grok-4.6",
@@ -230,45 +43,14 @@ OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
             output=_per_token("6.00"),
         ),
     ),
-    # ── GPT-6 Astra ──────────────────────────────────────────────────
-    "us.openai.gpt-6-astra": OfficialProfilePricing(
-        model_id="us.openai.gpt-6-astra",
-        source_url=(
-            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
-            "model-card-openai-gpt-6-astra.html"
-        ),
-        short=TokenRates(
-            input=_per_token("11.00"),
-            cache_write=_per_token("13.75"),
-            cache_read=_per_token("1.10"),
-            output=_per_token("55.00"),
-        ),
-        long_context_threshold=272_000,
-        long=TokenRates(
-            input=_per_token("22.00"),
-            cache_write=_per_token("27.50"),
-            cache_read=_per_token("2.20"),
-            output=_per_token("82.50"),
-        ),
-    ),
-}
-
-# Mantle uses the canonical model ID while Bedrock Runtime uses the US Geo CRIS
-# inference-profile ID.  The GPT-5.6 Sol model card publishes identical
-# In-Region and Geo CRIS rates, so both invocation IDs must share one pricing
-# policy.  Keep aliases outside OFFICIAL_PROFILE_PRICING: the updater intersects
-# that mapping with locally available inference profiles when seeding DB rows.
-OFFICIAL_PRICING_ALIASES: dict[str, str] = {
-    "openai.gpt-5.6-sol": "us.openai.gpt-5.6-sol",
 }
 
 
 def get_official_profile_pricing(
     model_id: str,
 ) -> OfficialProfilePricing | None:
-    """Return model-card pricing for an exact profile or approved alias."""
-    pricing_id = OFFICIAL_PRICING_ALIASES.get(model_id, model_id)
-    return OFFICIAL_PROFILE_PRICING.get(pricing_id)
+    """Return model-card pricing for an exact model or profile ID."""
+    return OFFICIAL_PROFILE_PRICING.get(model_id)
 
 
 def _calculate_official_cost(

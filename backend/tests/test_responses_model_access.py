@@ -37,12 +37,12 @@ def _db_with_models(names):
     return db
 
 
-async def _call(requested_model, canonical, allowed_names):
+async def _call(requested_model, canonical, allowed_names, body=None):
     token = cast(
         APIToken, SimpleNamespace(id="tok", user_id="usr", token_metadata=None)
     )
     db = _db_with_models(allowed_names)
-    http_request = _http_request({"model": requested_model, "stream": False})
+    http_request = _http_request(body or {"model": requested_model, "stream": False})
 
     @asynccontextmanager
     async def fake_scope():
@@ -75,12 +75,15 @@ async def _call(requested_model, canonical, allowed_names):
         ("openai.gpt-5.6-sol", "openai.gpt-5.6-sol", "openai.gpt-5.6-sol"),
     ],
 )
-async def test_region_prefixed_grant_authorises(requested, canonical, granted):
+async def test_region_prefixed_grant_authorises_within_its_scope(
+    requested, canonical, granted
+):
     _result, passthrough = await _call(requested, canonical, allowed_names=[granted])
-    # Authorised → forwarded to mantle with the canonical (bare) ID.
+    # A profile-only grant serves canonical/bare requests through that exact
+    # profile rather than escalating to In-Region Mantle (scope and price).
     passthrough.assert_awaited_once()
     forwarded_body = passthrough.await_args_list[0].args[0]
-    assert forwarded_body["model"] == canonical
+    assert forwarded_body["model"] == granted
 
 
 @pytest.mark.asyncio
@@ -111,5 +114,58 @@ async def test_unrelated_model_still_403():
             "gpt-6-nova",
             "openai.gpt-6-nova",
             allowed_names=["us.openai.gpt-6-astra"],
+        )
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_unsupported_native_breakpoint_returns_400_before_upstream():
+    body = {
+        "model": "us.openai.gpt-6.1-sol",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,AA==",
+                        "prompt_cache_breakpoint": {"mode": "explicit"},
+                    }
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        await _call(
+            body["model"],
+            body["model"],
+            allowed_names=[body["model"]],
+            body=body,
+        )
+
+    assert exc.value.status_code == 400
+    assert "input_image" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_token_gets_403_before_cache_validation():
+    body = {
+        "model": "us.openai.gpt-6.1-sol",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "prompt_cache_breakpoint": {}}],
+            }
+        ],
+    }
+    with pytest.raises(HTTPException) as exc:
+        await _call(
+            body["model"],
+            body["model"],
+            allowed_names=["global.openai.gpt-6.1-sol"],
+            body=body,
         )
     assert exc.value.status_code == 403

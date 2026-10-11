@@ -37,6 +37,7 @@ from typing import Dict, List, Optional
 import httpx
 
 from app.core.config import get_settings
+from app.services.openai_gpt_catalog import runtime_responses_model_ids
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +74,10 @@ MANTLE_BASE_URL = "https://bedrock-mantle.{region}.api.aws/openai/v1"
 # mantle host, NOT under the /openai/v1 prefix used for inference.
 MANTLE_LIST_MODELS_URL = "https://bedrock-mantle.{region}.api.aws/v1/models"
 
-# Runtime Responses support is endpoint- and model-specific. Keep exact IDs
-# rather than assuming every discovered Mantle family supports Geo/Global
-# profiles on the Runtime OpenAI-compatible endpoint.
-RUNTIME_RESPONSES_MODEL_IDS = {
-    "us.openai.gpt-5.6-sol",
-    "global.openai.gpt-5.6-sol",
-}
+# Runtime Responses support is endpoint- and model-specific: exact US/Global
+# profile IDs come from the GPT catalog (model cards), never from guessing a
+# prefix for every discovered Mantle family.
+RUNTIME_RESPONSES_MODEL_IDS = runtime_responses_model_ids()
 
 
 def get_mantle_model_regions() -> Dict[str, List[str]]:
@@ -267,11 +265,51 @@ def resolve_responses_model_id(model_id: str) -> Optional[str]:
     return resolve_mantle_model_id(model_id)
 
 
-def should_use_responses_api(model_id: str, configured_backend: str) -> bool:
-    """Choose Responses without routing GPT-5.6 Sol through Converse."""
-    if model_id == "openai.gpt-5.6-sol" or is_openai_runtime_responses_model(model_id):
-        return True
-    return is_openai_mantle_model(model_id) and configured_backend == "mantle"
+def select_granted_responses_model(
+    target: str, allowed_model_names: List[str]
+) -> Optional[str]:
+    """Return the exact Responses model ID this token may call, or None.
+
+    *target* is the resolved Responses ID (see resolve_responses_model_id).
+
+    * Exact grants always win.
+    * US/Global profiles are authorized only by an exact grant: residency and
+      price differ, so a US grant never authorizes Global (or vice versa).
+    * A canonical/bare request from a token granted only a catalogued
+      ``us.``/``global.`` profile of the same model is served by that profile
+      instead of being escalated to In-Region Mantle (different residency and
+      a higher price than Global). This keeps codex-style clients that send
+      ``gpt-6-astra`` working while honouring the grant's scope.
+    * Otherwise the gateway's legacy prefix-tolerant matching applies to
+      canonical IDs (e.g. newly discovered Mantle models).
+    """
+    if target in allowed_model_names:
+        return target
+    if is_openai_runtime_responses_model(target):
+        return None
+
+    base = target.removeprefix("openai.")
+    for name in allowed_model_names:
+        if name in (f"us.openai.{base}", f"global.openai.{base}") and (
+            is_openai_runtime_responses_model(name)
+        ):
+            return name
+
+    from app.services.bedrock import match_allowed_model
+
+    return target if match_allowed_model(target, allowed_model_names) else None
+
+
+def should_use_responses_api(model_id: str) -> bool:
+    """Return whether a resolved model ID is served by a Responses endpoint.
+
+    GPT routing is automatic: canonical Mantle IDs use Mantle Responses and
+    exact US/Global profiles use Runtime Responses. There is no Converse
+    fallback for GPT, because Converse drops explicit prompt-cache markers.
+    """
+    return is_openai_runtime_responses_model(model_id) or is_openai_mantle_model(
+        model_id
+    )
 
 
 def resolve_mantle_region(model_id: str) -> str:

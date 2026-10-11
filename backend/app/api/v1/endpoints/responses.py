@@ -36,12 +36,15 @@ from app.core.database import session_scope
 from app.models.model import Model
 from app.models.token import APIToken
 from app.services.background_tasks import BackgroundTaskManager
-from app.services.bedrock import match_allowed_model
-from app.services.mantle_client import MantleClient
+from app.services.mantle_client import (
+    MantleClient,
+    PromptCacheValidationError,
+    validate_native_responses_cache,
+)
 from app.services.mantle_models import (
     get_mantle_model_regions,
-    is_openai_runtime_responses_model,
     resolve_responses_model_id,
+    select_granted_responses_model,
 )
 
 router = APIRouter()
@@ -118,10 +121,6 @@ async def create_response(
             ),
         )
 
-    # Forward the resolved target: canonical for Mantle, exact profile ID for
-    # Runtime so cross-Region routing and pricing semantics remain intact.
-    body["model"] = model
-
     # Quota + model access (same checks as the other gateway endpoints).
     # Done in a short-lived session released before streaming: a Responses
     # stream can run for tens of seconds and must not pin a pooled connection.
@@ -140,19 +139,26 @@ async def create_response(
         )
         allowed_model_names = [m.model_name for m in result.scalars().all()]
     # Connection returned to the pool here — the stream below holds none.
-    # Runtime profile scope is security- and residency-sensitive: a US grant
-    # must not authorize a Global request (or vice versa). Canonical Mantle IDs
-    # retain the legacy prefix-tolerant access behavior.
-    if is_openai_runtime_responses_model(model):
-        authorized = model in allowed_model_names
-    else:
-        authorized = match_allowed_model(model, allowed_model_names) is not None
-    if not authorized:
+    # Authorize without widening scope: profiles need an exact grant, and a
+    # canonical request from a profile-only grant is served by that profile.
+    granted = select_granted_responses_model(model, allowed_model_names)
+    if granted is None:
         raise HTTPException(
             status_code=403,
             detail=f"Token does not have access to model: {model}. "
             f"Allowed models: {allowed_model_names}",
         )
+    model = granted
+    # Forward the exact target: canonical for Mantle, exact profile ID for
+    # Runtime so cross-Region routing and pricing semantics remain intact.
+    body["model"] = model
+
+    # Reject explicit cache usage the exact model cannot honour before any
+    # upstream call or stream is opened.
+    try:
+        validate_native_responses_cache(body)
+    except PromptCacheValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
     if stream:
         return StreamingResponse(

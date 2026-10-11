@@ -10,6 +10,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,11 +21,6 @@ from app.core.database import get_db
 from app.core.json_formatter import set_log_level
 from app.core.metrics import is_metrics_enabled, set_metrics_enabled
 from app.core.redis import get_redis
-from app.core.runtime_config import (
-    get_openai_gpt_backend,
-    persist_openai_gpt_backend,
-    set_openai_gpt_backend,
-)
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -32,7 +28,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
-_VALID_GPT_BACKENDS = {"mantle", "runtime"}
 
 
 class ObservabilityUpdate(BaseModel):
@@ -48,7 +43,8 @@ class ObservabilityUpdate(BaseModel):
     )
     openai_gpt_backend: Optional[str] = Field(
         default=None,
-        description="OpenAI GPT (openai.gpt-5.x) upstream: 'mantle' or 'runtime'",
+        description="Removed. GPT routing is automatic per exact model ID; "
+        "sending this field returns an error instead of being silently ignored.",
     )
 
 
@@ -65,7 +61,9 @@ async def get_observability_config(
         "log_format": settings.LOG_FORMAT,
         "metrics_enabled": is_metrics_enabled(),
         "tracing_exporter": settings.OTEL_EXPORTER or "disabled",
-        "openai_gpt_backend": get_openai_gpt_backend(),
+        # GPT routing is automatic: canonical openai.* IDs → Mantle Responses,
+        # us./global. profiles → Runtime Responses. No global switch.
+        "openai_gpt_routing": "auto",
         "note": "log_format and tracing_exporter require restart to change",
     }
 
@@ -81,13 +79,24 @@ async def update_observability_config(
     Supports:
     - **log_level**: Changes root logger level immediately
     - **enable_metrics**: Toggles CloudWatch EMF metric emission
-    - **openai_gpt_backend**: Switch GPT upstream (mantle | runtime); persisted
-      to system_configs so it survives restarts
 
     Does NOT support (requires restart):
     - log_format (text/json)
     - tracing exporter (xray/otlp)
     """
+    if update.openai_gpt_backend is not None:
+        # 400 (not 200 + success=False) so a stale client cannot mistake the
+        # dropped update for success.
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": "openai_gpt_backend was removed: GPT routing is automatic "
+                "(canonical IDs use Mantle Responses, us./global. profiles use "
+                "Runtime Responses).",
+            },
+        )
+
     changes = {}
 
     if update.log_level is not None:
@@ -108,20 +117,6 @@ async def update_observability_config(
         changes["metrics_enabled"] = {"old": old_val, "new": update.enable_metrics}
         logger.info("Metrics toggled: %s -> %s", old_val, update.enable_metrics)
 
-    if update.openai_gpt_backend is not None:
-        candidate = update.openai_gpt_backend.lower()
-        if candidate not in _VALID_GPT_BACKENDS:
-            return {
-                "success": False,
-                "error": f"Invalid openai_gpt_backend: {update.openai_gpt_backend}. "
-                f"Must be one of {_VALID_GPT_BACKENDS}",
-            }
-        old_backend = get_openai_gpt_backend()
-        set_openai_gpt_backend(candidate)
-        await persist_openai_gpt_backend(db, candidate)
-        changes["openai_gpt_backend"] = {"old": old_backend, "new": candidate}
-        logger.info("OpenAI GPT backend changed: %s -> %s", old_backend, candidate)
-
     if not changes:
         return {"success": True, "message": "No changes requested", "changes": {}}
 
@@ -132,8 +127,6 @@ async def update_observability_config(
             broadcast["log_level"] = changes["log_level"]["new"]
         if "metrics_enabled" in changes:
             broadcast["metrics_enabled"] = changes["metrics_enabled"]["new"]
-        if "openai_gpt_backend" in changes:
-            broadcast["openai_gpt_backend"] = changes["openai_gpt_backend"]["new"]
         await publish_config_change(redis_client, broadcast)
 
     return {"success": True, "changes": changes}

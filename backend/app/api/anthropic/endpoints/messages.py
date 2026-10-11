@@ -18,7 +18,6 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_token_flexible_streaming
 from app.core.config import get_settings
-from app.core.runtime_config import get_openai_gpt_backend
 from app.core.database import session_scope
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -32,8 +31,10 @@ from app.services.background_tasks import BackgroundTaskManager
 from app.core.metrics import emit_request_metrics
 from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import is_gemini_model as _is_gemini_model
+from app.services.mantle_client import PromptCacheValidationError
 from app.services.mantle_models import (
     resolve_responses_model_id,
+    select_granted_responses_model,
     should_use_responses_api,
 )
 from app.services.pricing import ModelPricing
@@ -140,41 +141,56 @@ async def create_message(
                 detail="Token does not have access to any models",
             )
 
-        def _normalize_model(name: str) -> str:
-            import re
-
-            for prefix in (
-                "global.anthropic.",
-                "us.anthropic.",
-                "eu.anthropic.",
-                "ap.anthropic.",
-                "anthropic.",
-            ):
-                if name.startswith(prefix):
-                    name = name[len(prefix) :]
-                    break
-            return re.sub(r"-v\d+(?::\d+)?$", "", name)
-
-        normalized_requested = _normalize_model(request_data.model)
-        normalized_allowed = {_normalize_model(m) for m in allowed_model_names}
-
-        if normalized_requested not in normalized_allowed:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Token does not have access to model: {request_data.model}. Allowed models: {allowed_model_names}",
+        # GPT: authorize the exact Responses target without widening the
+        # grant's residency/price scope (US vs Global vs In-Region).
+        gpt_target = resolve_responses_model_id(request_data.model)
+        if gpt_target is not None:
+            granted_gpt = select_granted_responses_model(
+                gpt_target, allowed_model_names
             )
+            if granted_gpt is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Token does not have access to model: {gpt_target}. Allowed models: {allowed_model_names}",
+                )
+            request_data.model = granted_gpt
+        else:
 
-        # Resolve to the Bedrock model name stored in DB (in case client sent a short Anthropic name)
-        matched = next(
-            (
-                m
-                for m in allowed_model_names
-                if _normalize_model(m) == normalized_requested
-            ),
-            None,
-        )
-        if matched and matched != request_data.model:
-            request_data.model = matched
+            def _normalize_model(name: str) -> str:
+                import re
+
+                for prefix in (
+                    "global.anthropic.",
+                    "us.anthropic.",
+                    "eu.anthropic.",
+                    "ap.anthropic.",
+                    "anthropic.",
+                ):
+                    if name.startswith(prefix):
+                        name = name[len(prefix) :]
+                        break
+                return re.sub(r"-v\d+(?::\d+)?$", "", name)
+
+            normalized_requested = _normalize_model(request_data.model)
+            normalized_allowed = {_normalize_model(m) for m in allowed_model_names}
+
+            if normalized_requested not in normalized_allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Token does not have access to model: {request_data.model}. Allowed models: {allowed_model_names}",
+                )
+
+            # Resolve to the Bedrock model name stored in DB (in case client sent a short Anthropic name)
+            matched = next(
+                (
+                    m
+                    for m in allowed_model_names
+                    if _normalize_model(m) == normalized_requested
+                ),
+                None,
+            )
+            if matched and matched != request_data.model:
+                request_data.model = matched
 
         # Route Gemini models to Google API
         if _is_gemini_model(request_data.model):
@@ -185,12 +201,11 @@ async def create_message(
                 start_time=start_time,
             )
 
-        # Preserve US/Global profile IDs for Bedrock Runtime Responses. The
-        # canonical GPT-5.6 Sol ID is also forced onto Mantle Responses; the
-        # legacy backend switch still applies to other canonical GPT models.
+        # GPT routing is automatic and preserves the exact ID: canonical IDs
+        # use Mantle Responses, US/Global profiles use Runtime Responses.
         responses_model = resolve_responses_model_id(request_data.model)
         use_responses = responses_model is not None and should_use_responses_api(
-            responses_model, get_openai_gpt_backend()
+            responses_model
         )
         if use_responses:
             request_data.model = responses_model
@@ -318,6 +333,8 @@ async def create_message(
 
     except HTTPException:
         raise
+    except PromptCacheValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         logger.error(
             "Invalid request",
@@ -1064,7 +1081,7 @@ def _anthropic_to_openai_messages(
         raw_blocks = [_block_dict(block) for block in message.content]
         if message.role == "assistant":
             if any(block.get("cache_control") for block in raw_blocks):
-                raise ValueError(
+                raise PromptCacheValidationError(
                     "Explicit prompt cache breakpoints are not supported "
                     "on assistant content for Responses API models"
                 )
@@ -1121,7 +1138,7 @@ def _anthropic_to_openai_messages(
             elif block_type == "tool_result":
                 flush_input()
                 if block.get("cache_control"):
-                    raise ValueError(
+                    raise PromptCacheValidationError(
                         "Explicit prompt cache breakpoints are not supported "
                         "on Anthropic tool_result blocks for Responses models"
                     )
@@ -1159,7 +1176,7 @@ def _anthropic_to_openai_payload(
         tools = []
         for tool in request_data.tools:
             if tool.cache_control:
-                raise ValueError(
+                raise PromptCacheValidationError(
                     "Explicit prompt cache breakpoints are not supported directly "
                     "on tool definitions; place the breakpoint on a following "
                     "text or image input block"

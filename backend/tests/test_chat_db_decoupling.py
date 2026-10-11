@@ -124,7 +124,6 @@ async def test_responses_session_released_before_streaming():
         patch.object(
             responses_module, "resolve_responses_model_id", return_value=model
         ),
-        patch.object(responses_module, "match_allowed_model", return_value=model),
         patch.object(
             responses_module.MantleClient,
             "responses_passthrough_stream",

@@ -19,7 +19,6 @@ import httpx
 
 from app.api.deps import get_current_token_streaming
 from app.core.config import get_settings
-from app.core.runtime_config import get_openai_gpt_backend
 from app.core.database import get_db, session_scope
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -47,11 +46,12 @@ from app.services.mantle_client import (
     extract_cache_write_tokens_from_chunk as _mantle_extract_cache_write_tokens_from_chunk,
     extract_cached_tokens as _mantle_extract_cached_tokens,
     extract_cached_tokens_from_chunk as _mantle_extract_cached_tokens_from_chunk,
+    PromptCacheValidationError,
     validate_responses_cache_markers,
 )
 from app.services.mantle_models import (
-    is_openai_runtime_responses_model,
     resolve_responses_model_id,
+    select_granted_responses_model,
     should_use_responses_api,
 )
 from app.core.metrics import emit_request_metrics
@@ -236,32 +236,27 @@ async def create_chat_completion(
                 detail="Token does not have access to any models",
             )
 
-        # Resolve the exact Responses target before access matching. Bare names
-        # become canonical Mantle IDs, while US/Global Runtime profile IDs stay
-        # unchanged to preserve residency, routing, and pricing semantics.
+        # GPT: resolve the exact Responses target, then authorize it against the
+        # token's grants without widening residency/price scope (see
+        # select_granted_responses_model). Other models keep the gateway's
+        # existing model-grant compatibility rules.
         responses_model = resolve_responses_model_id(request_data.model)
-        access_model = responses_model or request_data.model
-
-        # Match against the token's allowed models using the gateway's existing
-        # model-grant compatibility rules. The matched DB value is used only on
-        # non-Responses paths; Responses keeps the client's resolved target.
-        if is_openai_runtime_responses_model(access_model):
-            matched_model = (
-                access_model if access_model in allowed_model_names else None
+        if responses_model is not None:
+            granted_model = select_granted_responses_model(
+                responses_model, allowed_model_names
             )
         else:
-            matched_model = match_allowed_model(access_model, allowed_model_names)
-        if matched_model is None:
+            granted_model = match_allowed_model(request_data.model, allowed_model_names)
+        if granted_model is None:
             raise HTTPException(
                 status_code=403,
-                detail=f"Token does not have access to model: {access_model}. Allowed models: {allowed_model_names}",
+                detail=f"Token does not have access to model: {responses_model or request_data.model}. Allowed models: {allowed_model_names}",
             )
 
-        responses_backend = get_openai_gpt_backend()
         use_responses = responses_model is not None and should_use_responses_api(
-            responses_model, responses_backend
+            granted_model
         )
-        request_data.model = responses_model if use_responses else matched_model
+        request_data.model = granted_model
 
         # Route Gemini models to Google API directly
         if _is_gemini_model(request_data.model):
@@ -272,9 +267,9 @@ async def create_chat_completion(
                 start_time=start_time,
             )
 
-        # Canonical IDs use Mantle when configured. US/Global inference
-        # profiles always use the Bedrock Runtime OpenAI Responses endpoint;
-        # sending them through boto3 Converse would discard explicit markers.
+        # GPT routing is automatic: canonical IDs use Mantle Responses and
+        # US/Global profiles use Runtime Responses. Never Converse, which
+        # would discard explicit prompt-cache markers.
         if use_responses:
             return await _handle_mantle_request(
                 request_data=request_data,
@@ -372,6 +367,8 @@ async def create_chat_completion(
 
     except HTTPException:
         raise
+    except PromptCacheValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         logger.error(
             "Invalid request",
