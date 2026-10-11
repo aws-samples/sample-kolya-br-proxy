@@ -644,14 +644,52 @@ class TestPricingService:
         assert cost == Decimal("0.0011132")
 
     @pytest.mark.asyncio
-    async def test_calculate_gpt_56_sol_uses_long_context_rates(self, db_session):
-        """Crossing 272K total input applies GPT-5.6 Sol long-context rates."""
-        model_id = "us.openai.gpt-5.6-sol"
+    async def test_calculate_gpt_56_sol_canonical_id_uses_current_rates(
+        self, db_session
+    ):
+        """Mantle's canonical ID shares the Sol model-card pricing policy."""
+        model_id = "openai.gpt-5.6-sol"
         await PricingUpdater(db_session)._save_pricing_data(
             [
                 {
                     "model_id": model_id,
-                    "region": "us-west-2",
+                    "region": "us-east-1",
+                    "input_price_per_token": Decimal("0.0000055"),
+                    "output_price_per_token": Decimal("0.000033"),
+                    "cached_input_price_per_token": Decimal("0.00000055"),
+                }
+            ],
+            "legacy-scraper",
+        )
+
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=100,
+            completion_tokens=20,
+            cache_creation_input_tokens=40,
+            cache_read_input_tokens=30,
+            region="us-east-1",
+        )
+
+        assert cost == Decimal("0.0011132")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model_id", "region"),
+        [
+            ("us.openai.gpt-5.6-sol", "us-west-2"),
+            ("openai.gpt-5.6-sol", "us-east-1"),
+        ],
+    )
+    async def test_calculate_gpt_56_sol_uses_long_context_rates(
+        self, db_session, model_id, region
+    ):
+        """Both Sol invocation IDs switch the full request above 272K input."""
+        await PricingUpdater(db_session)._save_pricing_data(
+            [
+                {
+                    "model_id": model_id,
+                    "region": region,
                     "input_price_per_token": Decimal("0.0000044"),
                     "output_price_per_token": Decimal("0.000022"),
                     "cached_input_price_per_token": Decimal("0.00000044"),
@@ -666,7 +704,7 @@ class TestPricingService:
             completion_tokens=10,
             cache_creation_input_tokens=1_000,
             cache_read_input_tokens=1_001,
-            region="us-west-2",
+            region=region,
         )
 
         assert cost == Decimal("2.38821088")
