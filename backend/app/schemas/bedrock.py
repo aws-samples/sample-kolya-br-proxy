@@ -27,6 +27,8 @@ class BedrockContentPart(BaseModel):
     signature: Optional[str] = None
     # For redacted_thinking type
     data: Optional[str] = None
+    # Anthropic InvokeModel explicit prompt-cache marker
+    cache_control: Optional[Dict[str, str]] = None
 
 
 class BedrockMessage(BaseModel):
@@ -45,6 +47,7 @@ class BedrockTool(BaseModel):
     description: str
     input_schema: Dict[str, Any]
     strict: Optional[bool] = None
+    cache_control: Optional[Dict[str, str]] = None
 
 
 class BedrockRequest(BaseModel):
@@ -56,7 +59,7 @@ class BedrockRequest(BaseModel):
     temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     stop_sequences: Optional[List[str]] = None
-    system: Optional[str] = None
+    system: Optional[Union[str, List[BedrockContentPart]]] = None
     tools: Optional[List[BedrockTool]] = None
     tool_choice: Optional[Dict[str, Any]] = None
     # Advanced Bedrock parameters

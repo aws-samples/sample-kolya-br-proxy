@@ -110,6 +110,40 @@ class RequestTranslator:
 
         logger = logging.getLogger(__name__)
 
+        def cache_control_for(part) -> dict | None:
+            cache_control = getattr(part, "cache_control", None)
+            if cache_control is None:
+                return None
+            if hasattr(cache_control, "model_dump"):
+                return cache_control.model_dump(exclude_none=True)
+            return dict(cache_control)
+
+        def merge_system_content(
+            current: str | list[BedrockContentPart] | None,
+            new: str | list[BedrockContentPart],
+        ) -> str | list[BedrockContentPart]:
+            if current is None:
+                return new
+            # Retain the legacy last-system-message behavior unless a structured
+            # value is required to preserve an explicit cache boundary.
+            if isinstance(current, str) and isinstance(new, str):
+                return new
+
+            def as_parts(
+                value: str | list[BedrockContentPart],
+            ) -> list[BedrockContentPart]:
+                if isinstance(value, str):
+                    return [BedrockContentPart(type="text", text=value)]
+                return list(value)
+
+            previous_parts = as_parts(current)
+            next_parts = as_parts(new)
+            if previous_parts and next_parts and next_parts[0].text is not None:
+                next_parts[0] = next_parts[0].model_copy(
+                    update={"text": f"\n\n{next_parts[0].text}"}
+                )
+            return previous_parts + next_parts
+
         # Warn about ignored OpenAI parameters
         if request.n and request.n != 1:
             logger.warning(
@@ -221,19 +255,28 @@ class RequestTranslator:
                                 and hasattr(part, "text")
                             ):
                                 content_parts.append(
-                                    BedrockContentPart(type="text", text=part.text)
+                                    BedrockContentPart(
+                                        type="text",
+                                        text=part.text,
+                                        cache_control=cache_control_for(part),
+                                    )
                                 )
                 # Add tool_use blocks
                 for tool_call in msg.tool_calls:
                     if tool_call.type == "function":
+                        raw_arguments = tool_call.function.get("arguments", "{}")
+                        try:
+                            parsed_arguments = json.loads(raw_arguments)
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise ValueError(
+                                f"Invalid tool-call arguments for {tool_call.id}"
+                            ) from exc
                         content_parts.append(
                             BedrockContentPart(
                                 type="tool_use",
                                 id=tool_call.id,
                                 name=tool_call.function.get("name", ""),
-                                input=json.loads(
-                                    tool_call.function.get("arguments", "{}")
-                                ),
+                                input=parsed_arguments,
                             )
                         )
                 messages.append(BedrockMessage(role="assistant", content=content_parts))
@@ -247,30 +290,43 @@ class RequestTranslator:
                 for part in msg.content:
                     if part.type == "text" and part.text:
                         content_parts.append(
-                            BedrockContentPart(type="text", text=part.text)
+                            BedrockContentPart(
+                                type="text",
+                                text=part.text,
+                                cache_control=cache_control_for(part),
+                            )
                         )
                     elif part.type == "image_url" and part.image_url:
                         # Convert OpenAI image_url format to Bedrock format
                         image_url = part.image_url.get("url", "")
                         if image_url.startswith("data:"):
                             # Base64 encoded image
-                            content_parts.append(
-                                RequestTranslator._parse_base64_image(image_url)
+                            image_part = RequestTranslator._parse_base64_image(
+                                image_url
                             )
                         else:
                             # URL-based image - fetch and convert to base64
-                            content_parts.append(
+                            image_part = (
                                 await RequestTranslator._fetch_and_encode_image(
                                     image_url
                                 )
                             )
+                        image_part.cache_control = cache_control_for(part)
+                        content_parts.append(image_part)
 
                 if msg.role == "system":
-                    # System messages should be text only
-                    system_message = " ".join(
-                        part.text
-                        for part in content_parts
-                        if part.type == "text" and part.text
+                    # Preserve content blocks when a client selected an exact
+                    # cache boundary; retain the legacy flattened form otherwise.
+                    if any(part.cache_control for part in content_parts):
+                        new_system_content = content_parts
+                    else:
+                        new_system_content = " ".join(
+                            part.text
+                            for part in content_parts
+                            if part.type == "text" and part.text
+                        )
+                    system_message = merge_system_content(
+                        system_message, new_system_content
                     )
                 else:
                     messages.append(
@@ -281,9 +337,11 @@ class RequestTranslator:
 
             # String content format
             if msg.role == "system":
-                system_message = msg.content
+                system_message = merge_system_content(system_message, msg.content or "")
             else:
-                messages.append(BedrockMessage(role=msg.role, content=msg.content))
+                messages.append(
+                    BedrockMessage(role=msg.role, content=msg.content or "")
+                )
             i += 1
 
         # Build Bedrock request
@@ -346,6 +404,7 @@ class RequestTranslator:
                             description=func.get("description", ""),
                             input_schema=func.get("parameters", {}),
                             strict=func.get("strict"),
+                            cache_control=tool.get("cache_control"),
                         )
                     )
             if bedrock_tools:
@@ -445,11 +504,12 @@ class ResponseTranslator:
                 cache_creation_tokens=cache_creation,
             )
 
+        input_tokens = bedrock_response.usage.input_tokens or 0
+        output_tokens = bedrock_response.usage.output_tokens or 0
         usage = UsageInfo(
-            prompt_tokens=bedrock_response.usage.input_tokens,
-            completion_tokens=bedrock_response.usage.output_tokens,
-            total_tokens=bedrock_response.usage.input_tokens
-            + bedrock_response.usage.output_tokens,
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
             prompt_tokens_details=prompt_tokens_details,
         )
 

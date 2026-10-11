@@ -57,13 +57,13 @@ class AnthropicRequestTranslator:
                     block_type = part_dict.get("type")
 
                     if block_type == "text":
-                        part = BedrockContentPart(
-                            type="text", text=part_dict.get("text", "")
+                        parts.append(
+                            BedrockContentPart(
+                                type="text",
+                                text=part_dict.get("text", ""),
+                                cache_control=part_dict.get("cache_control"),
+                            )
                         )
-                        if "cache_control" in part_dict:
-                            # cache_control is passed through via the raw dict later
-                            pass
-                        parts.append(part)
                     elif block_type == "image":
                         source = part_dict.get("source", {})
                         parts.append(
@@ -76,6 +76,7 @@ class AnthropicRequestTranslator:
                                     ),
                                     "data": source.get("data", ""),
                                 },
+                                cache_control=part_dict.get("cache_control"),
                             )
                         )
                     elif block_type == "tool_use":
@@ -85,6 +86,7 @@ class AnthropicRequestTranslator:
                                 id=part_dict.get("id", ""),
                                 name=part_dict.get("name", ""),
                                 input=part_dict.get("input", {}),
+                                cache_control=part_dict.get("cache_control"),
                             )
                         )
                     elif block_type == "tool_result":
@@ -103,6 +105,7 @@ class AnthropicRequestTranslator:
                                 content=content_val
                                 if isinstance(content_val, str)
                                 else str(content_val),
+                                cache_control=part_dict.get("cache_control"),
                             )
                         )
                     elif block_type == "thinking":
@@ -126,16 +129,23 @@ class AnthropicRequestTranslator:
 
                 messages.append(BedrockMessage(role=msg.role, content=parts))
 
-        # Extract system message
-        system_text = None
+        # Preserve structured system blocks so explicit cache markers survive.
+        system_content = None
         if request.system:
             if isinstance(request.system, str):
-                system_text = request.system
+                system_content = request.system
             elif isinstance(request.system, list):
-                # List of system blocks - extract text
-                system_text = " ".join(
-                    block.text for block in request.system if hasattr(block, "text")
-                )
+                if any(block.cache_control for block in request.system):
+                    system_content = [
+                        BedrockContentPart(
+                            type="text",
+                            text=block.text,
+                            cache_control=block.cache_control,
+                        )
+                        for block in request.system
+                    ]
+                else:
+                    system_content = " ".join(block.text for block in request.system)
 
         # Build additional_model_request_fields for thinking, top_k, etc.
         additional_fields = {}
@@ -159,6 +169,7 @@ class AnthropicRequestTranslator:
                     description=tool.description or "",
                     input_schema=tool.input_schema,
                     strict=tool.strict,
+                    cache_control=tool.cache_control,
                 )
                 for tool in request.tools
             ]
@@ -168,7 +179,7 @@ class AnthropicRequestTranslator:
             messages=messages,
             temperature=request.temperature,
             top_p=request.top_p,
-            system=system_text,
+            system=system_content,
             stop_sequences=request.stop_sequences,
             tools=bedrock_tools,
             tool_choice=request.tool_choice,

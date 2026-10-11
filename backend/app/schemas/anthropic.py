@@ -37,6 +37,55 @@ def _extract_text(content: Any) -> str:
     return str(content)
 
 
+def _content_has_cache_control(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("cache_control"):
+                return True
+        elif getattr(block, "cache_control", None):
+            return True
+    return False
+
+
+def _structured_system_blocks(contents: List[Any]) -> List[Dict[str, Any]]:
+    """Merge system sources while preserving marked content-block boundaries."""
+    merged: List[Dict[str, Any]] = []
+    for content in contents:
+        source_blocks: List[Dict[str, Any]] = []
+        if isinstance(content, str):
+            if content:
+                source_blocks.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    raw = block
+                elif hasattr(block, "model_dump"):
+                    raw = block.model_dump(exclude_none=True)
+                else:
+                    continue
+                if raw.get("type", "text") != "text":
+                    continue
+                text = raw.get("text", "")
+                if source_blocks:
+                    text = f"\n{text}"
+                converted = {"type": "text", "text": text}
+                if raw.get("cache_control"):
+                    converted["cache_control"] = raw["cache_control"]
+                if text or converted.get("cache_control"):
+                    source_blocks.append(converted)
+        else:
+            text = _extract_text(content)
+            if text:
+                source_blocks.append({"type": "text", "text": text})
+
+        if merged and source_blocks:
+            source_blocks[0]["text"] = f"\n\n{source_blocks[0]['text']}"
+        merged.extend(source_blocks)
+    return merged
+
+
 class AnthropicTextContent(BaseModel):
     """Text content block."""
 
@@ -69,6 +118,7 @@ class AnthropicToolUseContent(BaseModel):
     id: str
     name: str
     input: Dict[str, Any]
+    cache_control: Optional[Dict[str, str]] = None
 
 
 class AnthropicToolResultContent(BaseModel):
@@ -183,24 +233,51 @@ class AnthropicMessagesRequest(BaseModel):
         if not isinstance(messages, list):
             return data
 
-        system_texts: List[str] = []
+        system_contents: List[Any] = []
         kept: List[Any] = []
         for msg in messages:
             if isinstance(msg, dict) and msg.get("role") == "system":
-                system_texts.append(_extract_text(msg.get("content")))
+                system_contents.append(msg.get("content"))
             else:
                 kept.append(msg)
-        if not system_texts:
+        if not system_contents:
             return data
 
-        # Prepend hoisted system text to any existing top-level system content.
+        # Prepend hoisted system content to any existing top-level system.
         existing = data.get("system")
-        parts = [t for t in system_texts if t]
+        all_system_content = list(system_contents)
         if existing:
-            parts.append(_extract_text(existing))
-        data["system"] = "\n\n".join(p for p in parts if p)
+            all_system_content.append(existing)
+
+        if any(_content_has_cache_control(item) for item in all_system_content):
+            data["system"] = _structured_system_blocks(all_system_content)
+        else:
+            parts = [_extract_text(item) for item in all_system_content]
+            data["system"] = "\n\n".join(part for part in parts if part)
         data["messages"] = kept
         return data
+
+    @model_validator(mode="after")
+    def _validate_cache_breakpoint_limit(self):
+        count = 0
+        if isinstance(self.system, list):
+            count += sum(1 for block in self.system if block.cache_control is not None)
+        for message in self.messages:
+            if isinstance(message.content, list):
+                count += sum(
+                    1
+                    for block in message.content
+                    if (
+                        block.get("cache_control")
+                        if isinstance(block, dict)
+                        else getattr(block, "cache_control", None)
+                    )
+                    is not None
+                )
+        count += sum(1 for tool in self.tools or [] if tool.cache_control is not None)
+        if count > 4:
+            raise ValueError("At most 4 prompt cache breakpoints are allowed")
+        return self
 
 
 # --- Response schemas ---
