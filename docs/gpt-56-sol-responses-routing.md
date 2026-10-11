@@ -23,7 +23,7 @@ flowchart LR
     end
 
     subgraph AWS[AWS Bedrock]
-        Mantle[Bedrock Mantle Responses<br/>bedrock-mantle.REGION.api.aws/openai/v1/responses<br/>SigV4: bedrock-mantle]
+        Mantle[Bedrock Mantle Responses<br/>bedrock-mantle.REGION.api.aws/openai/v1/responses<br/>SigV4: bedrock]
         Runtime[Bedrock Runtime Responses<br/>bedrock-runtime.REGION.amazonaws.com/openai/v1/responses<br/>SigV4: bedrock]
         Converse[boto3 Converse]
     end
