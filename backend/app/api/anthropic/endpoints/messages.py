@@ -31,7 +31,7 @@ from app.services.background_tasks import BackgroundTaskManager
 from app.core.metrics import emit_request_metrics
 from app.services.bedrock import BedrockClient, get_fallback_models
 from app.services.gemini_client import is_gemini_model as _is_gemini_model
-from app.services.mantle_client import PromptCacheValidationError
+from app.services.mantle_client import ResponsesRequestValidationError
 from app.services.mantle_models import (
     resolve_responses_model_id,
     select_granted_responses_model,
@@ -333,7 +333,7 @@ async def create_message(
 
     except HTTPException:
         raise
-    except PromptCacheValidationError as e:
+    except ResponsesRequestValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         logger.error(
@@ -1081,7 +1081,7 @@ def _anthropic_to_openai_messages(
         raw_blocks = [_block_dict(block) for block in message.content]
         if message.role == "assistant":
             if any(block.get("cache_control") for block in raw_blocks):
-                raise PromptCacheValidationError(
+                raise ResponsesRequestValidationError(
                     "Explicit prompt cache breakpoints are not supported "
                     "on assistant content for Responses API models"
                 )
@@ -1138,7 +1138,7 @@ def _anthropic_to_openai_messages(
             elif block_type == "tool_result":
                 flush_input()
                 if block.get("cache_control"):
-                    raise PromptCacheValidationError(
+                    raise ResponsesRequestValidationError(
                         "Explicit prompt cache breakpoints are not supported "
                         "on Anthropic tool_result blocks for Responses models"
                     )
@@ -1176,7 +1176,7 @@ def _anthropic_to_openai_payload(
         tools = []
         for tool in request_data.tools:
             if tool.cache_control:
-                raise PromptCacheValidationError(
+                raise ResponsesRequestValidationError(
                     "Explicit prompt cache breakpoints are not supported directly "
                     "on tool definitions; place the breakpoint on a following "
                     "text or image input block"

@@ -110,3 +110,14 @@ async def test_gpt_rows_come_from_the_billing_catalog_with_context_tiers():
     assert claude_row["source"] == "aws-scraper"
     assert float(claude_row["cache_read_price_per_1m"]) == 0.30
     assert claude_row["context_tiers"] is None
+
+
+@pytest.mark.asyncio
+async def test_ultrafast_tiers_are_listed_for_supported_routes():
+    rows = await monitor._fetch_pricing_table(_db_returning([]))
+    [sol61] = [row for row in rows if row["model_id"] == "global.openai.gpt-6.1-sol"]
+
+    assert sol61["service_tiers"] == ["standard", "ultrafast"]
+    labels = [tier["label"] for tier in sol61["context_tiers"]]
+    assert labels == ["≤272K", ">272K", "Ultrafast ≤272K", "Ultrafast >272K"]
+    assert float(sol61["context_tiers"][2]["output_price_per_1m"]) == 60.0

@@ -71,8 +71,7 @@ Converse.
 | Model family | Mantle | US / Global Runtime | Breakpoint content |
 | --- | --- | --- | --- |
 | GPT-5.6 Sol / Terra / Luna | ✓ | ✓ | text, image, file |
-| GPT-6 Sol / Luna, GPT-6.1 Sol | ✓ | ✓ | text |
-| GPT-6 Astra | ✓ | ✓ (live-verified) | text |
+| GPT-6 Sol / Luna / Astra, GPT-6.1 Sol | ✓ | ✓ | text, image (image live-verified) |
 | GPT-5.5 / GPT-5.4 | implicit only | not offered | — |
 
 Cache prices on a model card never imply explicit-cache support; capability is
@@ -90,6 +89,9 @@ declared per route in the catalog.
   call, on Chat Completions, Anthropic Messages, and native Responses.
 - Tool-definition markers are rejected; place the breakpoint on a later text
   block.
+- `service_tier: "ultrafast"` (GPT-6 Astra, GPT-6.1 Sol) is billed at the
+  model-card Ultrafast rates (6× Standard); canonical Ultrafast requests use
+  Mantle `us-east-1`. Other models reject Ultrafast with a 400.
 - Requests without markers retain the implicit-cache wire shape.
 
 ## Pricing

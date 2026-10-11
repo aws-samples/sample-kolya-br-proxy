@@ -128,8 +128,8 @@ async def test_unsupported_native_breakpoint_returns_400_before_upstream():
                 "role": "user",
                 "content": [
                     {
-                        "type": "input_image",
-                        "image_url": "data:image/png;base64,AA==",
+                        "type": "input_file",
+                        "file_id": "file-1",
                         "prompt_cache_breakpoint": {"mode": "explicit"},
                     }
                 ],
@@ -146,7 +146,7 @@ async def test_unsupported_native_breakpoint_returns_400_before_upstream():
         )
 
     assert exc.value.status_code == 400
-    assert "input_image" in exc.value.detail
+    assert "input_file" in exc.value.detail
 
 
 @pytest.mark.asyncio

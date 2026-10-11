@@ -19,6 +19,7 @@ import httpx
 
 from app.api.deps import get_current_token_streaming
 from app.core.config import get_settings
+from app.services.openai_gpt_catalog import is_ultrafast
 from app.core.database import get_db, session_scope
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -46,7 +47,7 @@ from app.services.mantle_client import (
     extract_cache_write_tokens_from_chunk as _mantle_extract_cache_write_tokens_from_chunk,
     extract_cached_tokens as _mantle_extract_cached_tokens,
     extract_cached_tokens_from_chunk as _mantle_extract_cached_tokens_from_chunk,
-    PromptCacheValidationError,
+    ResponsesRequestValidationError,
     validate_responses_cache_markers,
 )
 from app.services.mantle_models import (
@@ -367,7 +368,7 @@ async def create_chat_completion(
 
     except HTTPException:
         raise
-    except PromptCacheValidationError as e:
+    except ResponsesRequestValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         logger.error(
@@ -660,6 +661,8 @@ async def _handle_mantle_request(
             completion_tokens=completion_tokens,
             cache_creation_input_tokens=cache_write_tokens,
             cache_read_input_tokens=cached_tokens,
+            # Bill the tier AWS reports it served; fall back to the request.
+            service_tier=response_data.get("service_tier") or request_data.service_tier,
         ),
         task_name=f"record_usage_{request_id}",
     )
@@ -698,6 +701,7 @@ async def stream_mantle_completion(
     total_completion_tokens = 0
     total_cached_tokens = 0
     total_cache_write_tokens = 0
+    served_tier = payload.get("service_tier")
     last_heartbeat = time.time()
 
     try:
@@ -715,6 +719,8 @@ async def stream_mantle_completion(
                 if line.startswith("data: ") and line.strip() != "data: [DONE]":
                     try:
                         data = _json.loads(line[6:])
+                        if data.get("service_tier"):
+                            served_tier = data["service_tier"]
                         usage = data.get("usage")
                         if usage:
                             total_prompt_tokens = usage.get(
@@ -784,6 +790,7 @@ async def stream_mantle_completion(
                 completion_tokens=total_completion_tokens,
                 cache_creation_input_tokens=total_cache_write_tokens,
                 cache_read_input_tokens=total_cached_tokens,
+                service_tier=served_tier,
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -1156,6 +1163,7 @@ async def record_usage(
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
     cache_ttl: str | None = None,
+    service_tier: str | None = None,
 ):
     """
     Record usage to database.
@@ -1170,6 +1178,8 @@ async def record_usage(
         cache_creation_input_tokens: Tokens written to prompt cache
         cache_read_input_tokens: Tokens read from prompt cache
         cache_ttl: Cache TTL for write pricing ("5m" → 1.25x, "1h" → 2.0x)
+        service_tier: Tier that served the request ("ultrafast" bills the
+            model-card Ultrafast rates; anything else bills Standard)
     """
     # Create new db session for background task
     async for db in get_db():
@@ -1188,7 +1198,10 @@ async def record_usage(
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_ttl=cache_ttl,
+                    service_tier=service_tier,
                 )
+                if is_ultrafast(service_tier):
+                    note = "service_tier=ultrafast"
             except ValueError as e:
                 cost_usd = Decimal("0.0000")
                 note = "pricing_missing"

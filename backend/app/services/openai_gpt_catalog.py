@@ -40,6 +40,10 @@ _LONG_CONTEXT_THRESHOLD = 272_000
 
 TEXT_IMAGE_FILE = frozenset({"input_text", "input_image", "input_file"})
 TEXT_ONLY = frozenset({"input_text"})
+# GPT-6.x: model cards document text breakpoints; live probes on 2026-10-11
+# also wrote cache from image breakpoints on every 6.x route (Mantle and
+# Runtime), so images are accepted. File breakpoints remain undocumented.
+TEXT_IMAGE = frozenset({"input_text", "input_image"})
 NO_EXPLICIT = frozenset()
 
 
@@ -70,6 +74,16 @@ class GptRoute:
     prompt_cache: PromptCacheCapability
     pricing: OfficialProfilePricing
     api: Literal["responses"] = "responses"
+    # Premium speed tier (``service_tier: "ultrafast"``); None = unsupported.
+    ultrafast_pricing: OfficialProfilePricing | None = None
+    # Mantle regions that serve Ultrafast (Runtime profiles serve it anywhere).
+    ultrafast_mantle_regions: tuple[str, ...] = ()
+
+    def pricing_for_tier(self, service_tier: str | None) -> OfficialProfilePricing:
+        """Model-card rates for the service tier that actually served a request."""
+        if is_ultrafast(service_tier) and self.ultrafast_pricing is not None:
+            return self.ultrafast_pricing
+        return self.pricing
 
 
 # (input, cache_write, cache_read, output) in USD per 1M tokens.
@@ -88,6 +102,12 @@ class _Family:
     global_long: _Rates | None
     mantle_explicit: frozenset[str]
     runtime_explicit: frozenset[str]
+    ultrafast_multiplier: int | None = None
+    ultrafast_mantle_regions: tuple[str, ...] = ()
+
+
+def is_ultrafast(service_tier: str | None) -> bool:
+    return isinstance(service_tier, str) and service_tier.lower() == "ultrafast"
 
 
 def _family(
@@ -100,6 +120,8 @@ def _family(
     runtime_scopes: tuple[Literal["us", "global"], ...] = ("us", "global"),
     mantle_explicit: frozenset[str] = NO_EXPLICIT,
     runtime_explicit: frozenset[str] = NO_EXPLICIT,
+    ultrafast_multiplier: int | None = None,
+    ultrafast_mantle_regions: tuple[str, ...] = (),
 ) -> _Family:
     return _Family(
         canonical_id=canonical_id,
@@ -112,6 +134,8 @@ def _family(
         global_long=global_[1] if global_ else None,
         mantle_explicit=mantle_explicit,
         runtime_explicit=runtime_explicit,
+        ultrafast_multiplier=ultrafast_multiplier,
+        ultrafast_mantle_regions=ultrafast_mantle_regions,
     )
 
 
@@ -155,8 +179,8 @@ _FAMILIES: tuple[_Family, ...] = (
         "openai-gpt-6-sol",
         regional=(("2.20", "2.75", "0.22", "11.00"), ("4.40", "5.50", "0.44", "16.50")),
         global_=(("2.00", "2.50", "0.20", "10.00"), ("4.00", "5.00", "0.40", "15.00")),
-        mantle_explicit=TEXT_ONLY,
-        runtime_explicit=TEXT_ONLY,
+        mantle_explicit=TEXT_IMAGE,
+        runtime_explicit=TEXT_IMAGE,
     ),
     _family(
         "openai.gpt-6-luna",
@@ -167,8 +191,8 @@ _FAMILIES: tuple[_Family, ...] = (
             ("0.22", "0.275", "0.022", "0.825"),
         ),
         global_=(("0.10", "0.125", "0.01", "0.50"), ("0.20", "0.25", "0.02", "0.75")),
-        mantle_explicit=TEXT_ONLY,
-        runtime_explicit=TEXT_ONLY,
+        mantle_explicit=TEXT_IMAGE,
+        runtime_explicit=TEXT_IMAGE,
     ),
     _family(
         "openai.gpt-6-astra",
@@ -182,13 +206,15 @@ _FAMILIES: tuple[_Family, ...] = (
             ("10.00", "12.50", "1.00", "50.00"),
             ("20.00", "25.00", "2.00", "75.00"),
         ),
-        # Mantle lists explicit caching (Responses); breakpoint content types
-        # are unspecified, so only text is accepted. The Runtime feature table
-        # omits prompt caching for Astra, but a live probe on 2026-10-11
-        # (us.openai.gpt-6-astra) wrote and then read an explicit text
-        # breakpoint, so Runtime matches Mantle.
-        mantle_explicit=TEXT_ONLY,
-        runtime_explicit=TEXT_ONLY,
+        # Mantle lists explicit caching (Responses). The Runtime feature table
+        # omits prompt caching for Astra, but live probes on 2026-10-11 wrote
+        # and read explicit text and image breakpoints on both endpoints.
+        mantle_explicit=TEXT_IMAGE,
+        runtime_explicit=TEXT_IMAGE,
+        # "Ultrafast prices are six times the corresponding Standard prices";
+        # Mantle Ultrafast only in us-east-1 (us-west-2 is Standard only).
+        ultrafast_multiplier=6,
+        ultrafast_mantle_regions=("us-east-1",),
     ),
     _family(
         "openai.gpt-6.1-sol",
@@ -196,8 +222,11 @@ _FAMILIES: tuple[_Family, ...] = (
         "openai-gpt-6-1-sol",
         regional=(("2.20", "2.75", "0.11", "11.00"), ("4.40", "5.50", "0.22", "16.50")),
         global_=(("2.00", "2.50", "0.10", "10.00"), ("4.00", "5.00", "0.20", "15.00")),
-        mantle_explicit=TEXT_ONLY,
-        runtime_explicit=TEXT_ONLY,
+        mantle_explicit=TEXT_IMAGE,
+        runtime_explicit=TEXT_IMAGE,
+        # "Ultrafast costs six times as much as Standard"; Mantle us-east-1.
+        ultrafast_multiplier=6,
+        ultrafast_mantle_regions=("us-east-1",),
     ),
     # GPT-5.5 and earlier: Mantle only, implicit caching with no write fee
     # (cache-write tokens bill at the normal input rate).
@@ -246,6 +275,30 @@ def _pricing(
     )
 
 
+def _scaled(rates: TokenRates, factor: int) -> TokenRates:
+    def scale(value):
+        return None if value is None else value * factor
+
+    return TokenRates(
+        input=rates.input * factor,
+        output=rates.output * factor,
+        cache_read=scale(rates.cache_read),
+        cache_write=scale(rates.cache_write),
+    )
+
+
+def _scaled_pricing(
+    pricing: OfficialProfilePricing, factor: int
+) -> OfficialProfilePricing:
+    return OfficialProfilePricing(
+        model_id=pricing.model_id,
+        source_url=pricing.source_url,
+        short=_scaled(pricing.short, factor),
+        long_context_threshold=pricing.long_context_threshold,
+        long=_scaled(pricing.long, factor) if pricing.long else None,
+    )
+
+
 def _build_routes() -> dict[str, GptRoute]:
     routes: dict[str, GptRoute] = {}
     for family in _FAMILIES:
@@ -279,6 +332,8 @@ def _build_routes() -> dict[str, GptRoute]:
                 )
             )
         for model_id, endpoint, scope, explicit, short, long in entries:
+            pricing = _pricing(model_id, family.card_slug, short, long)
+            factor = family.ultrafast_multiplier
             routes[model_id] = GptRoute(
                 model_id=model_id,
                 canonical_id=family.canonical_id,
@@ -288,7 +343,11 @@ def _build_routes() -> dict[str, GptRoute]:
                 prompt_cache=PromptCacheCapability(
                     implicit=True, explicit_content_types=explicit
                 ),
-                pricing=_pricing(model_id, family.card_slug, short, long),
+                pricing=pricing,
+                ultrafast_pricing=_scaled_pricing(pricing, factor) if factor else None,
+                ultrafast_mantle_regions=(
+                    family.ultrafast_mantle_regions if endpoint == "mantle" else ()
+                ),
             )
     return routes
 

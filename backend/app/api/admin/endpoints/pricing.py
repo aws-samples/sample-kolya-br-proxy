@@ -72,9 +72,26 @@ async def get_model_pricing(
     official = get_official_profile_pricing(model_id)
     if official is not None:
         tiers = [official.short] + ([official.long] if official.long else [])
+        ultrafast = get_official_profile_pricing(model_id, "ultrafast")
+        ultrafast_tiers = (
+            [ultrafast.short] + ([ultrafast.long] if ultrafast.long else [])
+            if ultrafast is not None and ultrafast is not official
+            else []
+        )
 
         def _m(value):
             return None if value is None else str(value * 1_000_000)
+
+        def _tiers(rate_list):
+            return [
+                {
+                    "input_price_per_1m": _m(rates.input),
+                    "cache_write_price_per_1m": _m(rates.cache_write),
+                    "cache_read_price_per_1m": _m(rates.cache_read),
+                    "output_price_per_1m": _m(rates.output),
+                }
+                for rates in rate_list
+            ]
 
         return {
             "model_id": model_id,
@@ -84,15 +101,8 @@ async def get_model_pricing(
             "input_price_per_1m": _m(official.short.input),
             "output_price_per_1m": _m(official.short.output),
             "long_context_threshold": official.long_context_threshold,
-            "context_tiers": [
-                {
-                    "input_price_per_1m": _m(rates.input),
-                    "cache_write_price_per_1m": _m(rates.cache_write),
-                    "cache_read_price_per_1m": _m(rates.cache_read),
-                    "output_price_per_1m": _m(rates.output),
-                }
-                for rates in tiers
-            ],
+            "context_tiers": _tiers(tiers),
+            "ultrafast_context_tiers": _tiers(ultrafast_tiers) or None,
             "source": "aws-model-card",
             "source_url": official.source_url,
             "currency": "USD",

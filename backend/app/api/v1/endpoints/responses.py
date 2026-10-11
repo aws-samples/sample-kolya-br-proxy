@@ -38,7 +38,7 @@ from app.models.token import APIToken
 from app.services.background_tasks import BackgroundTaskManager
 from app.services.mantle_client import (
     MantleClient,
-    PromptCacheValidationError,
+    ResponsesRequestValidationError,
     validate_native_responses_cache,
 )
 from app.services.mantle_models import (
@@ -157,7 +157,7 @@ async def create_response(
     # upstream call or stream is opened.
     try:
         validate_native_responses_cache(body)
-    except PromptCacheValidationError as error:
+    except ResponsesRequestValidationError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
     if stream:
@@ -198,6 +198,7 @@ async def create_response(
             completion_tokens=usage["completion"],
             cache_creation_input_tokens=usage["cache_write"],
             cache_read_input_tokens=usage["cached"],
+            service_tier=response_data.get("service_tier") or body.get("service_tier"),
         ),
         task_name=f"record_usage_{request_id}",
     )
@@ -240,6 +241,7 @@ async def _stream_responses(
     buffer = ""
     last_heartbeat = time.time()
     usage_recorded = False
+    served_tier = body.get("service_tier")
 
     def _record():
         """Record usage once, on any exit path (incl. client disconnect)."""
@@ -257,6 +259,7 @@ async def _stream_responses(
                 completion_tokens=usage["completion"],
                 cache_creation_input_tokens=usage["cache_write"],
                 cache_read_input_tokens=usage["cached"],
+                service_tier=served_tier,
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -289,6 +292,8 @@ async def _stream_responses(
                 if etype in ("response.completed", "response.incomplete"):
                     resp_obj = event.get("response") or {}
                     usage = _usage_from_response(resp_obj.get("usage") or {})
+                    if resp_obj.get("service_tier"):
+                        served_tier = resp_obj["service_tier"]
 
             # Forward upstream bytes unchanged after local accounting.
             yield raw

@@ -62,17 +62,26 @@ def _tier(label: str, max_input_tokens: Optional[int], rates) -> Dict[str, Any]:
     }
 
 
-def _gpt_route_row(route: GptRoute) -> Dict[str, Any]:
-    """Render one catalogued GPT route exactly as it is routed and billed."""
-    pricing = route.pricing
+def _context_tiers(pricing, prefix: str = "") -> List[Dict[str, Any]]:
     threshold = pricing.long_context_threshold
     tiers = [
         _tier(
-            f"≤{threshold // 1000}K" if threshold else "All", threshold, pricing.short
+            f"{prefix}≤{threshold // 1000}K" if threshold else f"{prefix}All",
+            threshold,
+            pricing.short,
         )
     ]
     if pricing.long is not None and threshold:
-        tiers.append(_tier(f">{threshold // 1000}K", None, pricing.long))
+        tiers.append(_tier(f"{prefix}>{threshold // 1000}K", None, pricing.long))
+    return tiers
+
+
+def _gpt_route_row(route: GptRoute) -> Dict[str, Any]:
+    """Render one catalogued GPT route exactly as it is routed and billed."""
+    pricing = route.pricing
+    tiers = _context_tiers(pricing)
+    if route.ultrafast_pricing is not None:
+        tiers += _context_tiers(route.ultrafast_pricing, prefix="Ultrafast ")
     if route.endpoint_family == "runtime":
         region = get_settings().AWS_REGION
     else:
@@ -90,6 +99,8 @@ def _gpt_route_row(route: GptRoute) -> Dict[str, Any]:
         "context_tiers": tiers,
         "endpoint_family": route.endpoint_family,
         "api": route.api,
+        "service_tiers": ["standard"]
+        + (["ultrafast"] if route.ultrafast_pricing is not None else []),
         "scope": route.scope,
         "prompt_cache": {
             "implicit": cache.implicit,
@@ -141,6 +152,7 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
                 "context_tiers": None,
                 "endpoint_family": None,
                 "api": None,
+                "service_tiers": None,
                 "scope": None,
                 "prompt_cache": None,
                 "source": record.source,

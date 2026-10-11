@@ -72,6 +72,10 @@ class ChatCompletionRequest(BaseModel):
     tools: Optional[List[Dict[str, Any]]] = None
     tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     response_format: Optional[Dict[str, Any]] = None
+    # Bedrock service tier, e.g. "ultrafast" (GPT-6 Astra / GPT-6.1 Sol).
+    # Forwarded to the Responses API and used to bill the served tier.
+    service_tier: Optional[str] = None
+
     # Bedrock-specific extensions (bedrock_* prefix)
     bedrock_guardrail_config: Optional[Dict[str, Any]] = None
     bedrock_additional_model_request_fields: Optional[Dict[str, Any]] = None

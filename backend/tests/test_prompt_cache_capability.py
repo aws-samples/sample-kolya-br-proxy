@@ -60,11 +60,19 @@ def test_image_breakpoint_is_allowed_where_the_model_supports_it():
 
 
 @pytest.mark.parametrize(
-    "model", ["openai.gpt-6-sol", "global.openai.gpt-6.1-sol", "us.openai.gpt-6-luna"]
+    "model",
+    [
+        "openai.gpt-6-sol",
+        "global.openai.gpt-6.1-sol",
+        "us.openai.gpt-6-luna",
+        "global.openai.gpt-6-astra",
+    ],
 )
-def test_image_breakpoint_is_rejected_for_text_only_models(model):
-    with pytest.raises(ValueError, match="input_image"):
-        validate_responses_cache_markers(_chat_payload(model, _image()))
+def test_image_breakpoint_is_allowed_for_gpt6_models(model):
+    body = _openai_to_responses(_chat_payload(model, _image()))
+
+    assert body["input"][0]["content"][0]["type"] == "input_image"
+    assert body["prompt_cache_options"] == {"mode": "explicit"}
 
 
 @pytest.mark.parametrize("model", ["openai.gpt-5.4", "openai.gpt-5.5"])
@@ -104,13 +112,13 @@ def test_native_responses_text_breakpoint_is_accepted():
 
 
 def test_native_responses_rejects_unsupported_breakpoint_type():
-    with pytest.raises(ValueError, match="input_image"):
+    with pytest.raises(ValueError, match="input_file"):
         validate_native_responses_cache(
             _native_body(
                 "us.openai.gpt-6.1-sol",
                 {
-                    "type": "input_image",
-                    "image_url": "data:image/png;base64,AA==",
+                    "type": "input_file",
+                    "file_id": "file-1",
                     "prompt_cache_breakpoint": BREAKPOINT,
                 },
             )
@@ -155,15 +163,15 @@ def test_native_responses_checks_function_call_output_and_empty_markers():
                 "call_id": "c1",
                 "output": [
                     {
-                        "type": "input_image",
-                        "image_url": "data:image/png;base64,AA==",
+                        "type": "input_file",
+                        "file_id": "file-1",
                         "prompt_cache_breakpoint": {},
                     }
                 ],
             }
         ],
     }
-    with pytest.raises(ValueError, match="input_image"):
+    with pytest.raises(ValueError, match="input_file"):
         validate_native_responses_cache(body)
 
 

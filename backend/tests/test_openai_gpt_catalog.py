@@ -15,7 +15,7 @@ from app.services.pricing import get_official_profile_pricing
 MILLION = Decimal(1_000_000)
 
 TEXT_IMAGE_FILE = {"input_text", "input_image", "input_file"}
-TEXT_ONLY = {"input_text"}
+TEXT_IMAGE = {"input_text", "input_image"}
 
 
 @pytest.mark.parametrize(
@@ -80,15 +80,15 @@ def test_unpublished_ids_have_no_gpt_route(model_id):
         ("global.openai.gpt-5.6-sol", TEXT_IMAGE_FILE),
         ("us.openai.gpt-5.6-terra", TEXT_IMAGE_FILE),
         ("openai.gpt-5.6-luna", TEXT_IMAGE_FILE),
-        ("openai.gpt-6-sol", TEXT_ONLY),
-        ("global.openai.gpt-6-sol", TEXT_ONLY),
-        ("us.openai.gpt-6-luna", TEXT_ONLY),
-        ("openai.gpt-6.1-sol", TEXT_ONLY),
-        ("global.openai.gpt-6.1-sol", TEXT_ONLY),
-        ("openai.gpt-6-astra", TEXT_ONLY),
-        # Astra Runtime: verified by live probe (card omits the feature row).
-        ("us.openai.gpt-6-astra", TEXT_ONLY),
-        ("global.openai.gpt-6-astra", TEXT_ONLY),
+        ("openai.gpt-6-sol", TEXT_IMAGE),
+        ("global.openai.gpt-6-sol", TEXT_IMAGE),
+        ("us.openai.gpt-6-luna", TEXT_IMAGE),
+        ("openai.gpt-6.1-sol", TEXT_IMAGE),
+        ("global.openai.gpt-6.1-sol", TEXT_IMAGE),
+        ("openai.gpt-6-astra", TEXT_IMAGE),
+        # 6.x image breakpoints and Astra Runtime: verified by live probes.
+        ("us.openai.gpt-6-astra", TEXT_IMAGE),
+        ("global.openai.gpt-6-astra", TEXT_IMAGE),
         ("openai.gpt-5.5", set()),
         ("openai.gpt-5.4", set()),
     ],

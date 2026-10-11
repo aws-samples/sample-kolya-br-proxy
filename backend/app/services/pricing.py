@@ -7,7 +7,7 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
-from app.services.openai_gpt_catalog import gpt_official_pricing
+from app.services.openai_gpt_catalog import gpt_official_pricing, resolve_gpt_route
 from app.services.pricing_types import OfficialProfilePricing, TokenRates
 from app.services.pricing_types import per_token as _per_token
 
@@ -48,9 +48,19 @@ OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
 
 def get_official_profile_pricing(
     model_id: str,
+    service_tier: str | None = None,
 ) -> OfficialProfilePricing | None:
-    """Return model-card pricing for an exact model or profile ID."""
-    return OFFICIAL_PROFILE_PRICING.get(model_id)
+    """Return model-card pricing for an exact model or profile ID.
+
+    *service_tier* is the tier that served the request; ``"ultrafast"``
+    selects the Ultrafast rates on routes that offer them (6× Standard for
+    GPT-6 Astra / GPT-6.1 Sol). Any other tier uses Standard rates.
+    """
+    pricing = OFFICIAL_PROFILE_PRICING.get(model_id)
+    if pricing is None:
+        return None
+    route = resolve_gpt_route(model_id)
+    return route.pricing_for_tier(service_tier) if route else pricing
 
 
 def _calculate_official_cost(
@@ -107,6 +117,7 @@ class ModelPricing:
         cache_creation_input_tokens: int = 0,
         cache_read_input_tokens: int = 0,
         cache_ttl: str | None = None,
+        service_tier: str | None = None,
     ) -> Decimal:
         """
         Calculate the cost for a model usage.
@@ -182,7 +193,7 @@ class ModelPricing:
         # cost even if the updater has not seeded (or temporarily lost) its DB
         # row. This prevents successful profile requests from being recorded at
         # zero cost after a profile-cache or pricing refresh failure.
-        official_pricing = get_official_profile_pricing(model)
+        official_pricing = get_official_profile_pricing(model, service_tier)
         if official_pricing is not None:
             return _calculate_official_cost(
                 official_pricing,
