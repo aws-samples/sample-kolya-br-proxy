@@ -2,12 +2,12 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
-from uuid import uuid4
+from typing import Any, List, Optional
+from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Numeric, String, JSON
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, JSON
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID, ARRAY
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
@@ -17,44 +17,65 @@ class APIToken(Base):
 
     __tablename__ = "api_tokens"
 
-    id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    # Typed with Mapped[] so instances expose Python values (not Column[...])
+    # to type checkers. Nullability is spelled out explicitly to keep the
+    # schema identical to the previous Column() definitions.
+    id: Mapped[UUID] = mapped_column(
+        PostgresUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
 
     # Token information
-    name = Column(String(255), nullable=False)
-    description = Column(String(500), nullable=True)
-    token_hash = Column(String(255), unique=True, nullable=False, index=True)
-    encrypted_token = Column(
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    token_hash: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False, index=True
+    )
+    encrypted_token: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True
     )  # Encrypted token for retrieval
 
     # Expiration and quotas
-    expires_at = Column(DateTime, nullable=True)
-    quota_usd = Column(Numeric(10, 2), nullable=True)
-    monthly_quota_usd = Column(Numeric(10, 2), nullable=True)
-    monthly_reset_policy = Column(String(20), nullable=True)
-    monthly_quota_start = Column(DateTime, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    quota_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    monthly_quota_usd: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
+    monthly_reset_policy: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )
+    monthly_quota_start: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
 
     # Access control
-    allowed_ips = Column(ARRAY(String), nullable=True)
+    allowed_ips: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(String), nullable=True
+    )
 
     # Email addresses to notify with this key's value (one key, many users)
-    notify_emails = Column(ARRAY(String), nullable=True)
+    notify_emails: Mapped[Optional[List[str]]] = mapped_column(
+        ARRAY(String), nullable=True
+    )
 
     # Status
-    is_active = Column(Boolean, default=True, nullable=False)
-    is_deleted = Column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
-    last_used_at = Column(DateTime, nullable=True)
-    deleted_at = Column(DateTime, nullable=True)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Metadata for additional configuration (renamed from 'metadata' to avoid SQLAlchemy reserved word)
-    token_metadata = Column(JSON, nullable=True)
+    token_metadata: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
 
     # Relationships
     user = relationship("User", back_populates="tokens")

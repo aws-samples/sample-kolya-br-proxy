@@ -145,7 +145,8 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
                 "model_id": record.model_id,
                 "region": record.region,
                 **_flat_price_fields(
-                    record.input_price_per_token, record.output_price_per_token
+                    cast(Decimal, record.input_price_per_token),
+                    cast(Decimal, record.output_price_per_token),
                 ),
                 "cache_write_price_per_1m": None,
                 "cache_read_price_per_1m": _per_1m(cached_input),

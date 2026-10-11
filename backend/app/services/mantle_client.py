@@ -122,7 +122,7 @@ def validate_responses_cache_markers(payload: Dict[str, Any]) -> None:
                 "tool results; place the breakpoint on a preceding text block"
             )
         for part in marked_parts:
-            content_type = _CHAT_PART_TO_RESPONSES_TYPE.get(part.get("type"))
+            content_type = _CHAT_PART_TO_RESPONSES_TYPE.get(str(part.get("type", "")))
             if content_type is None:
                 raise PromptCacheValidationError(
                     "Explicit prompt cache breakpoints are not supported on "
