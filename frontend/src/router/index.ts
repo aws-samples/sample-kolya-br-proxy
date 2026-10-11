@@ -19,9 +19,9 @@ import routes from './routes'; // pi-lens-ignore: find-import-file-without-exten
 
 export default defineRouter(function (/* { store, ssrContext } */) {
   let createHistory = createWebHashHistory;
-  if (process.env.SERVER) {
+  if (import.meta.env.QUASAR_SERVER) {
     createHistory = createMemoryHistory;
-  } else if (process.env.VUE_ROUTER_MODE === 'history') {
+  } else if (import.meta.env.QUASAR_VUE_ROUTER_MODE === 'history') {
     createHistory = createWebHistory;
   }
 
@@ -32,7 +32,7 @@ export default defineRouter(function (/* { store, ssrContext } */) {
     // Leave this as is and make changes in quasar.conf.js instead!
     // quasar.conf.js -> build -> vueRouterMode
     // quasar.conf.js -> build -> publicPath
-    history: createHistory(process.env.VUE_ROUTER_BASE),
+    history: createHistory(import.meta.env.QUASAR_VUE_ROUTER_BASE),
   });
 
   // Navigation guard for authentication

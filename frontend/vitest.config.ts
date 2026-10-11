@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      '#q-app': fileURLToPath(new URL('./tests/stubs/q-app.ts', import.meta.url)),
     },
   },
   test: {
