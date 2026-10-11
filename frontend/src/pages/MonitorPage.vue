@@ -302,15 +302,50 @@
             </q-td>
           </template>
 
-          <template v-slot:body-cell-input_price_per_1m="props">
+          <template v-slot:body-cell-route="props">
             <q-td :props="props">
-              <span class="text-mono">{{ formatPrice(props.value) }}</span>
+              <span v-if="props.value" class="text-caption">{{ props.value }}</span>
+              <span v-else class="text-caption text-grey-7">—</span>
             </q-td>
           </template>
 
-          <template v-slot:body-cell-output_price_per_1m="props">
+          <template v-slot:body-cell-context="props">
             <q-td :props="props">
-              <span class="text-mono">{{ formatPrice(props.value) }}</span>
+              <div v-for="tier in pricingTiers(props.row)" :key="tier.label" class="text-caption">
+                {{ tier.label }}
+              </div>
+            </q-td>
+          </template>
+
+          <template
+            v-for="priceColumn in TIER_PRICE_COLUMNS"
+            :key="priceColumn"
+            v-slot:[`body-cell-${priceColumn}`]="props"
+          >
+            <q-td :props="props">
+              <div
+                v-for="tier in pricingTiers(props.row)"
+                :key="tier.label"
+                class="text-mono"
+              >
+                {{ formatPrice(tier[priceColumn]) }}
+              </div>
+            </q-td>
+          </template>
+
+          <template v-slot:body-cell-prompt_cache="props">
+            <q-td :props="props">
+              <q-chip
+                v-for="badge in promptCacheBadges(props.row)"
+                :key="badge.label"
+                dense
+                :color="badge.color"
+                text-color="white"
+                size="sm"
+              >
+                {{ badge.label }}
+                <q-tooltip>{{ badge.tooltip }}</q-tooltip>
+              </q-chip>
             </q-td>
           </template>
 
@@ -364,6 +399,8 @@ import {
 import { useMonitorStore } from '@/stores/monitor';
 import { useTokensStore } from '@/stores/tokens';
 import { getModelProvider } from '@/utils/model-provider';
+import { formatPrice, pricingTiers, promptCacheBadges, routeLabel } from '@/utils/pricing';
+import type { PricingRecord } from '@/stores/monitor';
 
 ChartJS.register(
   CategoryScale,
@@ -465,18 +502,49 @@ const pricingColumns = [
     sortable: true,
   },
   {
+    name: 'route',
+    label: 'Route',
+    field: (row: PricingRecord) => routeLabel(row),
+    align: 'left' as const,
+    sortable: true,
+  },
+  {
+    name: 'context',
+    label: 'Context',
+    field: 'context_tiers',
+    align: 'left' as const,
+  },
+  {
     name: 'input_price_per_1m',
     label: 'Input / 1M',
-    field: 'input_price_per_1m',
+    field: (row: PricingRecord) => Number(row.input_price_per_1m),
     align: 'right' as const,
     sortable: true,
   },
   {
+    name: 'cache_write_price_per_1m',
+    label: 'Cache Write / 1M',
+    field: 'cache_write_price_per_1m',
+    align: 'right' as const,
+  },
+  {
+    name: 'cache_read_price_per_1m',
+    label: 'Cache Read / 1M',
+    field: 'cache_read_price_per_1m',
+    align: 'right' as const,
+  },
+  {
     name: 'output_price_per_1m',
     label: 'Output / 1M',
-    field: 'output_price_per_1m',
+    field: (row: PricingRecord) => Number(row.output_price_per_1m),
     align: 'right' as const,
     sortable: true,
+  },
+  {
+    name: 'prompt_cache',
+    label: 'Prompt Cache',
+    field: 'prompt_cache',
+    align: 'left' as const,
   },
   {
     name: 'source',
@@ -501,17 +569,13 @@ const tokenOptions = computed(() =>
   })),
 );
 
-/**
- * Format a per-1M price string with sensible precision.
- * Always shows at least 2 decimal places; uses up to 4 for sub-cent prices.
- */
-function formatPrice(value: string): string {
-  const n = Number(value);
-  if (n === 0) return '$0.00';
-  // Use 4 decimal places for prices < $0.10, else 2
-  const decimals = n < 0.1 ? 4 : 2;
-  return '$' + n.toFixed(decimals);
-}
+// Price columns rendered once per context band (≤272K / >272K for GPT).
+const TIER_PRICE_COLUMNS = [
+  'input_price_per_1m',
+  'cache_write_price_per_1m',
+  'cache_read_price_per_1m',
+  'output_price_per_1m',
+] as const;
 
 const enrichedPricingData = computed(() => {
   if (!monitorStore.pricingTable) return [];

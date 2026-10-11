@@ -998,9 +998,9 @@ class PricingUpdater:
 
         The cache-read price is stored in ``cached_input_price_per_token`` (the
         same column Gemini's implicit cache uses).  The cache-write price has no
-        DB column; calculate_cost bills writes at input × 1.25, which matches the
-        published mantle write prices exactly (e.g. GPT-5.6 Sol: 5.00 × 1.25 =
-        6.25).
+        DB column.  Catalogued GPT IDs (``openai_gpt_catalog``) are billed from
+        their model-card rates and ignore these rows; the rows only price
+        Mantle models the catalog does not yet know (writes at input × 1.25).
         """
         row_re = re.compile(r"<tr>\s*(.*?)\s*</tr>", re.IGNORECASE | re.DOTALL)
         cell_re = re.compile(r"<td>\s*(.*?)\s*</td>", re.IGNORECASE | re.DOTALL)

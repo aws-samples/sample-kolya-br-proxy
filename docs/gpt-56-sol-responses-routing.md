@@ -49,28 +49,55 @@ flowchart LR
     class Converse blocked;
 ```
 
-## Routing invariants
+## Routing invariants (all GPT models)
+
+Routing is automatic; there is no Mantle/Runtime switch in Settings. The single
+source of truth is `backend/app/services/openai_gpt_catalog.py`, which also
+drives explicit-cache validation, billing, and the admin pricing table.
 
 | Requested model | Upstream | Model ID sent upstream |
 | --- | --- | --- |
-| `openai.gpt-5.6-sol` | Bedrock Mantle Responses | canonical ID |
-| `us.openai.gpt-5.6-sol` | Bedrock Runtime Responses | exact US profile ID |
-| `global.openai.gpt-5.6-sol` | Bedrock Runtime Responses | exact Global profile ID |
+| `openai.gpt-*` (canonical) | Bedrock Mantle Responses | canonical ID |
+| `us.openai.gpt-*` | Bedrock Runtime Responses | exact US profile ID |
+| `global.openai.gpt-*` | Bedrock Runtime Responses | exact Global profile ID |
+| Unpublished profile (e.g. `us.openai.gpt-5.5`) | rejected | — |
 
 US and Global grants are checked exactly. A token authorized for one profile
-does not gain access to the other profile.
+does not gain access to the other profile. GPT requests never fall back to
+Converse.
+
+## Explicit prompt cache by model
+
+| Model family | Mantle | US / Global Runtime | Breakpoint content |
+| --- | --- | --- | --- |
+| GPT-5.6 Sol / Terra / Luna | ✓ | ✓ | text, image, file |
+| GPT-6 Sol / Luna / Astra, GPT-6.1 Sol | ✓ | ✓ | text, image (image live-verified) |
+| GPT-5.5 / GPT-5.4 | implicit only | not offered | — |
+
+Cache prices on a model card never imply explicit-cache support; capability is
+declared per route in the catalog.
 
 ## Explicit-cache contract
 
-- Text and supported image content blocks may carry
-  `cache_control: {"type": "ephemeral"}`.
+- Supported content blocks may carry `cache_control: {"type": "ephemeral"}`.
 - The gateway converts each marker to
   `prompt_cache_breakpoint: {"mode": "explicit"}` and adds top-level
   `prompt_cache_options: {"mode": "explicit"}`.
 - Requests may contain at most four breakpoints.
-- Tool-definition markers are rejected with a client error instead of being
-  silently discarded; place the breakpoint on a later text or image block.
+- Markers on content the exact model cannot cache (or on any content for a
+  model without explicit caching) are rejected with a 4xx before the upstream
+  call, on Chat Completions, Anthropic Messages, and native Responses.
+- Tool-definition markers are rejected; place the breakpoint on a later text
+  block.
+- `service_tier: "ultrafast"` (GPT-6 Astra, GPT-6.1 Sol) is billed at the
+  model-card Ultrafast rates (6× Standard); canonical Ultrafast requests use
+  Mantle `us-east-1`. Other models reject Ultrafast with a 400.
 - Requests without markers retain the implicit-cache wire shape.
 
-The gateway records the upstream usage categories separately and applies
-independent US and Global pricing. Historical usage rows are not changed.
+## Pricing
+
+The gateway records uncached input, cache write, cache read, and output
+separately and bills each exact ID with its model-card rates. When the total
+input (uncached + cache write + cache read) exceeds 272K tokens, the long-context
+band applies to the whole request. The admin pricing table shows both bands.
+Historical usage rows are not changed.

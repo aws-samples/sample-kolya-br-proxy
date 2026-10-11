@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { api } from '@/boot/axios';
 import { Notify } from 'quasar';
+import type { PricingDisplayRecord } from '@/utils/pricing';
 
 export interface AggregatedStat {
   time_bucket: string;
@@ -35,7 +36,7 @@ export interface DateRange {
   end: string;
 }
 
-export interface PricingRecord {
+export interface PricingRecord extends PricingDisplayRecord {
   model_id: string;
   region: string;
   input_price_per_token: string;
@@ -45,6 +46,7 @@ export interface PricingRecord {
   input_price_per_1m: string;
   output_price_per_1m: string;
   source: string;
+  source_url?: string | null;
   last_updated: string | null;
 }
 

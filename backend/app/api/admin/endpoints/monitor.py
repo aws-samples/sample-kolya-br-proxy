@@ -11,6 +11,11 @@ from app.models.user import User
 from app.models.model_pricing import ModelPricing as ModelPricingModel
 from typing import List, Dict, Any, Optional, cast
 from datetime import datetime, timedelta
+from decimal import Decimal
+
+from app.core.config import get_settings
+from app.services.mantle_models import resolve_mantle_region
+from app.services.openai_gpt_catalog import GptRoute, list_gpt_routes
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,8 +35,95 @@ def _is_cache_valid() -> bool:
     return datetime.utcnow() - _cache_timestamp < CACHE_DURATION
 
 
+def _per_1m(value: Optional[Decimal]) -> Optional[str]:
+    return None if value is None else str((value * 1_000_000).normalize())
+
+
+def _flat_price_fields(input_price: Decimal, output_price: Decimal) -> Dict[str, Any]:
+    """Legacy flat fields (short-context band) kept for API compatibility."""
+    return {
+        "input_price_per_token": str(input_price),
+        "output_price_per_token": str(output_price),
+        "input_price_per_1k": str(input_price * 1_000),
+        "output_price_per_1k": str(output_price * 1_000),
+        "input_price_per_1m": str(input_price * 1_000_000),
+        "output_price_per_1m": str(output_price * 1_000_000),
+    }
+
+
+def _tier(label: str, max_input_tokens: Optional[int], rates) -> Dict[str, Any]:
+    return {
+        "label": label,
+        "max_input_tokens": max_input_tokens,
+        "input_price_per_1m": _per_1m(rates.input),
+        "cache_write_price_per_1m": _per_1m(rates.cache_write),
+        "cache_read_price_per_1m": _per_1m(rates.cache_read),
+        "output_price_per_1m": _per_1m(rates.output),
+    }
+
+
+def _context_tiers(pricing, prefix: str = "") -> List[Dict[str, Any]]:
+    threshold = pricing.long_context_threshold
+    tiers = [
+        _tier(
+            f"{prefix}≤{threshold // 1000}K" if threshold else f"{prefix}All",
+            threshold,
+            pricing.short,
+        )
+    ]
+    if pricing.long is not None and threshold:
+        tiers.append(_tier(f"{prefix}>{threshold // 1000}K", None, pricing.long))
+    return tiers
+
+
+def _gpt_route_row(route: GptRoute) -> Dict[str, Any]:
+    """Render one catalogued GPT route exactly as it is routed and billed."""
+    pricing = route.pricing
+    tiers = _context_tiers(pricing)
+    if route.ultrafast_pricing is not None:
+        tiers += _context_tiers(route.ultrafast_pricing, prefix="Ultrafast ")
+    if route.endpoint_family == "runtime":
+        region = get_settings().AWS_REGION
+    else:
+        try:
+            region = resolve_mantle_region(route.model_id)
+        except KeyError:  # catalogued but absent from the Mantle registry
+            region = "unavailable"
+    cache = route.prompt_cache
+    return {
+        "model_id": route.model_id,
+        "region": region,
+        **_flat_price_fields(pricing.short.input, pricing.short.output),
+        "cache_write_price_per_1m": _per_1m(pricing.short.cache_write),
+        "cache_read_price_per_1m": _per_1m(pricing.short.cache_read),
+        "context_tiers": tiers,
+        "endpoint_family": route.endpoint_family,
+        "api": route.api,
+        "service_tiers": ["standard"]
+        + (["ultrafast"] if route.ultrafast_pricing is not None else []),
+        "scope": route.scope,
+        "prompt_cache": {
+            "implicit": cache.implicit,
+            "explicit": cache.explicit,
+            "explicit_content_types": sorted(cache.explicit_content_types),
+            "max_breakpoints": cache.max_breakpoints if cache.explicit else None,
+            "min_prefix_tokens": cache.min_prefix_tokens if cache.explicit else None,
+            "ttl": cache.ttl if cache.explicit else None,
+        },
+        "source": "aws-model-card",
+        "source_url": pricing.source_url,
+        "last_updated": None,
+    }
+
+
 async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
-    """Fetch all pricing data from database."""
+    """Build the pricing table shown in the admin UI.
+
+    Catalogued GPT routes are rendered from the same catalog used for routing
+    and billing (both context bands, cache write/read, cache capability);
+    stale DB rows for those IDs are skipped so the UI cannot show a price the
+    billing path does not use. Other models come from the database.
+    """
     result = await db.execute(
         select(ModelPricingModel).order_by(
             ModelPricingModel.model_id, ModelPricingModel.region
@@ -39,24 +131,38 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
     )
     pricing_records = result.scalars().all()
 
-    pricing_list = []
+    gpt_routes = list_gpt_routes()
+    gpt_ids = {route.model_id for route in gpt_routes}
+
+    pricing_list = [_gpt_route_row(route) for route in gpt_routes]
     for record in pricing_records:
+        if record.model_id in gpt_ids:
+            continue
         last_updated = cast(Optional[datetime], record.last_updated)
+        cached_input = getattr(record, "cached_input_price_per_token", None)
         pricing_list.append(
             {
                 "model_id": record.model_id,
                 "region": record.region,
-                "input_price_per_token": str(record.input_price_per_token),
-                "output_price_per_token": str(record.output_price_per_token),
-                "input_price_per_1k": str(record.input_price_per_token * 1_000),
-                "output_price_per_1k": str(record.output_price_per_token * 1_000),
-                "input_price_per_1m": str(record.input_price_per_token * 1_000_000),
-                "output_price_per_1m": str(record.output_price_per_token * 1_000_000),
+                **_flat_price_fields(
+                    cast(Decimal, record.input_price_per_token),
+                    cast(Decimal, record.output_price_per_token),
+                ),
+                "cache_write_price_per_1m": None,
+                "cache_read_price_per_1m": _per_1m(cached_input),
+                "context_tiers": None,
+                "endpoint_family": None,
+                "api": None,
+                "service_tiers": None,
+                "scope": None,
+                "prompt_cache": None,
                 "source": record.source,
+                "source_url": None,
                 "last_updated": last_updated.isoformat() if last_updated else None,
             }
         )
 
+    pricing_list.sort(key=lambda row: (row["model_id"], row["region"]))
     return pricing_list
 
 

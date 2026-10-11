@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.services.pricing import get_official_profile_pricing
 from app.services.pricing_updater import PricingUpdater
 from app.api.deps import get_current_superadmin
 from app.models.user import User
@@ -65,6 +66,48 @@ async def get_model_pricing(
         Pricing information
     """
     effective_region = region or get_settings().AWS_REGION
+
+    # Catalogued profiles are billed from model-card rates regardless of any
+    # DB row, so report exactly those rates (both context bands).
+    official = get_official_profile_pricing(model_id)
+    if official is not None:
+        tiers = [official.short] + ([official.long] if official.long else [])
+        ultrafast = get_official_profile_pricing(model_id, "ultrafast")
+        ultrafast_tiers = (
+            [ultrafast.short] + ([ultrafast.long] if ultrafast.long else [])
+            if ultrafast is not None and ultrafast is not official
+            else []
+        )
+
+        def _m(value):
+            return None if value is None else str(value * 1_000_000)
+
+        def _tiers(rate_list):
+            return [
+                {
+                    "input_price_per_1m": _m(rates.input),
+                    "cache_write_price_per_1m": _m(rates.cache_write),
+                    "cache_read_price_per_1m": _m(rates.cache_read),
+                    "output_price_per_1m": _m(rates.output),
+                }
+                for rates in rate_list
+            ]
+
+        return {
+            "model_id": model_id,
+            "region": effective_region,
+            "input_price_per_token": str(official.short.input),
+            "output_price_per_token": str(official.short.output),
+            "input_price_per_1m": _m(official.short.input),
+            "output_price_per_1m": _m(official.short.output),
+            "long_context_threshold": official.long_context_threshold,
+            "context_tiers": _tiers(tiers),
+            "ultrafast_context_tiers": _tiers(ultrafast_tiers) or None,
+            "source": "aws-model-card",
+            "source_url": official.source_url,
+            "currency": "USD",
+        }
+
     updater = PricingUpdater(db)
     pricing = await updater.get_pricing(model_id, effective_region)
 

@@ -27,10 +27,13 @@ def _db_with_models(names):
         "openai.gpt-5.6-sol",
         "us.openai.gpt-5.6-sol",
         "global.openai.gpt-5.6-sol",
+        "openai.gpt-6-sol",
+        "global.openai.gpt-6-luna",
+        "us.openai.gpt-6.1-sol",
+        "global.openai.gpt-6.1-sol",
     ],
 )
-@pytest.mark.parametrize("backend", ["mantle", "runtime"])
-async def test_runtime_profile_routes_via_responses_for_messages(model, backend):
+async def test_gpt_messages_always_route_via_responses(model):
     request = AnthropicMessagesRequest.model_validate(
         {
             "model": model,
@@ -48,7 +51,6 @@ async def test_runtime_profile_routes_via_responses_for_messages(model, backend)
     with (
         patch("app.services.quota.enforce_quota", new=AsyncMock()),
         patch.object(messages_module, "session_scope", fake_scope),
-        patch.object(messages_module, "get_openai_gpt_backend", return_value=backend),
         patch.object(
             messages_module,
             "_handle_mantle_via_anthropic",

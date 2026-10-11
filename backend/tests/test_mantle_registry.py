@@ -86,8 +86,8 @@ class TestResolveResponsesModelId:
         "model_id",
         [
             "eu.openai.gpt-5.6-sol",
-            "global.openai.gpt-5.6-luna",
-            "global.openai.gpt-6-sol",
+            "global.openai.gpt-5.5",  # GPT-5.5 is Mantle-only
+            "us.openai.gpt-5.4",
             "global.openai.gpt-oss-120b",
             "global.openai.unknown",
         ],
@@ -132,3 +132,34 @@ class TestDisplayNames:
         for model_id in mm.get_mantle_model_regions():
             name = mm.mantle_display_name(model_id)
             assert mm.mantle_pricing_name_to_id(name) == model_id
+
+
+class TestGrantScope:
+    """Authorization never widens a grant's residency/price scope."""
+
+    @pytest.mark.parametrize(
+        ("target", "allowed", "expected"),
+        [
+            ("openai.gpt-6-sol", ["openai.gpt-6-sol"], "openai.gpt-6-sol"),
+            # Canonical request + profile-only grant → served by that profile.
+            (
+                "openai.gpt-6-sol",
+                ["global.openai.gpt-6-sol"],
+                "global.openai.gpt-6-sol",
+            ),
+            ("openai.gpt-6-sol", ["us.openai.gpt-6-sol"], "us.openai.gpt-6-sol"),
+            # Profiles require an exact grant.
+            ("global.openai.gpt-6-sol", ["us.openai.gpt-6-sol"], None),
+            ("us.openai.gpt-6-sol", ["openai.gpt-6-sol"], None),
+            ("openai.gpt-6-sol", ["us.openai.gpt-6-luna"], None),
+        ],
+    )
+    def test_select_granted_responses_model(self, target, allowed, expected):
+        assert mm.select_granted_responses_model(target, allowed) == expected
+
+    def test_every_catalogued_canonical_id_has_a_mantle_region(self):
+        from app.services.openai_gpt_catalog import list_gpt_routes
+
+        for route in list_gpt_routes():
+            if route.endpoint_family == "mantle":
+                assert route.model_id in mm.MANTLE_MODEL_REGIONS
