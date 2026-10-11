@@ -237,7 +237,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { api } from 'src/boot/axios';
+import { api } from '@/boot/axios';
 import { Dialog, Notify } from 'quasar';
 
 interface ContentBlock {

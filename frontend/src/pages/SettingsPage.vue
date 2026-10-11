@@ -148,10 +148,10 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useAuthStore } from 'src/stores/auth';
+import { useAuthStore } from '@/stores/auth';
 import { Notify } from 'quasar';
-import { api } from 'src/boot/axios';
-import DataManagementCard from 'src/components/DataManagementCard.vue';
+import { api } from '@/boot/axios';
+import DataManagementCard from '@/components/DataManagementCard.vue';
 
 const authStore = useAuthStore();
 

@@ -783,14 +783,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useTokensStore } from 'src/stores/tokens';
-import { useTeamsStore } from 'src/stores/teams';
-import { useModelsStore } from 'src/stores/models';
-import { useAlertsStore, SOFT_RULES, getRuleLabel, getRuleUnit } from 'src/stores/alerts';
-import type { CreateAlertRulePayload } from 'src/stores/alerts';
+import { useTokensStore } from '../stores/tokens';
+import { useTeamsStore } from '@/stores/teams';
+import { useModelsStore } from '@/stores/models';
+import { useAlertsStore, SOFT_RULES, getRuleLabel, getRuleUnit } from '@/stores/alerts';
+import type { CreateAlertRulePayload } from '@/stores/alerts';
 import { Notify, Dialog, copyToClipboard } from 'quasar';
-import { getApiBaseUrl } from 'src/utils/api';
-import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, BatchCreateTokenRequest } from 'src/stores/tokens';
+import { getApiBaseUrl } from '@/utils/api';
+import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, BatchCreateTokenRequest } from '../stores/tokens';
 
 const tokensStore = useTokensStore();
 const teamsStore = useTeamsStore();
@@ -1381,7 +1381,7 @@ function cleanedNotifyEmails(): string[] {
   return notifyEmails.value.map((e) => e.trim()).filter((e) => e.length > 0);
 }
 
-async function persistNotifyEmails(): Promise<boolean> {
+function persistNotifyEmails(): false | Promise<boolean> {
   if (!notifyTokenRow.value) return false;
   return tokensStore.updateToken(
     notifyTokenRow.value.id,

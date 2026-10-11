@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { api } from 'src/boot/axios';
+import { api } from '@/boot/axios';
 
 export interface Model {
   id: string;

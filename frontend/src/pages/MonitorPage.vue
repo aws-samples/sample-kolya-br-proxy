@@ -361,9 +361,9 @@ import {
   Legend,
   Filler,
 } from 'chart.js';
-import { useMonitorStore } from 'src/stores/monitor';
-import { useTokensStore } from 'src/stores/tokens';
-import { getModelProvider } from 'src/utils/model-provider';
+import { useMonitorStore } from '@/stores/monitor';
+import { useTokensStore } from '@/stores/tokens';
+import { getModelProvider } from '@/utils/model-provider';
 
 ChartJS.register(
   CategoryScale,

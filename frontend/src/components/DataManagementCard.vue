@@ -173,8 +173,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { Notify, copyToClipboard } from 'quasar';
-import { api } from 'src/boot/axios';
-import { extractErrorMessage } from 'src/utils/error';
+import { api } from '@/boot/axios';
+import { extractErrorMessage } from '@/utils/error';
 
 interface SectionResult {
   created: number;

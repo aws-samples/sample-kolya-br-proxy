@@ -1,11 +1,11 @@
-import { defineRouter } from '#q-app/wrappers';
+import { defineRouter } from '#q-app';
 import {
   createMemoryHistory,
   createRouter,
   createWebHashHistory,
   createWebHistory,
 } from 'vue-router';
-import { ACCESS_CREDENTIAL_STORAGE_KEY, useAuthStore } from 'src/stores/auth';
+import { ACCESS_CREDENTIAL_STORAGE_KEY, useAuthStore } from '@/stores/auth';
 import routes from './routes'; // pi-lens-ignore: find-import-file-without-extension
 
 /*

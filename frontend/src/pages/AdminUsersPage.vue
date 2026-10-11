@@ -134,12 +134,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
-import { api } from 'src/boot/axios';
+import { api } from '@/boot/axios';
 import { Notify } from 'quasar';
-import { extractErrorMessage } from 'src/utils/error';
-import PermissionEditor from 'src/components/PermissionEditor.vue';
-import type { Resources } from 'src/types/permissions';
-import { useAuthStore } from 'src/stores/auth';
+import { extractErrorMessage } from '@/utils/error';
+import PermissionEditor from '@/components/PermissionEditor.vue';
+import type { Resources } from '@/types/permissions';
+import { useAuthStore } from '@/stores/auth';
 
 const authStore = useAuthStore();
 

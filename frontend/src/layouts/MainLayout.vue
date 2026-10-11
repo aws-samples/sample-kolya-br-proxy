@@ -14,7 +14,7 @@
         <q-toolbar-title>
           <div class="row items-center">
             <q-avatar size="28px" class="q-mr-sm">
-              <img src="~assets/kbp.png" alt="KBP" />
+              <img src="~@/assets/kbp.png" alt="KBP" />
             </q-avatar>
             <span class="title-text">Kolya BR Proxy</span>
           </div>
@@ -143,9 +143,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useAuthStore } from 'src/stores/auth';
-import { useAlertsStore } from 'src/stores/alerts';
-import type { AlertNotification } from 'src/stores/alerts';
+import { useAuthStore } from '@/stores/auth';
+import { useAlertsStore } from '@/stores/alerts';
+import type { AlertNotification } from '@/stores/alerts';
 
 const router = useRouter();
 const authStore = useAuthStore();
