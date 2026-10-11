@@ -53,6 +53,27 @@ class OfficialProfilePricing:
 # Source-backed fallbacks for profiles omitted from the public Price List file.
 # Exact profile IDs are intentional: Global and Geo CRIS rates differ.
 OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
+    # ── GPT-5.6 Sol ──────────────────────────────────────────────────
+    "us.openai.gpt-5.6-sol": OfficialProfilePricing(
+        model_id="us.openai.gpt-5.6-sol",
+        source_url=(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+            "model-card-openai-gpt-56-sol.html"
+        ),
+        short=TokenRates(
+            input=_per_token("4.40"),
+            cache_write=_per_token("5.50"),
+            cache_read=_per_token("0.44"),
+            output=_per_token("22.00"),
+        ),
+        long_context_threshold=272_000,
+        long=TokenRates(
+            input=_per_token("8.80"),
+            cache_write=_per_token("11.00"),
+            cache_read=_per_token("0.88"),
+            output=_per_token("33.00"),
+        ),
+    ),
     # ── GPT-6.1 Sol ──────────────────────────────────────────────────
     "openai.gpt-6.1-sol": OfficialProfilePricing(
         model_id="openai.gpt-6.1-sol",

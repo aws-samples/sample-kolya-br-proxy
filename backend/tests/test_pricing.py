@@ -536,6 +536,7 @@ class TestPricingUpdater:
         profile_cache._local_profile_ids = {
             "global.openai.gpt-6-sol",
             "global.xai.grok-4.6",
+            "us.openai.gpt-5.6-sol",
             "us.openai.gpt-6-astra",
         }
         bedrock = MagicMock(_profile_cache=profile_cache)
@@ -561,13 +562,14 @@ class TestPricingUpdater:
         ):
             stats = await updater.update_all_pricing()
 
-        assert stats["model_card_count"] == 3
-        assert stats["updated"] == 3
+        assert stats["model_card_count"] == 4
+        assert stats["updated"] == 4
         assert "aws-model-card" in stats["sources"]
 
         expected = {
             "global.openai.gpt-6-sol": ("0.000002", "0.000010", "0.0000002"),
             "global.xai.grok-4.6": ("0.000002", "0.000006", "0.0000005"),
+            "us.openai.gpt-5.6-sol": ("0.0000044", "0.000022", "0.00000044"),
             "us.openai.gpt-6-astra": ("0.000011", "0.000055", "0.0000011"),
         }
         result = await db_session.execute(select(ModelPricing))
@@ -612,6 +614,62 @@ class TestPricingService:
         # Expected: (1000 * 0.000003) + (500 * 0.000015) = 0.003 + 0.0075 = 0.0105
         expected_cost = Decimal("0.0105")
         assert cost == expected_cost
+
+    @pytest.mark.asyncio
+    async def test_calculate_gpt_56_sol_uses_current_geo_rates(self, db_session):
+        """The exact US profile overrides stale base-era prices for new usage."""
+        model_id = "us.openai.gpt-5.6-sol"
+        await PricingUpdater(db_session)._save_pricing_data(
+            [
+                {
+                    "model_id": model_id,
+                    "region": "us-west-2",
+                    "input_price_per_token": Decimal("0.0000055"),
+                    "output_price_per_token": Decimal("0.000033"),
+                    "cached_input_price_per_token": Decimal("0.00000055"),
+                }
+            ],
+            "legacy-scraper",
+        )
+
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=100,
+            completion_tokens=20,
+            cache_creation_input_tokens=40,
+            cache_read_input_tokens=30,
+            region="us-west-2",
+        )
+
+        assert cost == Decimal("0.0011132")
+
+    @pytest.mark.asyncio
+    async def test_calculate_gpt_56_sol_uses_long_context_rates(self, db_session):
+        """Crossing 272K total input applies GPT-5.6 Sol long-context rates."""
+        model_id = "us.openai.gpt-5.6-sol"
+        await PricingUpdater(db_session)._save_pricing_data(
+            [
+                {
+                    "model_id": model_id,
+                    "region": "us-west-2",
+                    "input_price_per_token": Decimal("0.0000044"),
+                    "output_price_per_token": Decimal("0.000022"),
+                    "cached_input_price_per_token": Decimal("0.00000044"),
+                }
+            ],
+            "aws-model-card",
+        )
+
+        cost = await PricingService(db_session).calculate_cost(
+            model=model_id,
+            prompt_tokens=270_000,
+            completion_tokens=10,
+            cache_creation_input_tokens=1_000,
+            cache_read_input_tokens=1_001,
+            region="us-west-2",
+        )
+
+        assert cost == Decimal("2.38821088")
 
     @pytest.mark.asyncio
     async def test_calculate_grok_uses_official_cache_read_rate(self, db_session):
