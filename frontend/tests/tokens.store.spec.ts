@@ -6,10 +6,10 @@ const mocks = vi.hoisted(() => ({
   notifyCreate: vi.fn(),
 }));
 
-vi.mock('src/boot/axios', () => ({ api: { get: mocks.apiGet } }));
+vi.mock('@/boot/axios', () => ({ api: { get: mocks.apiGet } }));
 vi.mock('quasar', () => ({ Notify: { create: mocks.notifyCreate } }));
 
-import { useTokensStore } from 'src/stores/tokens';
+import { useTokensStore } from '@/stores/tokens';
 
 const token = {
   id: 'token-1',

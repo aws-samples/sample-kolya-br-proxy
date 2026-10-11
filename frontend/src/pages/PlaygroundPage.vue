@@ -203,10 +203,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { Notify } from 'quasar';
-import { useTokensStore } from 'src/stores/tokens';
-import { useModelsStore } from 'src/stores/models';
-import { getApiBaseUrl } from 'src/utils/api';
-import catImage from 'src/assets/kunt-black-kunt.gif';
+import { useTokensStore } from '@/stores/tokens';
+import { useModelsStore } from '@/stores/models';
+import { getApiBaseUrl } from '@/utils/api';
+import catImage from '@/assets/kunt-black-kunt.gif';
 
 interface Message {
   role: 'user' | 'assistant';

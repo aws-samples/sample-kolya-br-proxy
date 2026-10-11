@@ -275,7 +275,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { Notify } from 'quasar';
-import { api } from 'src/boot/axios';
+import { api } from '@/boot/axios';
 
 interface Model {
   id: string;
@@ -299,8 +299,8 @@ interface AwsModel {
 
 
 
-import { useModelsStore } from 'src/stores/models';
-import { useTokensStore } from 'src/stores/tokens';
+import { useModelsStore } from '@/stores/models';
+import { useTokensStore } from '@/stores/tokens';
 
 const modelsStore = useModelsStore();
 const tokensStore = useTokensStore();

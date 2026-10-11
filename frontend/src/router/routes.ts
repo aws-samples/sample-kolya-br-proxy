@@ -4,82 +4,82 @@ const routes: RouteRecordRaw[] = [
   // Auth routes (no layout)
   {
     path: '/login',
-    component: () => import('pages/LoginPage.vue'),
+    component: () => import('@/pages/LoginPage.vue'),
     meta: { requiresAuth: false },
   },
   {
     path: '/auth/microsoft/callback',
-    component: () => import('pages/MicrosoftCallbackPage.vue'),
+    component: () => import('@/pages/MicrosoftCallbackPage.vue'),
     meta: { requiresAuth: false },
   },
   {
     path: '/auth/cognito/callback',
-    component: () => import('pages/CognitoCallbackPage.vue'),
+    component: () => import('@/pages/CognitoCallbackPage.vue'),
     meta: { requiresAuth: false },
   },
 
   // Main app routes (with layout)
   {
     path: '/',
-    component: () => import('layouts/MainLayout.vue'),
+    component: () => import('@/layouts/MainLayout.vue'),
     meta: { requiresAuth: true },
     children: [
       {
         path: '',
         name: 'dashboard',
-        component: () => import('pages/DashboardPage.vue'),
+        component: () => import('@/pages/DashboardPage.vue'),
       },
       {
         path: 'teams',
         name: 'teams',
-        component: () => import('pages/TeamsPage.vue'),
+        component: () => import('@/pages/TeamsPage.vue'),
       },
       {
         path: 'tokens',
         name: 'tokens',
-        component: () => import('pages/TokensPage.vue'),
+        component: () => import('@/pages/TokensPage.vue'),
       },
       {
         path: 'models',
         name: 'models',
-        component: () => import('pages/ModelsPage.vue'),
+        component: () => import('@/pages/ModelsPage.vue'),
       },
       {
         path: 'playground',
         name: 'playground',
-        component: () => import('pages/PlaygroundPage.vue'),
+        component: () => import('@/pages/PlaygroundPage.vue'),
       },
       {
         path: 'monitor',
         name: 'monitor',
-        component: () => import('pages/MonitorPage.vue'),
+        component: () => import('@/pages/MonitorPage.vue'),
       },
       {
         path: 'activity',
         name: 'activity',
-        component: () => import('pages/ActivityPage.vue'),
+        component: () => import('@/pages/ActivityPage.vue'),
       },
       {
         path: 'traces',
         name: 'traces',
-        component: () => import('pages/TracesPage.vue'),
+        component: () => import('@/pages/TracesPage.vue'),
       },
       {
         path: 'admin-users',
         name: 'admin-users',
-        component: () => import('pages/AdminUsersPage.vue'),
+        component: () => import('@/pages/AdminUsersPage.vue'),
         meta: { requiresSuperAdmin: true },
       },
       {
         path: 'entra-groups',
         name: 'entra-groups',
-        component: () => import('pages/EntraGroupsPage.vue'),
+        component: () => import('@/pages/EntraGroupsPage.vue'),
         meta: { requiresSuperAdmin: true },
       },
       {
         path: 'settings',
         name: 'settings',
-        component: () => import('pages/SettingsPage.vue'),
+        component: () => import('@/pages/SettingsPage.vue'),
       },
     ],
   },
@@ -87,7 +87,7 @@ const routes: RouteRecordRaw[] = [
   // Always leave this as last one
   {
     path: '/:catchAll(.*)*',
-    component: () => import('pages/ErrorNotFound.vue'),
+    component: () => import('@/pages/ErrorNotFound.vue'),
   },
 ];
 
