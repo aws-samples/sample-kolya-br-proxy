@@ -57,6 +57,69 @@ def test_strict_tool_is_not_forwarded_to_unsupported_models(
     ]
 
 
+def test_tool_result_image_is_preserved_in_anthropic_body():
+    request = AnthropicMessagesRequest.model_validate(
+        {
+            "model": "claude-opus-5-5",
+            "max_tokens": 256,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_read",
+                            "name": "read",
+                            "input": {"path": "image.png"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_read",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Read image file [image/png]",
+                                },
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": "aW1hZ2U=",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    bedrock_request = AnthropicRequestTranslator.to_bedrock(request)
+    body = BedrockClient._build_anthropic_body(
+        bedrock_request,
+        model_id="global.anthropic.claude-opus-5-5",
+    )
+
+    assert body["messages"][1]["content"][0]["content"] == [
+        {"type": "text", "text": "Read image file [image/png]"},
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aW1hZ2U=",
+            },
+        },
+    ]
+
+
 def test_strict_tool_is_preserved_for_documented_supported_model():
     request = AnthropicMessagesRequest.model_validate(
         {
