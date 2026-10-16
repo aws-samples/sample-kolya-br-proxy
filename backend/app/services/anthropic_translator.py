@@ -91,19 +91,12 @@ class AnthropicRequestTranslator:
                         )
                     elif block_type == "tool_result":
                         content_val = part_dict.get("content", "")
-                        if isinstance(content_val, list):
-                            # Extract text from content blocks
-                            content_val = " ".join(
-                                item.get("text", "")
-                                for item in content_val
-                                if isinstance(item, dict) and item.get("type") == "text"
-                            )
                         parts.append(
                             BedrockContentPart(
                                 type="tool_result",
                                 tool_use_id=part_dict.get("tool_use_id", ""),
                                 content=content_val
-                                if isinstance(content_val, str)
+                                if isinstance(content_val, (str, list))
                                 else str(content_val),
                                 cache_control=part_dict.get("cache_control"),
                             )

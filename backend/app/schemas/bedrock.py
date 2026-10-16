@@ -21,7 +21,7 @@ class BedrockContentPart(BaseModel):
     input: Optional[Dict[str, Any]] = None
     # For tool_result type
     tool_use_id: Optional[str] = None
-    content: Optional[str] = None  # Tool result content as string
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None
     # For thinking type
     thinking: Optional[str] = None
     signature: Optional[str] = None
