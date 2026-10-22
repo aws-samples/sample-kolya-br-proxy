@@ -8,8 +8,8 @@ Create Date: 2026-10-22
 import sqlalchemy as sa
 from alembic import op
 
-revision = "d1e2f3a4b5c6"
-down_revision = "c0d1e2f3a4b5"
+revision = "d1e2f3a4b5c6"  # pragma: allowlist secret
+down_revision = "c0d1e2f3a4b5"  # pragma: allowlist secret
 branch_labels = None
 depends_on = None
 
