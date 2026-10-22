@@ -50,18 +50,36 @@ def _db_returning(records):
     return db
 
 
-def _db_record(model_id, region, input_per_m, output_per_m, cached_per_m=None):
+def _db_record(
+    model_id,
+    region,
+    input_per_m,
+    output_per_m,
+    cached_per_m=None,
+    *,
+    cache_write_per_m=None,
+    long_threshold=None,
+    long_rates_per_m=(None, None, None),
+):
     from decimal import Decimal
 
     million = Decimal(1_000_000)
+
+    def per_token(value):
+        return None if value is None else Decimal(value) / million
+
+    long_in, long_out, long_cached = long_rates_per_m
     return SimpleNamespace(
         model_id=model_id,
         region=region,
         input_price_per_token=Decimal(input_per_m) / million,
         output_price_per_token=Decimal(output_per_m) / million,
-        cached_input_price_per_token=(
-            None if cached_per_m is None else Decimal(cached_per_m) / million
-        ),
+        cached_input_price_per_token=per_token(cached_per_m),
+        cache_write_price_per_token=per_token(cache_write_per_m),
+        long_context_threshold=long_threshold,
+        long_input_price_per_token=per_token(long_in),
+        long_output_price_per_token=per_token(long_out),
+        long_cached_input_price_per_token=per_token(long_cached),
         source="aws-scraper",
         last_updated=None,
     )
@@ -109,7 +127,69 @@ async def test_gpt_rows_come_from_the_billing_catalog_with_context_tiers():
     [claude_row] = by_id["anthropic.claude-x"]
     assert claude_row["source"] == "aws-scraper"
     assert float(claude_row["cache_read_price_per_1m"]) == 0.30
+    # 5m cache write billed at 1.25x input
+    assert float(claude_row["cache_write_price_per_1m"]) == 3.75
     assert claude_row["context_tiers"] is None
+
+
+@pytest.mark.asyncio
+async def test_db_rows_show_the_rates_billing_applies():
+    haiku = _db_record(
+        "global.anthropic.claude-haiku-5-5",
+        "us-west-2",
+        "0.10",
+        "0.50",
+        "0.01",
+        long_threshold=100_000,
+        long_rates_per_m=("0.50", "2.50", "0.05"),
+    )
+    nova = _db_record(
+        "amazon.nova-pro-v1:0",
+        "us-west-2",
+        "0.80",
+        "3.20",
+        "0.20",
+        cache_write_per_m="0",
+    )
+    llama = _db_record("meta.llama3-1-70b-instruct-v1:0", "us-west-2", "0.72", "0.72")
+    gemini = _db_record(
+        "gemini-2.5-pro",
+        "global",
+        "1.25",
+        "10",
+        "0.125",
+        long_threshold=200_000,
+        long_rates_per_m=("2.50", "15", None),
+    )
+
+    rows = await monitor._fetch_pricing_table(
+        _db_returning([haiku, nova, llama, gemini])
+    )
+    by_id = {row["model_id"]: row for row in rows}
+
+    tiers = by_id["global.anthropic.claude-haiku-5-5"]["context_tiers"]
+    assert [t["label"] for t in tiers] == ["≤100K", ">100K"]
+    assert tiers[0]["max_input_tokens"] == 100_000
+    assert [
+        float(tiers[1][k])
+        for k in (
+            "input_price_per_1m",
+            "cache_write_price_per_1m",
+            "cache_read_price_per_1m",
+            "output_price_per_1m",
+        )
+    ] == [0.5, 0.625, 0.05, 2.5]
+
+    # Published $0 write wins over the 1.25x multiplier.
+    assert float(by_id["amazon.nova-pro-v1:0"]["cache_write_price_per_1m"]) == 0
+    # No published cache-read rate: show the 10% fallback billing uses.
+    llama_row = by_id["meta.llama3-1-70b-instruct-v1:0"]
+    assert float(llama_row["cache_read_price_per_1m"]) == 0.072
+
+    gemini_tiers = by_id["gemini-2.5-pro"]["context_tiers"]
+    assert gemini_tiers[0]["cache_write_price_per_1m"] is None
+    # Long band has no published cache rate: Gemini's 25% fallback.
+    assert float(gemini_tiers[1]["cache_read_price_per_1m"]) == 0.625
 
 
 @pytest.mark.asyncio

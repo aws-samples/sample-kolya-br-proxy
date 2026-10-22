@@ -376,7 +376,11 @@ class PricingUpdater:
                 attrs = product.get("attributes", {})
                 if attrs.get("regionCode") != ref_region:
                     continue
-                if attrs.get("feature") != "On-demand Inference":
+                if attrs.get(
+                    "feature"
+                ) != "On-demand Inference" or self._is_surcharge_usagetype(
+                    attrs.get("usagetype", "")
+                ):
                     continue
 
                 model_name = attrs.get("model", "")
@@ -403,6 +407,7 @@ class PricingUpdater:
                         and a2.get("model") == model_name
                         and a2.get("inferenceType") == complement_type
                         and a2.get("feature") == "On-demand Inference"
+                        and not self._is_surcharge_usagetype(a2.get("usagetype", ""))
                     ):
                         complement_id = pid2
                         break
@@ -469,15 +474,64 @@ class PricingUpdater:
             return await self._save_pricing_data(backfill_data, "backfill")
         return 0
 
+    @staticmethod
+    def _is_surcharge_usagetype(usagetype: str) -> bool:
+        """Batch, latency-optimized, Flex and Priority SKUs share the
+        model/inferenceType of the Standard on-demand SKU; they must never
+        overwrite its price."""
+        usagetype = usagetype.lower()
+        return any(
+            marker in usagetype
+            for marker in ("batch", "latency-optimized", "-flex", "-priority")
+        )
+
+    # Standard-tier Marketplace dimensions: tokenType (Grok 4.6) or
+    # inferenceType with an optional " global" suffix (Grok 4.7, Kimi K3).
+    _MODERN_TOKEN_TYPES = {
+        "input_tokens_mantle": "input",
+        "output_tokens_mantle": "output",
+        "Cache Read Input Tokens": "cache_read",
+        "Input tokens": "input",
+        "Output tokens": "output",
+        "Cache read tokens": "cache_read",
+        "Cache write tokens 30m": "cache_write",
+    }
+
+    def _add_cache_prices(
+        self,
+        row: Dict,
+        terms: dict,
+        cache_read_id: Optional[str],
+        cache_write_id: Optional[str],
+    ) -> None:
+        """Attach published cache rates; a $0 write (Nova) is a real price."""
+        if cache_read_id:
+            price = self._extract_price_from_terms(terms, cache_read_id)
+            if price is not None:
+                row["cached_input_price_per_token"] = price
+        if cache_write_id:
+            price = self._extract_price_from_terms(
+                terms, cache_write_id, allow_zero=True
+            )
+            if price is not None:
+                row["cache_write_price_per_token"] = price
+
+    _PRICE_UNIT_TOKENS = {"1k tokens": Decimal(1000), "1m tokens": Decimal(1_000_000)}
+
     def _extract_price_from_terms(
-        self, terms: dict, product_id: str
+        self, terms: dict, product_id: str, allow_zero: bool = False
     ) -> Optional[Decimal]:
         """
         Extract per-token price from AWS Price List API terms.
 
+        Honours the dimension's unit: legacy SKUs are priced per 1K tokens,
+        newer Marketplace (mantle) SKUs per 1M tokens.
+
         Args:
             terms: Full terms dictionary from the API
             product_id: Product SKU to look up
+            allow_zero: Return 0 for free dimensions (e.g. Nova cache writes)
+                instead of treating them as missing
 
         Returns:
             Price per token as Decimal, or None
@@ -486,9 +540,18 @@ class PricingUpdater:
         for term_data in on_demand.values():
             for dim in term_data.get("priceDimensions", {}).values():
                 price_str = dim.get("pricePerUnit", {}).get("USD")
-                if price_str and price_str != "0.0000000000":
-                    # Price is per 1000 tokens, convert to per token
-                    return Decimal(price_str) / 1000
+                if not price_str:
+                    continue
+                price = Decimal(price_str)
+                if price == 0 and not allow_zero:
+                    continue
+                tokens = self._PRICE_UNIT_TOKENS.get(str(dim.get("unit", "")).lower())
+                if tokens is None:
+                    logger.warning(
+                        f"Unknown Price List unit {dim.get('unit')!r} for {product_id}"
+                    )
+                    return None
+                return price / tokens
         return None
 
     async def _fetch_from_price_list_api(self) -> List[Dict]:
@@ -551,12 +614,13 @@ class PricingUpdater:
 
                 # Marketplace-backed Bedrock models (for example Grok 4.6)
                 # expose Standard dimensions through these newer attributes.
-                if service_tier in ("standard", "global-standard") and token_type:
-                    canonical_type = {
-                        "input_tokens_mantle": "input",
-                        "output_tokens_mantle": "output",
-                        "Cache Read Input Tokens": "cache_read",
-                    }.get(token_type)
+                if service_tier in ("standard", "global-standard") and (
+                    token_type or inference_type
+                ):
+                    canonical_type = self._MODERN_TOKEN_TYPES.get(
+                        token_type
+                        or re.sub(r"\s+global$", "", inference_type, flags=re.I)
+                    )
                     if canonical_type:
                         scope = "global" if service_tier == "global-standard" else "geo"
                         modern_products.setdefault((model, scope), {})[
@@ -564,7 +628,7 @@ class PricingUpdater:
                         ] = product_id
                     continue
 
-                if not inference_type:
+                if not inference_type or self._is_surcharge_usagetype(usagetype):
                     continue
 
                 if "cross-region-global" in usagetype:
@@ -575,7 +639,12 @@ class PricingUpdater:
                         )
                 elif attrs.get("feature") == "On-demand Inference":
                     # Standard on-demand product
-                    if inference_type in ("Input tokens", "Output tokens"):
+                    if inference_type in (
+                        "Input tokens",
+                        "Output tokens",
+                        "Prompt cache read input tokens",
+                        "Prompt cache write input tokens",
+                    ):
                         standard_products.setdefault(model, {})[inference_type] = (
                             product_id
                         )
@@ -594,14 +663,19 @@ class PricingUpdater:
                 if input_price is not None and output_price is not None:
                     model_id = self._map_model_name_to_id(model)
                     if model_id:
-                        pricing_data.append(
-                            {
-                                "model_id": model_id,
-                                "region": target_region,
-                                "input_price_per_token": input_price,
-                                "output_price_per_token": output_price,
-                            }
+                        row = {
+                            "model_id": model_id,
+                            "region": target_region,
+                            "input_price_per_token": input_price,
+                            "output_price_per_token": output_price,
+                        }
+                        self._add_cache_prices(
+                            row,
+                            terms,
+                            type_map.get("Prompt cache read input tokens"),
+                            type_map.get("Prompt cache write input tokens"),
                         )
+                        pricing_data.append(row)
                     else:
                         unmatched_standard.append(model)
 
@@ -648,12 +722,6 @@ class PricingUpdater:
 
                 input_price = self._extract_price_from_terms(terms, input_id)
                 output_price = self._extract_price_from_terms(terms, output_id)
-                cache_read_id = type_map.get("cache_read")
-                cache_read_price = (
-                    self._extract_price_from_terms(terms, cache_read_id)
-                    if cache_read_id
-                    else None
-                )
 
                 if input_price is not None and output_price is not None:
                     base_model_id = self._map_model_name_to_id(model)
@@ -665,8 +733,12 @@ class PricingUpdater:
                             "input_price_per_token": input_price,
                             "output_price_per_token": output_price,
                         }
-                        if cache_read_price is not None:
-                            row["cached_input_price_per_token"] = cache_read_price
+                        self._add_cache_prices(
+                            row,
+                            terms,
+                            type_map.get("cache_read"),
+                            type_map.get("cache_write"),
+                        )
                         pricing_data.append(row)
                     else:
                         unmatched_modern.append(model)
@@ -847,17 +919,26 @@ class PricingUpdater:
             f"(out of {len(decoded_markups)} total)"
         )
 
-        # Pattern: <td>ModelName</td><td>{priceOf!...}</td><td>{priceOf!...}</td>
-        row_pattern = re.compile(
-            r"<tr>\s*<td>([^<{]+?)</td>"
-            r"\s*<td>\{priceOf!([^}]+)\}</td>"
-            r"\s*<td>\{priceOf!([^}]+)\}</td>"
-        )
+        row_pattern = re.compile(r"<tr>\s*<td>([^<{]+?)</td>((?:\s*<td>[^<]*</td>)+)")
+        cell_pattern = re.compile(r"<td>([^<]*)</td>")
+        # Exact <th> only — th_pattern above also matches <thead>.
+        header_pattern = re.compile(r"<th(?:\s[^>]*)?>(?:<[^>]*>)*([^<]*)")
+
+        def resolve(cell: str) -> Optional[Decimal]:
+            """Resolve a ``{priceOf!...}`` cell to $/1M tokens (None if N/A)."""
+            ref = re.fullmatch(r"\s*\{priceOf!([^}]+)\}\s*", cell)
+            if not ref:
+                return None
+            ds, price_hash, mult = self._parse_token_ref(ref.group(1))
+            entry = price_tables.get(ds, {}).get(price_hash)
+            return Decimal(entry["price"]) * mult if entry else None
 
         # Collect results, dedup by model_id (first occurrence wins)
         seen_model_ids: Set[str] = set()
         pricing_data: List[Dict] = []
         unmapped_names: Set[str] = set()
+        # model_id → long-context rates ($/1M) from "<Model> - Long Context" rows
+        long_rows: Dict[str, Dict[str, Optional[Decimal]]] = {}
 
         for markup in token_markups:
             # Determine prefix from heading
@@ -869,26 +950,45 @@ class PricingUpdater:
             else:
                 prefix = ""
 
+            headers = [t.strip().lower() for t in header_pattern.findall(markup)]
+            columns = self._price_columns(headers)
+
             for match in row_pattern.finditer(markup):
                 model_name = match.group(1).strip().rstrip("*").strip()
-                input_ref = match.group(2)
-                output_ref = match.group(3)
+                cells = cell_pattern.findall(match.group(2))
 
                 # Skip non-model rows and variants
-                if model_name == "N/A" or "Long Context" in model_name:
+                if model_name == "N/A":
                     continue
-                if "(Preview)" in model_name or "latency optimized" in model_name:
+                lowered = model_name.lower()
+                if "(preview)" in lowered or "latency optimized" in lowered:
                     continue
+                is_long = bool(re.search(r"\s-\s*long context$", lowered))
+                if is_long:
+                    model_name = re.sub(
+                        r"\s*-\s*long context$", "", model_name, flags=re.IGNORECASE
+                    )
 
-                # Parse token refs → (dataset, hash, multiplier)
-                in_ds, in_hash, in_mult = self._parse_token_ref(input_ref)
-                out_ds, out_hash, out_mult = self._parse_token_ref(output_ref)
+                # Header layout unknown (e.g. grouped headers): fall back to the
+                # positional input | output convention and skip cache read.
+                row_columns = (
+                    columns
+                    if len(headers) == len(cells) + 1
+                    else {"input": 0, "output": 1}
+                )
 
-                in_entry = price_tables.get(in_ds, {}).get(in_hash)
-                out_entry = price_tables.get(out_ds, {}).get(out_hash)
+                def cell(kind: str) -> Optional[Decimal]:
+                    idx = row_columns.get(kind)
+                    return (
+                        resolve(cells[idx])
+                        if idx is not None and idx < len(cells)
+                        else None
+                    )
 
-                if not in_entry or not out_entry:
+                input_per_1m, output_per_1m = cell("input"), cell("output")
+                if input_per_1m is None or output_per_1m is None:
                     continue
+                cache_read_per_1m = cell("cache_read")
 
                 base_model_id = self._map_model_name_to_id(model_name)
                 if not base_model_id:
@@ -896,21 +996,55 @@ class PricingUpdater:
                     continue
 
                 model_id = f"{prefix}{base_model_id}"
+                if is_long:
+                    long_rows.setdefault(
+                        model_id,
+                        {
+                            "input": input_per_1m,
+                            "output": output_per_1m,
+                            "cache_read": cache_read_per_1m,
+                        },
+                    )
+                    continue
+
                 if model_id in seen_model_ids:
                     continue
                 seen_model_ids.add(model_id)
 
-                input_per_1m = Decimal(in_entry["price"]) * in_mult
-                output_per_1m = Decimal(out_entry["price"]) * out_mult
+                row = {
+                    "model_id": model_id,
+                    "region": target_region,
+                    "input_price_per_token": input_per_1m / 1_000_000,
+                    "output_price_per_token": output_per_1m / 1_000_000,
+                }
+                if cache_read_per_1m is not None:
+                    row["cached_input_price_per_token"] = cache_read_per_1m / 1_000_000
+                pricing_data.append(row)
 
-                pricing_data.append(
-                    {
-                        "model_id": model_id,
-                        "region": target_region,
-                        "input_price_per_token": input_per_1m / 1_000_000,
-                        "output_price_per_token": output_per_1m / 1_000_000,
-                    }
+        for row in pricing_data:
+            long_rates = long_rows.pop(row["model_id"], None)
+            if long_rates is None:
+                continue
+            threshold = self._LONG_CONTEXT_THRESHOLDS.get(
+                self._strip_prefix(row["model_id"])
+            )
+            if threshold is None:
+                logger.warning(
+                    f"AWS lists long-context rates for {row['model_id']} but its "
+                    "token threshold is unknown; billing it at standard rates"
                 )
+                continue
+            row["long_context_threshold"] = threshold
+            row["long_input_price_per_token"] = long_rates["input"] / 1_000_000
+            row["long_output_price_per_token"] = long_rates["output"] / 1_000_000
+            if long_rates["cache_read"] is not None:
+                row["long_cached_input_price_per_token"] = (
+                    long_rates["cache_read"] / 1_000_000
+                )
+        if long_rows:
+            logger.warning(
+                f"Long-context rows without a standard row: {sorted(long_rows)}"
+            )
 
         if unmapped_names:
             logger.warning(
@@ -1067,6 +1201,33 @@ class PricingUpdater:
 
         return pricing_data
 
+    # Model cards state the threshold; the pricing page only labels the row
+    # "<Model> - Long Context". Keyed by base model ID.
+    _LONG_CONTEXT_THRESHOLDS: Dict[str, int] = {
+        # model-card-anthropic-claude-haiku-5-5: "Prompts that exceed 100,000
+        # tokens are billed at higher rates for input, output, and cache".
+        "anthropic.claude-haiku-5-5": 100_000,
+    }
+
+    @staticmethod
+    def _price_columns(headers: List[str]) -> Dict[str, int]:
+        """Map price kinds to cell indexes (headers[0] is the model column)."""
+        columns: Dict[str, int] = {}
+        for idx, header in enumerate(headers[1:]):
+            if "batch" in header:
+                continue
+            if "cache read" in header:
+                columns.setdefault("cache_read", idx)
+            elif "cache" in header:
+                continue
+            elif "input token" in header:
+                columns.setdefault("input", idx)
+            elif "output token" in header:
+                columns.setdefault("output", idx)
+        columns.setdefault("input", 0)
+        columns.setdefault("output", 1)
+        return columns
+
     @staticmethod
     def _parse_token_ref(token_ref: str) -> Tuple[str, str, int]:
         """
@@ -1130,6 +1291,7 @@ class PricingUpdater:
                         existing, "cached_input_price_per_token"
                     ):
                         existing.cached_input_price_per_token = cached_price
+                    existing.apply_source_rates(data)
                     existing.source = source
                     existing.last_updated = now
                 else:
@@ -1149,6 +1311,7 @@ class PricingUpdater:
                     ):
                         kwargs["cached_input_price_per_token"] = cached_price
                     new_pricing = ModelPricing(**kwargs)
+                    new_pricing.apply_source_rates(data)
                     self.db.add(new_pricing)
 
                 updated_count += 1
@@ -1271,7 +1434,6 @@ class PricingUpdater:
             "Nova 2.0 Lite": "amazon.nova-2-lite-v1:0",
             "Nova 2.0 Pro": "amazon.nova-2-pro-v1:0",
             "Nova 2.0 Omni": "amazon.nova-2-omni-v1:0",
-            "Nova Pro Latency Optimized": "amazon.nova-pro-v1:0",
             # ── Amazon Titan ──────────────────────────────────────
             "Amazon Titan Text Premier": "amazon.titan-text-premier-v1:0",
             "Amazon Titan Text Lite": "amazon.titan-text-lite-v1",
@@ -1307,7 +1469,6 @@ class PricingUpdater:
             "Llama 3.1 Instruct (8B)": "meta.llama3-1-8b-instruct-v1:0",
             "Llama 3.1 405B": "meta.llama3-1-405b-instruct-v1:0",
             "Llama 3.1 70B": "meta.llama3-1-70b-instruct-v1:0",
-            "Llama 3.1 70B Latency Optimized": "meta.llama3-1-70b-instruct-v1:0",
             "Llama 3.1 8B": "meta.llama3-1-8b-instruct-v1:0",
             "Llama 3 Instruct (70B)": "meta.llama3-70b-instruct-v1:0",
             "Llama 3 Instruct (8B)": "meta.llama3-8b-instruct-v1:0",
@@ -1341,8 +1502,9 @@ class PricingUpdater:
             # ── Moonshot AI ────────────────────────────────────────
             "Kimi K2 Thinking": "moonshot.kimi-k2-thinking",
             # ── NVIDIA ─────────────────────────────────────────────
-            "NVIDIA Nemotron Nano 2": "nvidia.nemotron-nano-12b-v2",
-            "NVIDIA Nemotron Nano 2 VL": "nvidia.nemotron-nano-9b-v2",
+            # Price List usagetypes: "Nano 2" = 9B v2, "Nano 2 VL" = 12B v2 VL.
+            "NVIDIA Nemotron Nano 2": "nvidia.nemotron-nano-9b-v2",
+            "NVIDIA Nemotron Nano 2 VL": "nvidia.nemotron-nano-12b-v2",
             "Nemotron Nano 3 30B": "nvidia.nemotron-nano-3-30b",
             # ── OpenAI / xAI inference profiles ───────────────────
             # New Marketplace-backed Price List rows use the model ID itself
@@ -1361,8 +1523,8 @@ class PricingUpdater:
             # OpenAI gpt-oss on Bedrock
             "gpt-oss-20b": "openai.gpt-oss-20b-1:0",
             "gpt-oss-120b": "openai.gpt-oss-120b-1:0",
-            "GPT OSS Safeguard 20B": "openai.gpt-oss-20b-1:0",
-            "GPT OSS Safeguard 120B": "openai.gpt-oss-120b-1:0",
+            "GPT OSS Safeguard 20B": "openai.gpt-oss-safeguard-20b",
+            "GPT OSS Safeguard 120B": "openai.gpt-oss-safeguard-120b",
             # ── Qwen (Alibaba Cloud) ─────────────────────────────
             "Qwen3 32B": "qwen.qwen3-32b-v1:0",
             "Qwen3 235B A22B 2507": "qwen.qwen3-235b-a22b-2507-v1:0",
@@ -1387,8 +1549,17 @@ class PricingUpdater:
     async def get_pricing(
         self, model_id: str, region: str | None = None
     ) -> Optional[Tuple[Decimal, Decimal]]:
+        """Return (input, output) per-token prices; see :meth:`get_pricing_record`."""
+        record = await self.get_pricing_record(model_id, region)
+        if record is None:
+            return None
+        return (record.input_price_per_token, record.output_price_per_token)
+
+    async def get_pricing_record(
+        self, model_id: str, region: str | None = None
+    ) -> Optional[ModelPricing]:
         """
-        Get pricing for a model from database.
+        Get the pricing row for a model from database.
 
         Lookup order:
         1. Exact match on (model_id, region)
@@ -1401,7 +1572,7 @@ class PricingUpdater:
             region: AWS region (defaults to configured AWS_REGION)
 
         Returns:
-            Tuple of (input_price_per_token, output_price_per_token) or None
+            The matching ModelPricing row, or None
         """
         from app.services.bedrock import BedrockClient
 
@@ -1417,7 +1588,7 @@ class PricingUpdater:
         pricing = result.scalar_one_or_none()
 
         if pricing:
-            return (pricing.input_price_per_token, pricing.output_price_per_token)
+            return pricing
 
         # These model-card entries have profile-specific Global/Geo rates.
         # Falling back to the base model or another profile scope would return
@@ -1450,10 +1621,7 @@ class PricingUpdater:
                         f"Cross-region pricing not found for {model_id}, "
                         f"using standard pricing for {base_model_id}"
                     )
-                    return (
-                        pricing.input_price_per_token,
-                        pricing.output_price_per_token,
-                    )
+                    return pricing
 
                 # Fallback 2: try with the region's geo prefix
                 # (e.g. "global.anthropic.X" → "us.anthropic.X" in us-west-2)
@@ -1473,10 +1641,7 @@ class PricingUpdater:
                             f"Cross-region pricing not found for {model_id}, "
                             f"using geo-specific pricing for {geo_model_id}"
                         )
-                        return (
-                            pricing.input_price_per_token,
-                            pricing.output_price_per_token,
-                        )
+                        return pricing
 
                 break
 

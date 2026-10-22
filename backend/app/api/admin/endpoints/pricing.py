@@ -8,7 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.services.pricing import get_official_profile_pricing
+from app.services.pricing import (
+    ModelPricing as PricingService,
+    db_has_long_band,
+    db_rates_for_band,
+    effective_db_rates,
+    get_official_profile_pricing,
+)
 from app.services.pricing_updater import PricingUpdater
 from app.api.deps import get_current_superadmin
 from app.models.user import User
@@ -48,6 +54,22 @@ async def update_pricing(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _m(value):
+    return None if value is None else str(value * 1_000_000)
+
+
+def _tiers(rate_list):
+    return [
+        {
+            "input_price_per_1m": _m(rates.input),
+            "cache_write_price_per_1m": _m(rates.cache_write),
+            "cache_read_price_per_1m": _m(rates.cache_read),
+            "output_price_per_1m": _m(rates.output),
+        }
+        for rates in rate_list
+    ]
+
+
 @router.get("/models/{model_id}")
 async def get_model_pricing(
     model_id: str,
@@ -79,20 +101,6 @@ async def get_model_pricing(
             else []
         )
 
-        def _m(value):
-            return None if value is None else str(value * 1_000_000)
-
-        def _tiers(rate_list):
-            return [
-                {
-                    "input_price_per_1m": _m(rates.input),
-                    "cache_write_price_per_1m": _m(rates.cache_write),
-                    "cache_read_price_per_1m": _m(rates.cache_read),
-                    "output_price_per_1m": _m(rates.output),
-                }
-                for rates in rate_list
-            ]
-
         return {
             "model_id": model_id,
             "region": effective_region,
@@ -108,10 +116,9 @@ async def get_model_pricing(
             "currency": "USD",
         }
 
-    updater = PricingUpdater(db)
-    pricing = await updater.get_pricing(model_id, effective_region)
+    record = await PricingUpdater(db).get_pricing_record(model_id, effective_region)
 
-    if not pricing:
+    if record is None:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -119,8 +126,15 @@ async def get_model_pricing(
             ),
         )
 
-    input_price = Decimal(str(pricing[0]))
-    output_price = Decimal(str(pricing[1]))
+    input_price = Decimal(str(record.input_price_per_token))
+    output_price = Decimal(str(record.output_price_per_token))
+    # Same rates billing applies (published or fallback cache rates, 5m write).
+    write_5m = PricingService.CACHE_WRITE_MULTIPLIER["5m"]
+    bands = [False] + ([True] if db_has_long_band(record) else [])
+    db_tiers = [
+        effective_db_rates(model_id, db_rates_for_band(record, long_band), write_5m)
+        for long_band in bands
+    ]
 
     return {
         "model_id": model_id,
@@ -129,5 +143,10 @@ async def get_model_pricing(
         "output_price_per_token": str(output_price),
         "input_price_per_1m": str(input_price * 1_000_000),
         "output_price_per_1m": str(output_price * 1_000_000),
+        "long_context_threshold": record.long_context_threshold
+        if len(bands) > 1
+        else None,
+        "context_tiers": _tiers(db_tiers),
+        "source": record.source,
         "currency": "USD",
     }
