@@ -24,6 +24,12 @@ export interface PromptCacheInfo {
   ttl: string | null;
 }
 
+export interface ModelCardCheck {
+  status: 'ok' | 'mismatch' | 'parse_error';
+  issues: string[];
+  checked_at: string | null;
+}
+
 export interface PricingDisplayRecord {
   input_price_per_1m: string;
   output_price_per_1m: string;
@@ -34,6 +40,7 @@ export interface PricingDisplayRecord {
   api?: string | null;
   scope?: 'in-region' | 'us' | 'global' | null;
   prompt_cache?: PromptCacheInfo | null;
+  model_card_check?: ModelCardCheck | null;
 }
 
 export interface CacheBadge {
@@ -125,4 +132,17 @@ export function promptCacheBadges(record: PricingDisplayRecord): CacheBadge[] {
     });
   }
   return badges;
+}
+
+/** Warning badge when hardcoded model-card rates drift from the live card. */
+export function modelCardCheckBadge(record: PricingDisplayRecord): CacheBadge | null {
+  const check = record.model_card_check;
+  if (!check || check.status === 'ok') return null;
+  const label = check.status === 'mismatch' ? 'Card drift' : 'Card unreadable';
+  const checked = check.checked_at ? ` (checked ${check.checked_at.slice(0, 10)})` : '';
+  return {
+    label,
+    color: check.status === 'mismatch' ? 'negative' : 'warning',
+    tooltip: `Billing still uses the hardcoded rate${checked}. ` + check.issues.join('; '),
+  };
 }

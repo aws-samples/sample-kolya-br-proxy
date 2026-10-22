@@ -12,6 +12,7 @@ from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.models.user import User
 from app.models.model_pricing import ModelPricing
+from app.models.model_card_check import ModelCardPriceCheck
 from app.models.model import Model
 from app.models.team import Team, TeamMember
 
@@ -28,6 +29,7 @@ __all__ = [
     "RefreshToken",
     "AuditLog",
     "ModelPricing",
+    "ModelCardPriceCheck",
     "Model",
     "Team",
     "TeamMember",

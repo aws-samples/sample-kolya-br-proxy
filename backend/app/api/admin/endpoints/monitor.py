@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.core.database import get_db
 from app.api.deps import require_permission
 from app.models.user import User
+from app.models.model_card_check import ModelCardPriceCheck
 from app.models.model_pricing import ModelPricing as ModelPricingModel
 from typing import List, Dict, Any, Optional, Tuple, cast
 from datetime import datetime, timedelta
@@ -155,6 +156,14 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
         )
     )
     pricing_records = result.scalars().all()
+    card_checks = {
+        check.model_id: {
+            "status": check.status,
+            "issues": check.issues,
+            "checked_at": check.checked_at.isoformat() if check.checked_at else None,
+        }
+        for check in (await db.execute(select(ModelCardPriceCheck))).scalars()
+    }
 
     gpt_routes = list_gpt_routes()
     gpt_ids = {route.model_id for route in gpt_routes}
@@ -187,6 +196,8 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
             }
         )
 
+    for row in pricing_list:
+        row["model_card_check"] = card_checks.get(row["model_id"])
     pricing_list.sort(key=lambda row: (row["model_id"], row["region"]))
     return pricing_list
 
