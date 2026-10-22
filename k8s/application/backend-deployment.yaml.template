@@ -30,6 +30,12 @@ spec:
     spec:
       terminationGracePeriodSeconds: 65
       serviceAccountName: backend
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         karpenter.sh/nodepool: ${KARPENTER_NODEPOOL}
         kubernetes.io/arch: arm64
@@ -38,6 +44,10 @@ spec:
         image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/kolya-br-proxy-backend:latest
         command: ["python", "scripts/migrate.py"]
         workingDir: /app/backend
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         envFrom:
         - configMapRef:
             name: backend-config
@@ -56,6 +66,10 @@ spec:
       - name: backend
         image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/kolya-br-proxy-backend:latest
         imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         ports:
         - containerPort: 8000
           name: http

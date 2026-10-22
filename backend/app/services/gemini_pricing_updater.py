@@ -39,6 +39,12 @@ LITELLM_PRICES_URL = (
 )
 GEMINI_PRICING_REGION = "global"
 
+# Bounds ($/1M tokens) for third-party price data; out-of-range values are
+# treated as tampered/corrupt so they can't zero out or inflate billing.
+_MIN_PRICE_PER_1M = Decimal("0.005")
+_MAX_PRICE_PER_1M = Decimal("500")
+_GEMINI_MODEL_ID_RE = re.compile(r"^gemini-[a-z0-9][a-z0-9.\-]{0,99}$")
+
 # ---------------------------------------------------------------------------
 # Static fallback — ONLY legacy models not covered by live sources.
 # Verified against Google official page 2026-04.
@@ -215,17 +221,20 @@ class GeminiPricingUpdater:
         - Keys starting with "gemini" but NOT "gemini/" prefix (those are duplicates)
         - Must have non-zero input AND output prices
         """
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
             resp = await client.get(LITELLM_PRICES_URL)
             resp.raise_for_status()
-            data: dict = resp.json()
+            data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("LiteLLM price data is not a JSON object")
 
         results: List[PricingEntry] = []
+        rejected = 0
         for key, info in data.items():
             # Only plain "gemini-*" keys (skip "gemini/gemini-*" duplicates)
             if not key.startswith("gemini") or key.startswith("gemini/"):
                 continue
-            if "input_cost_per_token" not in info:
+            if not isinstance(info, dict) or "input_cost_per_token" not in info:
                 continue
 
             inp_per_token = info.get("input_cost_per_token", 0)
@@ -237,20 +246,45 @@ class GeminiPricingUpdater:
 
             cache_per_token = info.get("cache_read_input_token_cost")
 
-            # Convert per-token → per-1M for make_entry (which expects $/1M)
-            entry = self._make_entry(
-                model_id=key,
-                inp=Decimal(str(inp_per_token)) * Decimal("1000000"),
-                out=Decimal(str(out_per_token)) * Decimal("1000000"),
-                cache=(
+            try:
+                inp = Decimal(str(inp_per_token)) * Decimal("1000000")
+                out = Decimal(str(out_per_token)) * Decimal("1000000")
+                cache = (
                     Decimal(str(cache_per_token)) * Decimal("1000000")
                     if cache_per_token
                     else None
-                ),
-            )
-            results.append(entry)
+                )
+            except (ArithmeticError, ValueError):
+                rejected += 1
+                continue
 
+            if not self._is_sane_entry(key, inp, out, cache):
+                rejected += 1
+                continue
+
+            results.append(
+                self._make_entry(model_id=key, inp=inp, out=out, cache=cache)
+            )
+
+        if rejected:
+            logger.warning(
+                f"Gemini pricing tier-2 (LiteLLM): rejected {rejected} "
+                "entries with invalid model id or out-of-range prices"
+            )
         return results
+
+    @staticmethod
+    def _is_sane_entry(
+        model_id: str, inp: Decimal, out: Decimal, cache: Optional[Decimal]
+    ) -> bool:
+        if not _GEMINI_MODEL_ID_RE.match(model_id):
+            return False
+        for price in (inp, out) + ((cache,) if cache is not None else ()):
+            if not price.is_finite() or not (
+                _MIN_PRICE_PER_1M <= price <= _MAX_PRICE_PER_1M
+            ):
+                return False
+        return True
 
     # -----------------------------------------------------------------------
     # Tier 3: Static legacy table
