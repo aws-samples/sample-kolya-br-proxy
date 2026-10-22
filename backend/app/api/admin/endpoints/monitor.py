@@ -9,13 +9,20 @@ from app.core.database import get_db
 from app.api.deps import require_permission
 from app.models.user import User
 from app.models.model_pricing import ModelPricing as ModelPricingModel
-from typing import List, Dict, Any, Optional, cast
+from typing import List, Dict, Any, Optional, Tuple, cast
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 from app.core.config import get_settings
 from app.services.mantle_models import resolve_mantle_region
 from app.services.openai_gpt_catalog import GptRoute, list_gpt_routes
+from app.services.pricing import (
+    EffectiveRates,
+    ModelPricing as PricingService,
+    db_has_long_band,
+    db_rates_for_band,
+    effective_db_rates,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -116,6 +123,24 @@ def _gpt_route_row(route: GptRoute) -> Dict[str, Any]:
     }
 
 
+def _db_record_tiers(record) -> Tuple[EffectiveRates, Optional[List[Dict[str, Any]]]]:
+    """Rates billing applies to a DB row (5m cache-write TTL), per band."""
+    multiplier = PricingService.CACHE_WRITE_MULTIPLIER["5m"]
+    short = effective_db_rates(
+        record.model_id, db_rates_for_band(record, long_band=False), multiplier
+    )
+    if not db_has_long_band(record):
+        return short, None
+    threshold = record.long_context_threshold
+    long = effective_db_rates(
+        record.model_id, db_rates_for_band(record, long_band=True), multiplier
+    )
+    return short, [
+        _tier(f"≤{threshold // 1000}K", threshold, short),
+        _tier(f">{threshold // 1000}K", None, long),
+    ]
+
+
 async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
     """Build the pricing table shown in the admin UI.
 
@@ -139,7 +164,7 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
         if record.model_id in gpt_ids:
             continue
         last_updated = cast(Optional[datetime], record.last_updated)
-        cached_input = getattr(record, "cached_input_price_per_token", None)
+        short, tiers = _db_record_tiers(record)
         pricing_list.append(
             {
                 "model_id": record.model_id,
@@ -148,9 +173,9 @@ async def _fetch_pricing_table(db: AsyncSession) -> List[Dict[str, Any]]:
                     cast(Decimal, record.input_price_per_token),
                     cast(Decimal, record.output_price_per_token),
                 ),
-                "cache_write_price_per_1m": None,
-                "cache_read_price_per_1m": _per_1m(cached_input),
-                "context_tiers": None,
+                "cache_write_price_per_1m": _per_1m(short.cache_write),
+                "cache_read_price_per_1m": _per_1m(short.cache_read),
+                "context_tiers": tiers,
                 "endpoint_family": None,
                 "api": None,
                 "service_tiers": None,

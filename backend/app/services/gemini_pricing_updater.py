@@ -20,7 +20,8 @@ Prices are stored per-token in model_pricing with region="global".
 
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
+from html import unescape
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
@@ -94,13 +95,26 @@ class GeminiPricingUpdater:
 
         # Tier 2: LiteLLM public JSON (HTTP fetch, no package)
         try:
-            litellm_data = await self._fetch_litellm_prices()
+            litellm_data, litellm_tiered = await self._fetch_litellm_prices()
             added = 0
             for entry in litellm_data:
                 if entry["model_id"] not in merged:
                     merged[entry["model_id"]] = entry
                     added += 1
             logger.info(f"Gemini pricing tier-2 (LiteLLM): {added} new models added")
+            # Third-party tier data is not trusted for billing (it has been
+            # stale before); surface it so an operator can check the model card.
+            unverified = sorted(
+                mid
+                for mid in litellm_tiered
+                if mid in merged and "long_context_threshold" not in merged[mid]
+            )
+            if unverified:
+                logger.warning(
+                    "Gemini pricing: LiteLLM lists context-tiered rates for "
+                    f"{unverified}, which Google's page does not cover; billing "
+                    "at the single LiteLLM base rate"
+                )
         except Exception as e:
             logger.warning(f"Gemini pricing tier-2 failed: {e}")
 
@@ -143,15 +157,22 @@ class GeminiPricingUpdater:
             resp.raise_for_status()
             return resp.text
 
-    def _parse_google_html(self, html: str) -> List[PricingEntry]:
+    def _parse_google_html(
+        self, html: str, today: Optional[date] = None
+    ) -> List[PricingEntry]:
         """
         Parse pricing tables from Google's SSR HTML.
 
         Strategy: find each <table> that contains "Input price" and "Output price",
         then look backwards for the nearest <h2>/<h3> that contains "Gemini N.N".
-        The page renders two rows per model (standard + batch half-price); we take
-        the first occurrence (standard pricing).
+        Each model renders Standard first, then Batch/Flex/Priority tabs; we take
+        the first occurrence (Standard pricing).
+
+        Paid-tier cells may carry a long-context band ("$1.25, prompts <= 200k
+        tokens<br>$2.50, prompts > 200k tokens") or a scheduled change ("$2.00
+        through November 30, 2026. $4.00 starting December 1, 2026.").
         """
+        today = today or datetime.utcnow().date()
         # Collect heading positions and text
         headings: List[Tuple[int, str]] = [
             (m.start(), re.sub(r"<[^>]+>", "", m.group()).strip())
@@ -186,33 +207,116 @@ class GeminiPricingUpdater:
             if not model_display:
                 continue
 
-            model_id = self._display_name_to_id(model_display)
-            if not model_id or model_id in seen_models:
+            model_ids = [
+                mid
+                for mid in (
+                    self._display_name_to_id(name)
+                    for name in self._split_heading(model_display)
+                )
+                if mid and mid not in seen_models
+            ]
+            if not model_ids:
                 continue
-            seen_models.add(model_id)
 
-            inp_m = re.search(r"Input price[^$]{0,80}\$([\d.]+)", clean)
-            out_m = re.search(r"Output price[^$]{0,120}\$([\d.]+)", clean)
-            if not inp_m or not out_m:
-                continue
-
-            cache_m = re.search(r"[Cc]ach(?:e|ing) price[^$]{0,80}\$([\d.]+)", clean)
-
-            entry = self._make_entry(
-                model_id=model_id,
-                inp=Decimal(inp_m.group(1)),
-                out=Decimal(out_m.group(1)),
-                cache=Decimal(cache_m.group(1)) if cache_m else None,
+            inp = self._parse_price_cell(
+                self._paid_cell(table_html, "Input price"), today
             )
-            results.append(entry)
+            out = self._parse_price_cell(
+                self._paid_cell(table_html, "Output price"), today
+            )
+            cache = self._parse_price_cell(
+                self._paid_cell(table_html, r"Context caching price"), today
+            )
+            if inp is None or out is None:
+                continue
+
+            long_threshold = (
+                inp[2] if inp[1] is not None and out[1] is not None else None
+            )
+            for model_id in model_ids:
+                seen_models.add(model_id)
+                results.append(
+                    self._make_entry(
+                        model_id=model_id,
+                        inp=inp[0],
+                        out=out[0],
+                        cache=cache[0] if cache else None,
+                        long_threshold=long_threshold,
+                        long_inp=inp[1] if long_threshold else None,
+                        long_out=out[1] if long_threshold else None,
+                        long_cache=cache[1] if cache and long_threshold else None,
+                    )
+                )
 
         return results
+
+    @staticmethod
+    def _split_heading(heading: str) -> List[str]:
+        """'Gemini A, Gemini B, and Gemini C' → three names (one name otherwise)."""
+        parts = [
+            p.strip()
+            for p in re.split(r",\s*(?:and\s+)?|\s+and\s+", heading)
+            if p.strip()
+        ]
+        if len(parts) > 1 and all(re.match(r"(?i)gemini\b", p) for p in parts):
+            return parts
+        return [heading]
+
+    @staticmethod
+    def _paid_cell(table_html: str, label: str) -> Optional[str]:
+        """Inner HTML of the last $-bearing cell in the row labelled *label*."""
+        row = re.search(
+            rf"<tr[^>]*>\s*<td[^>]*>\s*{label}.*?</tr>",
+            table_html,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if not row:
+            return None
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", row.group(), re.DOTALL)
+        priced = [c for c in cells[1:] if "$" in c]
+        return priced[-1] if priced else None
+
+    @staticmethod
+    def _parse_price_cell(
+        cell: Optional[str], today: date
+    ) -> Optional[Tuple[Decimal, Optional[Decimal], Optional[int]]]:
+        """(short $/1M, long $/1M or None, long threshold or None)."""
+        if cell is None:
+            return None
+        # Real tags start with a letter or "/"; keep literal "<= 200k".
+        text = re.sub(r"<br\s*/?>", " ; ", cell, flags=re.IGNORECASE)
+        text = re.sub(r"</?[A-Za-z][^>]*>", " ", text)
+        text = re.sub(r"\s+", " ", unescape(text)).strip()
+
+        scheduled = re.search(
+            r"\$([\d.]+) through ([A-Z][a-z]+ \d{1,2}, \d{4})\.?[\s;]*"
+            r"\$([\d.]+) starting ([A-Z][a-z]+ \d{1,2}, \d{4})",
+            text,
+        )
+        if scheduled:
+            starts = datetime.strptime(scheduled.group(4), "%B %d, %Y").date()
+            price = scheduled.group(3) if today >= starts else scheduled.group(1)
+            return Decimal(price), None, None
+
+        long_m = re.search(r"\$([\d.]+),\s*prompts\s*>\s*(\d+)\s*k", text)
+        short_m = re.search(
+            r"\$([\d.]+),\s*prompts\s*<=?\s*\d+\s*k", text
+        ) or re.search(r"\$([\d.]+)", text)
+        if not short_m:
+            return None
+        if long_m:
+            return (
+                Decimal(short_m.group(1)),
+                Decimal(long_m.group(1)),
+                int(long_m.group(2)) * 1000,
+            )
+        return Decimal(short_m.group(1)), None, None
 
     # -----------------------------------------------------------------------
     # Tier 2: LiteLLM public JSON (HTTP only, no package)
     # -----------------------------------------------------------------------
 
-    async def _fetch_litellm_prices(self) -> List[PricingEntry]:
+    async def _fetch_litellm_prices(self) -> Tuple[List[PricingEntry], List[str]]:
         """
         Fetch LiteLLM's open-source model price database from GitHub (raw JSON).
         No litellm package is installed — this is a plain HTTP GET.
@@ -229,6 +333,7 @@ class GeminiPricingUpdater:
             raise ValueError("LiteLLM price data is not a JSON object")
 
         results: List[PricingEntry] = []
+        tiered: List[str] = []
         rejected = 0
         for key, info in data.items():
             # Only plain "gemini-*" keys (skip "gemini/gemini-*" duplicates)
@@ -265,13 +370,15 @@ class GeminiPricingUpdater:
             results.append(
                 self._make_entry(model_id=key, inp=inp, out=out, cache=cache)
             )
+            if any(f.startswith("input_cost_per_token_above_") for f in info):
+                tiered.append(key)
 
         if rejected:
             logger.warning(
                 f"Gemini pricing tier-2 (LiteLLM): rejected {rejected} "
                 "entries with invalid model id or out-of-range prices"
             )
-        return results
+        return results, tiered
 
     @staticmethod
     def _is_sane_entry(
@@ -321,17 +428,30 @@ class GeminiPricingUpdater:
         inp: Decimal,
         out: Decimal,
         cache: Optional[Decimal],
+        long_threshold: Optional[int] = None,
+        long_inp: Optional[Decimal] = None,
+        long_out: Optional[Decimal] = None,
+        long_cache: Optional[Decimal] = None,
     ) -> PricingEntry:
-        """Build a pricing entry dict; inp/out/cache are in $/1M tokens."""
-        return {
+        """Build a pricing entry dict; prices are in $/1M tokens."""
+        million = Decimal("1000000")
+        entry = {
             "model_id": model_id,
             "region": GEMINI_PRICING_REGION,
-            "input_price_per_token": inp / Decimal("1000000"),
-            "output_price_per_token": out / Decimal("1000000"),
+            "input_price_per_token": inp / million,
+            "output_price_per_token": out / million,
             "cached_input_price_per_token": (
-                cache / Decimal("1000000") if cache is not None else None
+                cache / million if cache is not None else None
             ),
         }
+        if long_threshold and long_inp is not None and long_out is not None:
+            entry["long_context_threshold"] = long_threshold
+            entry["long_input_price_per_token"] = long_inp / million
+            entry["long_output_price_per_token"] = long_out / million
+            entry["long_cached_input_price_per_token"] = (
+                long_cache / million if long_cache is not None else None
+            )
+        return entry
 
     @staticmethod
     def _display_name_to_id(name: str) -> Optional[str]:
@@ -388,6 +508,7 @@ class GeminiPricingUpdater:
                 if existing:
                     existing.input_price_per_token = data["input_price_per_token"]
                     existing.output_price_per_token = data["output_price_per_token"]
+                    existing.apply_source_rates(data)
                     existing.source = source
                     existing.last_updated = now
                     if data.get("cached_input_price_per_token") is not None and hasattr(
@@ -413,7 +534,9 @@ class GeminiPricingUpdater:
                         kwargs["cached_input_price_per_token"] = data[
                             "cached_input_price_per_token"
                         ]
-                    self.db.add(ModelPricing(**kwargs))
+                    record = ModelPricing(**kwargs)
+                    record.apply_source_rates(data)
+                    self.db.add(record)
 
                 updated_count += 1
             except Exception as e:

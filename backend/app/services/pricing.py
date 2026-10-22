@@ -2,6 +2,7 @@
 Pricing service for calculating model usage costs.
 """
 
+from dataclasses import dataclass
 from typing import Optional
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +87,105 @@ def _calculate_official_cost(
         + Decimal(completion_tokens) * rates.output
         + Decimal(cache_creation_input_tokens) * cache_write_price
         + Decimal(cache_read_input_tokens) * cache_read_price
+    )
+
+
+def _to_decimal(value) -> Decimal | None:
+    return None if value is None else Decimal(str(value))
+
+
+@dataclass(frozen=True)
+class DbBandRates:
+    """Rates from a DB pricing row for the band one request falls in."""
+
+    input: Decimal
+    output: Decimal
+    cache_read: Decimal | None
+    cache_write: Decimal | None
+    is_long: bool
+
+
+def db_rates_for_band(record, long_band: bool) -> DbBandRates:
+    """Published rates of *record* for its short or long band."""
+    if long_band:
+        return DbBandRates(
+            input=Decimal(str(record.long_input_price_per_token)),
+            output=Decimal(str(record.long_output_price_per_token)),
+            cache_read=_to_decimal(record.long_cached_input_price_per_token),
+            cache_write=None,
+            is_long=True,
+        )
+    return DbBandRates(
+        input=Decimal(str(record.input_price_per_token)),
+        output=Decimal(str(record.output_price_per_token)),
+        cache_read=_to_decimal(record.cached_input_price_per_token),
+        cache_write=_to_decimal(record.cache_write_price_per_token),
+        is_long=False,
+    )
+
+
+def db_has_long_band(record) -> bool:
+    return (
+        record.long_context_threshold is not None
+        and record.long_input_price_per_token is not None
+        and record.long_output_price_per_token is not None
+    )
+
+
+@dataclass(frozen=True)
+class EffectiveRates:
+    """Per-token rates billing actually applies (fallback ratios resolved)."""
+
+    input: Decimal
+    output: Decimal
+    cache_read: Decimal
+    cache_write: Decimal | None  # None = no write fee (Gemini implicit cache)
+
+
+def effective_db_rates(
+    model: str, rates: DbBandRates, write_multiplier: Decimal
+) -> EffectiveRates:
+    """Resolve published-or-fallback cache rates for one DB band.
+
+    Gemini: no write fee; cache read = published rate or 25% of input.
+    Bedrock: cache write = published rate (e.g. Nova $0) or input × TTL
+    multiplier; cache read = published rate (e.g. Sonnet 5.5 5%) or 10%.
+    """
+    from app.services.gemini_client import is_gemini_model
+
+    if is_gemini_model(model):
+        return EffectiveRates(
+            input=rates.input,
+            output=rates.output,
+            cache_read=(
+                rates.cache_read
+                if rates.cache_read is not None
+                else rates.input * GEMINI_CACHE_READ_FALLBACK_RATIO
+            ),
+            cache_write=None,
+        )
+    return EffectiveRates(
+        input=rates.input,
+        output=rates.output,
+        cache_read=(
+            rates.cache_read
+            if rates.cache_read is not None
+            else rates.input * ModelPricing.CACHE_READ_MULTIPLIER
+        ),
+        cache_write=(
+            rates.cache_write
+            if rates.cache_write is not None
+            else rates.input * write_multiplier
+        ),
+    )
+
+
+def _db_rates_for_request(record, total_input_tokens: int) -> DbBandRates:
+    """Like the model-card path, a request whose total input (uncached + cache
+    write + cache read) exceeds the threshold bills entirely at long rates."""
+    return db_rates_for_band(
+        record,
+        db_has_long_band(record) and total_input_tokens > record.long_context_threshold,
     )
 
 
@@ -207,46 +307,24 @@ class ModelPricing:
         if self.db:
             from app.services.pricing_updater import PricingUpdater
 
-            updater = PricingUpdater(self.db)
-            pricing = await updater.get_pricing(model, region)
-
-            if pricing:
-                input_price_per_token, output_price_per_token = pricing
-
-                input_cost = Decimal(prompt_tokens) * input_price_per_token
-                output_cost = Decimal(completion_tokens) * output_price_per_token
-
-                cached_price = await self._get_cached_input_price(model, region)
-                if is_gemini_model(model):
-                    # Gemini: no write cost; use the dedicated DB rate when
-                    # present, otherwise Google's standard 25% fallback.
-                    cache_read_price = (
-                        cached_price
-                        if cached_price is not None
-                        else input_price_per_token * GEMINI_CACHE_READ_FALLBACK_RATIO
-                    )
-                    cache_read_cost = (
-                        Decimal(cache_read_input_tokens) * cache_read_price
-                    )
-                    return input_cost + output_cost + cache_read_cost
-                else:
-                    # Bedrock: TTL-based write cost. Cache-read discounts are
-                    # model-specific when AWS publishes a dedicated dimension
-                    # (for example Grok 4.6 is 25%, not the legacy 10%).
-                    cache_write_cost = (
-                        Decimal(cache_creation_input_tokens)
-                        * input_price_per_token
-                        * write_multiplier
-                    )
-                    cache_read_price = (
-                        cached_price
-                        if cached_price is not None
-                        else input_price_per_token * self.CACHE_READ_MULTIPLIER
-                    )
-                    cache_read_cost = (
-                        Decimal(cache_read_input_tokens) * cache_read_price
-                    )
-                    return input_cost + output_cost + cache_write_cost + cache_read_cost
+            record = await PricingUpdater(self.db).get_pricing_record(model, region)
+            if record is not None:
+                total_input_tokens = (
+                    prompt_tokens
+                    + cache_creation_input_tokens
+                    + cache_read_input_tokens
+                )
+                rates = effective_db_rates(
+                    model,
+                    _db_rates_for_request(record, total_input_tokens),
+                    write_multiplier,
+                )
+                return (
+                    Decimal(prompt_tokens) * rates.input
+                    + Decimal(completion_tokens) * rates.output
+                    + Decimal(cache_creation_input_tokens) * (rates.cache_write or 0)
+                    + Decimal(cache_read_input_tokens) * rates.cache_read
+                )
 
         # If no database or pricing not found, raise error
         logger.error(f"No pricing found for model: {model}, region: {region}")
@@ -254,30 +332,6 @@ class ModelPricing:
             f"Pricing not available for model: {model}. "
             "Please run pricing update task or contact administrator."
         )
-
-    async def _get_cached_input_price(self, model: str, region: str) -> Decimal | None:
-        """Read an exact model/region cached-input rate when one is stored."""
-        if not self.db:
-            return None
-
-        try:
-            from app.models.model_pricing import ModelPricing as ModelPricingRecord
-            from sqlalchemy import select
-
-            result = await self.db.execute(
-                select(ModelPricingRecord).where(
-                    ModelPricingRecord.model_id == model,
-                    ModelPricingRecord.region == region,
-                )
-            )
-            record = result.scalar_one_or_none()
-            if record and hasattr(record, "cached_input_price_per_token"):
-                cached = record.cached_input_price_per_token
-                if cached is not None:
-                    return Decimal(str(cached))
-        except Exception as e:
-            logger.debug(f"Could not fetch cached-input price from DB: {e}")
-        return None
 
     async def get_model_pricing_info(
         self, model: str, region: str | None = None
