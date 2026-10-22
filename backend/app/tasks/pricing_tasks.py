@@ -61,6 +61,17 @@ async def update_gemini_pricing_task():
             logger.error(f"Gemini pricing update task failed: {e}", exc_info=True)
 
 
+async def check_model_card_prices_task():
+    """Compare hardcoded model-card prices with the live AWS cards."""
+    from app.services.model_card_checker import check_model_cards
+
+    async with async_session_maker() as db:
+        try:
+            await check_model_cards(db)
+        except Exception as e:
+            logger.error(f"Model-card price check failed: {e}", exc_info=True)
+
+
 def start_scheduler():
     """Start the background task scheduler."""
     global scheduler
@@ -91,6 +102,15 @@ def start_scheduler():
         replace_existing=True,
     )
 
+    # Check hardcoded model-card prices daily at 2:15 AM UTC (never edits billing)
+    scheduler.add_job(
+        check_model_card_prices_task,
+        trigger=CronTrigger(hour=2, minute=15),
+        id="check_model_card_prices",
+        name="Check hardcoded model-card prices against AWS",
+        replace_existing=True,
+    )
+
     # Schedule Gemini pricing update daily at 2:30 AM UTC (offset from AWS job)
     scheduler.add_job(
         update_gemini_pricing_task,
@@ -102,7 +122,8 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "Scheduler started (profile cache: 1:50, AWS pricing: 2:00, Gemini: 2:30 UTC)"
+        "Scheduler started (profile cache: 1:50, AWS pricing: 2:00, "
+        "model-card check: 2:15, Gemini: 2:30 UTC)"
     )
 
 

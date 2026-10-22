@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   formatPrice,
+  modelCardCheckBadge,
   pricingTiers,
   promptCacheBadges,
   routeLabel,
@@ -84,5 +85,43 @@ describe('pricing display', () => {
     // Cache prices are present, but explicit caching is still unsupported.
     expect(astraRuntime.cache_write_price_per_1m).toBe('5.5');
     expect(promptCacheBadges(astraRuntime)[0]!.label).toBe('Explicit: ✕');
+  });
+});
+
+describe('modelCardCheckBadge', () => {
+  const base = { input_price_per_1m: '1', output_price_per_1m: '2' };
+
+  it('shows nothing when the card matches or was never checked', () => {
+    expect(modelCardCheckBadge(base)).toBeNull();
+    expect(
+      modelCardCheckBadge({
+        ...base,
+        model_card_check: { status: 'ok', issues: [], checked_at: '2026-10-22T02:15:00' },
+      }),
+    ).toBeNull();
+  });
+
+  it('flags drift with the differences in the tooltip', () => {
+    const badge = modelCardCheckBadge({
+      ...base,
+      model_card_check: {
+        status: 'mismatch',
+        issues: ['standard short-context global input: catalog $2, card $2.2'],
+        checked_at: '2026-10-22T02:15:00',
+      },
+    });
+    expect(badge?.label).toBe('Card drift');
+    expect(badge?.color).toBe('negative');
+    expect(badge?.tooltip).toContain('checked 2026-10-22');
+    expect(badge?.tooltip).toContain('catalog $2, card $2.2');
+  });
+
+  it('flags an unreadable card as a warning', () => {
+    const badge = modelCardCheckBadge({
+      ...base,
+      model_card_check: { status: 'parse_error', issues: ['x'], checked_at: null },
+    });
+    expect(badge?.label).toBe('Card unreadable');
+    expect(badge?.color).toBe('warning');
   });
 });

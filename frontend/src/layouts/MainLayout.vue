@@ -2,14 +2,7 @@
   <q-layout view="lHh Lpr lFf" class="tech-layout">
     <q-header elevated class="tech-header">
       <q-toolbar>
-        <q-btn
-          flat
-          dense
-          round
-          icon="menu"
-          aria-label="Menu"
-          @click="toggleLeftDrawer"
-        />
+        <q-btn flat dense round icon="menu" aria-label="Menu" @click="toggleLeftDrawer" />
 
         <q-toolbar-title>
           <div class="row items-center">
@@ -55,9 +48,7 @@
 
     <q-drawer v-model="leftDrawerOpen" show-if-above class="tech-drawer">
       <q-list>
-        <q-item-label header class="text-weight-bold drawer-header">
-          Admin Panel
-        </q-item-label>
+        <q-item-label header class="text-weight-bold drawer-header"> Admin Panel </q-item-label>
 
         <q-item
           v-for="link in menuLinks"
@@ -121,8 +112,20 @@
                 <q-item-label :lines="2">{{ n.message }}</q-item-label>
                 <q-item-label caption>
                   <q-badge
-                    :color="n.scope_type === 'team' ? 'teal-7' : 'blue-7'"
-                    :label="n.scope_type === 'team' ? 'Team' : 'Key'"
+                    :color="
+                      n.scope_type === 'team'
+                        ? 'teal-7'
+                        : n.scope_type === 'system'
+                          ? 'deep-orange-7'
+                          : 'blue-7'
+                    "
+                    :label="
+                      n.scope_type === 'team'
+                        ? 'Team'
+                        : n.scope_type === 'system'
+                          ? 'System'
+                          : 'Key'
+                    "
                     class="q-mr-xs"
                     dense
                   />
@@ -131,9 +134,7 @@
               </q-item-section>
             </q-item>
           </q-list>
-          <div v-else class="q-pa-lg text-center text-grey-7">
-            No notifications
-          </div>
+          <div v-else class="q-pa-lg text-center text-grey-7">No notifications</div>
         </q-card-section>
       </q-card>
     </q-dialog>
@@ -270,7 +271,12 @@ function formatNotificationTime(isoStr: string): string {
   if (diffMin < 60) return `${diffMin}m ago`;
   const diffHour = Math.floor(diffMin / 60);
   if (diffHour < 24) return `${diffHour}h ago`;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 async function handleReadNotification(n: AlertNotification) {
@@ -488,7 +494,7 @@ onUnmounted(() => {
 
 :deep(.q-btn--standard .q-icon),
 :deep(.q-btn.bg-primary .q-icon),
-:deep(.q-btn[color="primary"] .q-icon) {
+:deep(.q-btn[color='primary'] .q-icon) {
   color: #ffffff !important;
 }
 

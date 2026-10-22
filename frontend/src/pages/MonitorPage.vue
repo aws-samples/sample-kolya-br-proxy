@@ -323,11 +323,7 @@
             v-slot:[`body-cell-${priceColumn}`]="props"
           >
             <q-td :props="props">
-              <div
-                v-for="tier in pricingTiers(props.row)"
-                :key="tier.label"
-                class="text-mono"
-              >
+              <div v-for="tier in pricingTiers(props.row)" :key="tier.label" class="text-mono">
                 {{ formatPrice(tier[priceColumn]) }}
               </div>
             </q-td>
@@ -365,6 +361,19 @@
               >
                 {{ props.value }}
               </q-chip>
+              <q-chip
+                v-if="modelCardCheckBadge(props.row)"
+                dense
+                :color="modelCardCheckBadge(props.row)?.color"
+                text-color="white"
+                size="sm"
+                icon="warning"
+              >
+                {{ modelCardCheckBadge(props.row)?.label }}
+                <q-tooltip max-width="420px">{{
+                  modelCardCheckBadge(props.row)?.tooltip
+                }}</q-tooltip>
+              </q-chip>
             </q-td>
           </template>
 
@@ -399,7 +408,13 @@ import {
 import { useMonitorStore } from '@/stores/monitor';
 import { useTokensStore } from '@/stores/tokens';
 import { getModelProvider } from '@/utils/model-provider';
-import { formatPrice, pricingTiers, promptCacheBadges, routeLabel } from '@/utils/pricing';
+import {
+  formatPrice,
+  modelCardCheckBadge,
+  pricingTiers,
+  promptCacheBadges,
+  routeLabel,
+} from '@/utils/pricing';
 import type { PricingRecord } from '@/stores/monitor';
 
 ChartJS.register(

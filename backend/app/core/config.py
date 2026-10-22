@@ -211,6 +211,13 @@ class Settings(BaseSettings):
     )
 
     # Alert notification settings (SES for email)
+    MODEL_CARD_DRIFT_NOTIFY_EMAIL: Optional[str] = Field(
+        default=None,
+        description=(
+            "Comma-separated recipients for hardcoded model-card price drift "
+            "alerts (in-app notifications to super admins are always sent)"
+        ),
+    )
     ALERT_SES_SENDER_EMAIL: Optional[str] = Field(
         default=None,
         description="SES verified sender email for alert notifications",
