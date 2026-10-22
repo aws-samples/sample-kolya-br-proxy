@@ -93,9 +93,18 @@ resource "aws_iam_policy" "backend_bedrock" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Data-plane + read-only discovery only. A leaked pod credential must not
+        # be able to touch invocation logging, guardrails, custom models, etc.
+        Sid    = "BedrockInferenceAndDiscovery"
         Effect = "Allow"
         Action = [
-          "bedrock:*"
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ApplyGuardrail",
+          "bedrock:ListFoundationModels",
+          "bedrock:GetFoundationModel",
+          "bedrock:ListInferenceProfiles",
+          "bedrock:GetInferenceProfile"
         ]
         Resource = "*"
       },
