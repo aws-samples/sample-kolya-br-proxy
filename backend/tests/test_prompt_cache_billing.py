@@ -12,6 +12,7 @@ from app.api.anthropic.endpoints import messages
 from app.api.v1.endpoints import chat, responses
 from app.api.v1.endpoints.responses import _usage_from_response
 from app.models.token import APIToken
+from app.services.bedrock import BedrockClient, cache_write_1h_tokens
 from app.services.mantle_client import (
     MantleClient,
     _build_usage,
@@ -164,3 +165,60 @@ async def test_native_responses_stream_records_all_cache_categories():
     assert recorded[0]["prompt_tokens"] == 20
     assert recorded[0]["cache_creation_input_tokens"] == 20
     assert recorded[0]["cache_read_input_tokens"] == 60
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_records_reported_cache_ttl_split():
+    """The per-TTL breakdown Bedrock sends in message_start reaches billing,
+    and the later message_delta (which lacks it) does not erase it."""
+    raw_events = [
+        {
+            "type": "message_start",
+            "message": {
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 4,
+                    "cache_creation_input_tokens": 1000,
+                    "cache_read_input_tokens": 50,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 700,
+                        "ephemeral_1h_input_tokens": 300,
+                    },
+                },
+            },
+        },
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 7, "cache_creation_input_tokens": 1000},
+        },
+    ]
+
+    class _Client:
+        async def invoke_stream(self, *_args, **_kwargs):
+            for raw in raw_events:
+                yield BedrockClient._anthropic_event_to_bedrock(raw)
+
+    recorded = []
+    with (
+        patch.object(messages, "record_usage", _capture_record_usage(recorded)),
+        patch.object(messages, "background_tasks", _CaptureTasks()),
+    ):
+        async for _ in messages.stream_anthropic_messages(
+            request_id="req-ttl-split",
+            model="global.anthropic.claude-opus-5-5",
+            bedrock_request=SimpleNamespace(),
+            bedrock_client=cast(BedrockClient, _Client()),
+            token=_token(),
+            start_time=0.0,
+            cache_ttl="1h",
+        ):
+            pass
+
+    assert recorded[0]["cache_creation_input_tokens"] == 1000
+    assert recorded[0]["cache_write_1h_tokens"] == 300
+
+
+def test_cache_write_1h_tokens_absent_breakdown_is_unknown():
+    assert cache_write_1h_tokens({"cache_creation_input_tokens": 10}) is None
+    assert cache_write_1h_tokens({"cache_creation": {}}) == 0

@@ -361,6 +361,10 @@ class AnthropicResponseTranslator:
                 accumulated_usage["cache_read_input_tokens"] = (
                     event.usage.cache_read_input_tokens or 0
                 )
+                if event.usage.cache_creation_1h_input_tokens is not None:
+                    accumulated_usage["cache_creation_1h_input_tokens"] = (
+                        event.usage.cache_creation_1h_input_tokens
+                    )
 
             # Build message_start with initial message object
             usage_dict = {
@@ -478,6 +482,10 @@ class AnthropicResponseTranslator:
                     event.usage.cache_read_input_tokens
                     or accumulated_usage.get("cache_read_input_tokens", 0)
                 )
+                if event.usage.cache_creation_1h_input_tokens is not None:
+                    accumulated_usage["cache_creation_1h_input_tokens"] = (
+                        event.usage.cache_creation_1h_input_tokens
+                    )
 
             stop_reason = event.delta.get("stop_reason") if event.delta else None
 

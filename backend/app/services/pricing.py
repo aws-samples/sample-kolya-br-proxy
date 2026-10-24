@@ -142,6 +142,23 @@ class EffectiveRates:
     cache_write: Decimal | None  # None = no write fee (Gemini implicit cache)
 
 
+# Bedrock cache-read rate as a fraction of input for models whose price feed
+# omits it. The 5.5 Claude family bills reads at 5%, not the usual 10% —
+# verified against Cost Explorer (Opus 5.5 $0.20/M on $4 input, Sonnet 5.5
+# $0.10/M on $2 input).
+_CACHE_READ_RATIO_BY_MODEL = {
+    "claude-opus-5-5": Decimal("0.05"),
+    "claude-sonnet-5-5": Decimal("0.05"),
+}
+
+
+def _bedrock_cache_read_ratio(model: str) -> Decimal:
+    for family, ratio in _CACHE_READ_RATIO_BY_MODEL.items():
+        if family in model:
+            return ratio
+    return ModelPricing.CACHE_READ_MULTIPLIER
+
+
 def effective_db_rates(
     model: str, rates: DbBandRates, write_multiplier: Decimal
 ) -> EffectiveRates:
@@ -149,7 +166,8 @@ def effective_db_rates(
 
     Gemini: no write fee; cache read = published rate or 25% of input.
     Bedrock: cache write = published rate (e.g. Nova $0) or input × TTL
-    multiplier; cache read = published rate (e.g. Sonnet 5.5 5%) or 10%.
+    multiplier; cache read = published rate or the per-model fallback ratio
+    (5% for Claude 5.5, otherwise 10%).
     """
     from app.services.gemini_client import is_gemini_model
 
@@ -170,7 +188,7 @@ def effective_db_rates(
         cache_read=(
             rates.cache_read
             if rates.cache_read is not None
-            else rates.input * ModelPricing.CACHE_READ_MULTIPLIER
+            else rates.input * _bedrock_cache_read_ratio(model)
         ),
         cache_write=(
             rates.cache_write
@@ -218,6 +236,7 @@ class ModelPricing:
         cache_read_input_tokens: int = 0,
         cache_ttl: str | None = None,
         service_tier: str | None = None,
+        cache_write_1h_tokens: int | None = None,
     ) -> Decimal:
         """
         Calculate the cost for a model usage.
@@ -240,6 +259,9 @@ class ModelPricing:
             cache_creation_input_tokens: Tokens written to Bedrock cache
             cache_read_input_tokens: Tokens read from cache (Bedrock or Gemini)
             cache_ttl: Bedrock cache TTL ("5m" or "1h")
+            cache_write_1h_tokens: Portion of cache_creation_input_tokens that
+                Bedrock reports was written with the 1h TTL. When given, it
+                overrides cache_ttl for write pricing (the rest bills at 5m).
 
         Returns:
             Cost in USD as Decimal
@@ -314,15 +336,28 @@ class ModelPricing:
                     + cache_creation_input_tokens
                     + cache_read_input_tokens
                 )
-                rates = effective_db_rates(
-                    model,
-                    _db_rates_for_request(record, total_input_tokens),
-                    write_multiplier,
-                )
+                band = _db_rates_for_request(record, total_input_tokens)
+                rates = effective_db_rates(model, band, write_multiplier)
+                if cache_write_1h_tokens is not None and rates.cache_write is not None:
+                    # Bedrock reported the TTL each write actually got: bill
+                    # the 1h part at 2.0x and the rest at the 5m rate.
+                    write_1h = min(cache_write_1h_tokens, cache_creation_input_tokens)
+                    rate_5m = effective_db_rates(
+                        model, band, self.CACHE_WRITE_MULTIPLIER["5m"]
+                    ).cache_write
+                    cache_write_cost = Decimal(
+                        cache_creation_input_tokens - write_1h
+                    ) * rate_5m + Decimal(write_1h) * (
+                        band.input * self.CACHE_WRITE_MULTIPLIER["1h"]
+                    )
+                else:
+                    cache_write_cost = Decimal(cache_creation_input_tokens) * (
+                        rates.cache_write or 0
+                    )
                 return (
                     Decimal(prompt_tokens) * rates.input
                     + Decimal(completion_tokens) * rates.output
-                    + Decimal(cache_creation_input_tokens) * (rates.cache_write or 0)
+                    + cache_write_cost
                     + Decimal(cache_read_input_tokens) * rates.cache_read
                 )
 

@@ -98,6 +98,10 @@ class BedrockUsage(BaseModel):
     output_tokens: Optional[int] = 0
     cache_creation_input_tokens: Optional[int] = 0
     cache_read_input_tokens: Optional[int] = 0
+    # Subset of cache_creation_input_tokens written with the 1h TTL, from
+    # InvokeModel's ``usage.cache_creation`` breakdown. None = not reported
+    # (e.g. Converse), so billing falls back to the configured TTL.
+    cache_creation_1h_input_tokens: Optional[int] = None
 
 
 class BedrockResponse(BaseModel):

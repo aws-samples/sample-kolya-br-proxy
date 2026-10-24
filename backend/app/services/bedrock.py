@@ -435,6 +435,20 @@ class _ProfileCache:
         return models
 
 
+def cache_write_1h_tokens(usage_data: dict) -> int | None:
+    """1h-TTL cache-write tokens from an InvokeModel ``usage`` dict.
+
+    Bedrock reports which TTL each cache write actually got under
+    ``usage.cache_creation``; that is what AWS bills on, regardless of the TTL
+    the proxy configured (client-supplied breakpoints keep their own TTL).
+    Returns None when the breakdown is absent.
+    """
+    breakdown = usage_data.get("cache_creation")
+    if not isinstance(breakdown, dict):
+        return None
+    return breakdown.get("ephemeral_1h_input_tokens") or 0
+
+
 class BedrockClient:
     """AWS Bedrock client using async aioboto3."""
 
@@ -1679,6 +1693,9 @@ class BedrockClient:
                                 cache_read_input_tokens=usage_data.get(
                                     "cache_read_input_tokens", 0
                                 ),
+                                cache_creation_1h_input_tokens=cache_write_1h_tokens(
+                                    usage_data
+                                ),
                             )
 
                             bedrock_response = BedrockResponse(
@@ -2112,6 +2129,7 @@ class BedrockClient:
                     cache_read_input_tokens=usage_data.get(
                         "cache_read_input_tokens", 0
                     ),
+                    cache_creation_1h_input_tokens=cache_write_1h_tokens(usage_data),
                 ),
             )
 
@@ -2194,6 +2212,7 @@ class BedrockClient:
                     cache_read_input_tokens=usage_data.get(
                         "cache_read_input_tokens", 0
                     ),
+                    cache_creation_1h_input_tokens=cache_write_1h_tokens(usage_data),
                 ),
             )
 
