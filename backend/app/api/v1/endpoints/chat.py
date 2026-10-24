@@ -334,6 +334,9 @@ async def create_chat_completion(
                 cache_creation_input_tokens=cache_creation_tokens,
                 cache_read_input_tokens=cache_read_tokens,
                 cache_ttl=effective_cache_ttl if cache_creation_tokens else None,
+                cache_write_1h_tokens=(
+                    bedrock_response.usage.cache_creation_1h_input_tokens
+                ),
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -842,6 +845,7 @@ async def stream_chat_completion(
     total_output_tokens = 0
     total_cache_creation_tokens = 0
     total_cache_read_tokens = 0
+    total_cache_write_1h_tokens: int | None = None
     last_heartbeat = time.time()
     client_disconnected = False
     usage_recorded = False
@@ -880,6 +884,7 @@ async def stream_chat_completion(
                 cache_creation_input_tokens=total_cache_creation_tokens,
                 cache_read_input_tokens=total_cache_read_tokens,
                 cache_ttl=cache_ttl if total_cache_creation_tokens else None,
+                cache_write_1h_tokens=total_cache_write_1h_tokens,
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -934,6 +939,10 @@ async def stream_chat_completion(
                         event.usage.cache_creation_input_tokens or 0
                     )
                     total_cache_read_tokens = event.usage.cache_read_input_tokens or 0
+                    if event.usage.cache_creation_1h_input_tokens is not None:
+                        total_cache_write_1h_tokens = (
+                            event.usage.cache_creation_1h_input_tokens
+                        )
 
             elif event.type == "content_block_start":
                 # Track content block start
@@ -1164,6 +1173,7 @@ async def record_usage(
     cache_read_input_tokens: int = 0,
     cache_ttl: str | None = None,
     service_tier: str | None = None,
+    cache_write_1h_tokens: int | None = None,
 ):
     """
     Record usage to database.
@@ -1180,6 +1190,8 @@ async def record_usage(
         cache_ttl: Cache TTL for write pricing ("5m" → 1.25x, "1h" → 2.0x)
         service_tier: Tier that served the request ("ultrafast" bills the
             model-card Ultrafast rates; anything else bills Standard)
+        cache_write_1h_tokens: Cache-write tokens Bedrock reports at the 1h
+            TTL; overrides cache_ttl for write pricing when given
     """
     # Create new db session for background task
     async for db in get_db():
@@ -1199,6 +1211,7 @@ async def record_usage(
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_ttl=cache_ttl,
                     service_tier=service_tier,
+                    cache_write_1h_tokens=cache_write_1h_tokens,
                 )
                 if is_ultrafast(service_tier):
                     note = "service_tier=ultrafast"

@@ -284,6 +284,9 @@ async def create_message(
                 cache_creation_input_tokens=cache_creation_tokens,
                 cache_read_input_tokens=cache_read_tokens,
                 cache_ttl=effective_cache_ttl if cache_creation_tokens else None,
+                cache_write_1h_tokens=(
+                    bedrock_response.usage.cache_creation_1h_input_tokens
+                ),
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -442,6 +445,9 @@ async def stream_anthropic_messages(
                 cache_creation_input_tokens=total_cache_creation,
                 cache_read_input_tokens=total_cache_read,
                 cache_ttl=cache_ttl if total_cache_creation else None,
+                cache_write_1h_tokens=accumulated_usage.get(
+                    "cache_creation_1h_input_tokens"
+                ),
             ),
             task_name=f"record_usage_{request_id}",
         )
@@ -651,6 +657,7 @@ async def record_usage(
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
     cache_ttl: str = None,
+    cache_write_1h_tokens: int | None = None,
 ):
     """Record usage to database (same logic as OpenAI endpoint)."""
     from app.core.database import get_db
@@ -670,6 +677,7 @@ async def record_usage(
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_ttl=cache_ttl,
+                    cache_write_1h_tokens=cache_write_1h_tokens,
                 )
             except ValueError as e:
                 cost_usd = Decimal("0.0000")

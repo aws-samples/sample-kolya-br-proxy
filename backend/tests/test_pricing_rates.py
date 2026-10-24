@@ -515,6 +515,52 @@ async def test_prefix_fallback_keeps_the_fallback_rows_cache_rate(db):
     assert cost == Decimal("0.1")
 
 
+async def _opus_5_5_cost(db, **usage):
+    await _seed(
+        db,
+        "global.anthropic.claude-opus-5-5",
+        input_price_per_token=per_m("4"),
+        output_price_per_token=per_m("20"),
+    )
+    return await PricingService(db).calculate_cost(
+        model="global.anthropic.claude-opus-5-5",
+        prompt_tokens=0,
+        completion_tokens=0,
+        region="us-west-2",
+        **usage,
+    )
+
+
+@pytest.mark.asyncio
+async def test_claude_5_5_cache_read_falls_back_to_5_percent(db):
+    # No published cache-read rate: Claude 5.5 bills reads at 5%, not 10%.
+    cost = await _opus_5_5_cost(db, cache_read_input_tokens=1_000_000)
+    assert cost == Decimal("0.2")
+
+
+@pytest.mark.asyncio
+async def test_reported_ttl_split_overrides_configured_ttl(db):
+    # Configured 1h, but Bedrock reports only 400k of the 1M write got 1h
+    # (client breakpoints keep their own 5m TTL).
+    cost = await _opus_5_5_cost(
+        db,
+        cache_creation_input_tokens=1_000_000,
+        cache_ttl="1h",
+        cache_write_1h_tokens=400_000,
+    )
+    assert cost == (
+        600_000 * per_m("4") * Decimal("1.25") + 400_000 * per_m("4") * Decimal("2")
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_ttl_breakdown_keeps_configured_ttl(db):
+    cost = await _opus_5_5_cost(
+        db, cache_creation_input_tokens=1_000_000, cache_ttl="1h"
+    )
+    assert cost == Decimal("8")
+
+
 @pytest.mark.asyncio
 async def test_refresh_without_long_band_clears_it(db):
     updater = PricingUpdater(db)
