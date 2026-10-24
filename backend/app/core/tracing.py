@@ -78,6 +78,13 @@ class _FilteringSpanProcessor:
     def on_start(self, span, parent_context=None):
         self._inner.on_start(span, parent_context)
 
+    def _on_ending(self, span):
+        # Newer SDKs call this on every span.end(); missing it raises and
+        # turns every instrumented request into a 500.
+        on_ending = getattr(self._inner, "_on_ending", None)
+        if on_ending is not None:
+            on_ending(span)
+
     def on_end(self, span):
         # Drop OPTIONS spans — CORS preflight adds noise to X-Ray
         method = span.attributes.get("http.method") or span.attributes.get(
