@@ -6,7 +6,7 @@ spec:
   role: "${node_iam_role_name}"
   amiFamily: AL2023
   amiSelectorTerms:
-    - name: amazon-eks-node-al2023-*
+    - alias: al2023@latest
   blockDeviceMappings:
     - deviceName: /dev/xvda
       ebs:

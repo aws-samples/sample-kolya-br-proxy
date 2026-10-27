@@ -39,7 +39,7 @@ variable "account" {
 variable "eks_version" {
   description = "EKS Kubernetes version"
   type        = string
-  default     = "1.35"
+  default     = "1.37"
 }
 
 variable "ops_low" {

@@ -180,7 +180,7 @@ if [[ "${SKIP_KARPENTER}" == "true" ]]; then
 else
     info "Installing Karpenter..."
     helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
-        --version 1.9.0 \
+        --version 1.15.1 \
         --namespace kube-system \
         --values "$SCRIPT_DIR/karpenter-values.yaml" \
         --timeout 600s \
