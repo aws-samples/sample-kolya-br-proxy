@@ -13,9 +13,17 @@ from typing import Optional
 
 import redis.asyncio as aioredis
 
+from app.core.config import get_settings
+from app.core.redis import get_redis
+
 logger = logging.getLogger(__name__)
 
 CHANNEL = "kbp:config_sync"
+
+# Backoff while waiting for Redis to become reachable (e.g. the Redis pod is
+# being rescheduled while this pod starts).
+_RETRY_INITIAL_SECONDS = 2.0
+_RETRY_MAX_SECONDS = 30.0
 
 _subscriber_task: Optional[asyncio.Task] = None
 
@@ -51,8 +59,23 @@ async def publish_config_change(client: aioredis.Redis, changes: dict) -> None:
         logger.warning("Failed to publish config change: %s", e)
 
 
-async def _listen(client: aioredis.Redis) -> None:
+async def _wait_for_client() -> aioredis.Redis:
+    """Retry get_redis() with capped exponential backoff until it succeeds."""
+    delay = _RETRY_INITIAL_SECONDS
+    while True:
+        client = await get_redis()
+        if client is not None:
+            logger.info("Redis became available, starting config sync")
+            return client
+        logger.warning("Redis not available for config sync, retrying in %.0fs", delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _RETRY_MAX_SECONDS)
+
+
+async def _listen(client: Optional[aioredis.Redis]) -> None:
     """Background loop that listens for config changes."""
+    if client is None:
+        client = await _wait_for_client()
     while True:
         pubsub = client.pubsub()
         try:
@@ -82,12 +105,16 @@ async def _listen(client: aioredis.Redis) -> None:
 
 
 async def start_subscriber(client: Optional[aioredis.Redis]) -> None:
-    """Start the background subscriber task (call from lifespan startup)."""
+    """Start the background subscriber task (call from lifespan startup).
+
+    If Redis is configured but unreachable right now, the task keeps retrying
+    in the background instead of disabling sync for the life of the pod.
+    """
     global _subscriber_task
     if _subscriber_task is not None:
         return
-    if client is None:
-        logger.info("Redis not available, config sync disabled")
+    if client is None and not get_settings().REDIS_URL:
+        logger.info("Redis not configured, config sync disabled")
         return
     _subscriber_task = asyncio.create_task(_listen(client), name="config_sync")
 
