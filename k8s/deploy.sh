@@ -191,8 +191,8 @@ init_config() {
         export FRONTEND_MEMORY_LIMIT="256Mi"
         export BACKEND_HPA_MIN="2"
         export BACKEND_HPA_MAX="8"
-        export FRONTEND_HPA_MIN="1"
-        export FRONTEND_HPA_MAX="2"
+        export FRONTEND_HPA_MIN="2"
+        export FRONTEND_HPA_MAX="4"
     else
         # 非生产环境
         export BACKEND_CPU_REQUEST="250m"
@@ -203,9 +203,11 @@ init_config() {
         export FRONTEND_CPU_LIMIT="100m"
         export FRONTEND_MEMORY_REQUEST="64Mi"
         export FRONTEND_MEMORY_LIMIT="128Mi"
-        export BACKEND_HPA_MIN="1"
+        # Min 2 everywhere: with 1 replica, any node drain or Karpenter
+        # consolidation evicts the only pod and causes an outage.
+        export BACKEND_HPA_MIN="2"
         export BACKEND_HPA_MAX="5"
-        export FRONTEND_HPA_MIN="1"
+        export FRONTEND_HPA_MIN="2"
         export FRONTEND_HPA_MAX="2"
     fi
 
@@ -383,6 +385,7 @@ deploy_app() {
     print_info "步骤 9/9: 配置 HPA (自动扩缩容)..."
     kubectl apply -f hpa-backend.yaml
     kubectl apply -f hpa-frontend.yaml
+    kubectl apply -f pdb.yaml
 
     print_success "部署完成！"
 
@@ -555,6 +558,7 @@ delete_app() {
 
     cd "$APP_DIR"
 
+    kubectl delete -f pdb.yaml --ignore-not-found=true
     kubectl delete -f hpa-frontend.yaml --ignore-not-found=true
     kubectl delete -f hpa-backend.yaml --ignore-not-found=true
     kubectl delete -f ingress-api.yaml --ignore-not-found=true
