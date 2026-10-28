@@ -31,8 +31,19 @@ module "eks" {
       vpc-cni = {
         before_compute = true
       }
-      aws-ebs-csi-driver = {}
     } : {},
+    {
+      # Own Pod Identity role so the controller no longer borrows the node
+      # role through IMDS (required for IMDS hop limit 1).
+      for name, config in {
+        aws-ebs-csi-driver = {
+          pod_identity_association = [{
+            role_arn        = try(aws_iam_role.ebs_csi[0].arn, null)
+            service_account = "ebs-csi-controller-sa"
+          }]
+        }
+      } : name => config if var.eks_mode == "standard"
+    },
     {
       for name, config in {
         amazon-cloudwatch-observability = {
@@ -69,11 +80,12 @@ module "eks" {
       max_size     = 4
       desired_size = 2
 
-      # Custom metadata options with hop limit = 2
+      # IMDSv2 with hop limit 1: pods (other than hostNetwork) cannot reach IMDS,
+      # so they can't borrow the node role. Every AWS-calling pod uses Pod Identity.
       metadata_options = {
         http_endpoint               = "enabled"
         http_tokens                 = "required"
-        http_put_response_hop_limit = 2
+        http_put_response_hop_limit = 1
         instance_metadata_tags      = "enabled"
       }
 
@@ -180,7 +192,47 @@ resource "aws_iam_role_policy_attachment" "cloudwatch_agent_xray" {
   }
 }
 
-# Add EBS CSI permissions to EKS node group role (standard mode only)
+################################################################################
+# EBS CSI driver IAM (standard mode only)
+################################################################################
+
+data "aws_iam_policy_document" "ebs_csi_assume_role" {
+  count = var.eks_mode == "standard" ? 1 : 0
+
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+
+    actions = [
+      "sts:AssumeRole",
+      "sts:TagSession"
+    ]
+  }
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  count = var.eks_mode == "standard" ? 1 : 0
+
+  name               = "${var.project_name_alias}-${var.workspace}-${var.account}-${var.region}-ebs-csi"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume_role[0].json
+
+  tags = var.default_tags
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  count = var.eks_mode == "standard" ? 1 : 0
+
+  role       = aws_iam_role.ebs_csi[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+# Add EBS CSI permissions to EKS node group role (standard mode only).
+# Kept as a fallback while the controller moves to its Pod Identity role above;
+# with IMDS hop limit 1, pods can no longer reach these node-role credentials.
 resource "aws_iam_role_policy_attachment" "node_group_ebs_csi_policy" {
   count = var.eks_mode == "standard" ? 1 : 0
 

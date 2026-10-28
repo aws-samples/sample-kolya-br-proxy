@@ -2,3 +2,7 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: kbp
+  labels:
+    # AWS Load Balancer Controller marks pods Ready only after their ALB target
+    # is healthy, so rolling updates don't drop requests (ALB 502).
+    elbv2.k8s.aws/pod-readiness-gate-inject: enabled
