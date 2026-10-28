@@ -178,9 +178,17 @@ fi
 if [[ "${SKIP_KARPENTER}" == "true" ]]; then
     warn "Skipping Karpenter installation (SKIP_KARPENTER=true)"
 else
+    KARPENTER_VERSION="1.15.1"
+
+    # helm upgrade never updates CRDs shipped in a chart's crds/ directory, so
+    # apply them explicitly first (no-op on a fresh install, required on upgrade).
+    info "Applying Karpenter ${KARPENTER_VERSION} CRDs..."
+    helm show crds oci://public.ecr.aws/karpenter/karpenter --version "$KARPENTER_VERSION" \
+        | kubectl apply --server-side --force-conflicts -f -
+
     info "Installing Karpenter..."
     helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
-        --version 1.15.1 \
+        --version "$KARPENTER_VERSION" \
         --namespace kube-system \
         --values "$SCRIPT_DIR/karpenter-values.yaml" \
         --timeout 600s \
