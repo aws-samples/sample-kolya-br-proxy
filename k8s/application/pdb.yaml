@@ -1,0 +1,24 @@
+# Keep at least one backend and one frontend pod serving during voluntary
+# disruptions (node drains, Karpenter consolidation/drift, EKS upgrades).
+# HPA minReplicas is 2 for both, so one pod can always be evicted.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend
+  namespace: kbp
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: backend
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend
+  namespace: kbp
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: frontend

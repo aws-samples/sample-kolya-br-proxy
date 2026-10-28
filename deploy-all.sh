@@ -2235,7 +2235,7 @@ deploy_application() {
         export FRONTEND_CPU_REQUEST="30m"  FRONTEND_CPU_LIMIT="100m"
         export FRONTEND_MEMORY_REQUEST="64Mi"  FRONTEND_MEMORY_LIMIT="128Mi"
         export BACKEND_HPA_MIN="2"  BACKEND_HPA_MAX="5"
-        export FRONTEND_HPA_MIN="1"  FRONTEND_HPA_MAX="2"
+        export FRONTEND_HPA_MIN="2"  FRONTEND_HPA_MAX="2"
     fi
     envsubst < "$app_dir/backend-deployment.yaml.template" > "$app_dir/backend-deployment.yaml"
     envsubst < "$app_dir/frontend-deployment.yaml.template" > "$app_dir/frontend-deployment.yaml"
