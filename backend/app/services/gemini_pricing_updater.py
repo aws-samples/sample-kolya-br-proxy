@@ -235,6 +235,19 @@ class GeminiPricingUpdater:
             )
             for model_id in model_ids:
                 seen_models.add(model_id)
+                # Same bounds as tier 2: a page-layout change must not turn
+                # into $0 (or absurd) prices that billing then trusts.
+                long_prices = (inp[1], out[1]) if long_threshold else (inp[0], out[0])
+                if not (
+                    self._is_sane_entry(
+                        model_id, inp[0], out[0], cache[0] if cache else None
+                    )
+                    and self._is_sane_entry(model_id, *long_prices, None)
+                ):
+                    logger.warning(
+                        f"Gemini pricing tier-1: rejected implausible prices for {model_id}"
+                    )
+                    continue
                 results.append(
                     self._make_entry(
                         model_id=model_id,

@@ -125,7 +125,9 @@ resource "aws_iam_policy" "backend_bedrock" {
         Effect = "Allow"
         Action = [
           "cognito-idp:AdminCreateUser",
-          "cognito-idp:AdminSetUserPassword"
+          "cognito-idp:AdminSetUserPassword",
+          # Invite checks an existing username's email before resetting it.
+          "cognito-idp:AdminGetUser"
         ]
         Resource = "*"
       },

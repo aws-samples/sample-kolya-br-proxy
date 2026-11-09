@@ -48,12 +48,25 @@ else
     ENVIRONMENT="non-prod"
 fi
 
-# Read is_private from terraform.tfvars to determine ALB scheme
-IS_PRIVATE=$(grep -E "^is_private\s*=" "$TERRAFORM_DIR/terraform.tfvars" 2>/dev/null | head -1 | sed 's/^[^=]*=\s*//' | sed 's/^\s*"\(.*\)"\s*$/\1/' | sed 's/^\s*//;s/\s*$//')
-if [[ "$IS_PRIVATE" == "true" ]]; then
-    ALB_SCHEME="internal"
-else
-    ALB_SCHEME="internet-facing"
+# ALB scheme: ALB_SCHEME env wins; otherwise read is_private from
+# terraform.tfvars. If neither gives a clear answer, stop instead of
+# defaulting to an internet-facing load balancer.
+if [[ -z "${ALB_SCHEME:-}" ]]; then
+    IS_PRIVATE=$(grep -E "^is_private[[:space:]]*=" "$TERRAFORM_DIR/terraform.tfvars" 2>/dev/null | head -1 \
+        | sed -e 's/#.*$//' -e 's/^[^=]*=//' -e 's/"//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    case "$IS_PRIVATE" in
+        true) ALB_SCHEME="internal" ;;
+        false) ALB_SCHEME="internet-facing" ;;
+        *)
+            echo "❌ Error: cannot read is_private from $TERRAFORM_DIR/terraform.tfvars (got '${IS_PRIVATE}')."
+            echo "   Set is_private = true|false there, or export ALB_SCHEME=internal|internet-facing."
+            exit 1
+            ;;
+    esac
+fi
+if [[ "$ALB_SCHEME" != "internal" && "$ALB_SCHEME" != "internet-facing" ]]; then
+    echo "❌ Error: ALB_SCHEME must be 'internal' or 'internet-facing' (got '$ALB_SCHEME')"
+    exit 1
 fi
 
 # Validate required values

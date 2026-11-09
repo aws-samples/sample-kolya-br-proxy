@@ -583,6 +583,15 @@ async def list_tokens(
     return token_responses
 
 
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: str | None) -> str:
+    """Neutralise spreadsheet formulas in user-controlled CSV cells."""
+    text = value or ""
+    return "'" + text if text.startswith(_CSV_FORMULA_PREFIXES) else text
+
+
 @router.get("/export/keys")
 async def export_keys_csv(
     user: User = Depends(get_current_superadmin),
@@ -640,7 +649,7 @@ async def export_keys_csv(
 
         writer.writerow(
             [
-                token.name,
+                _csv_safe(token.name),
                 plain_key,
                 token_status,
                 str(token.quota_usd) if token.quota_usd else "Unlimited",
