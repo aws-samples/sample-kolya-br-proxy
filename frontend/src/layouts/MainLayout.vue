@@ -90,6 +90,7 @@
           <div class="text-h6">Alert Notifications</div>
           <div class="row items-center q-gutter-xs">
             <q-btn
+              v-if="authStore.canWrite"
               flat
               dense
               label="Mark all read"
@@ -189,6 +190,7 @@ const allMenuLinks = [
     caption: 'Test conversations',
     icon: 'chat',
     to: '/playground',
+    requiresWrite: true,
   },
   {
     title: 'Monitor',
@@ -237,7 +239,8 @@ const menuLinks = computed(() =>
   allMenuLinks.filter((link) => {
     if ('requiresGroupSync' in link && link.requiresGroupSync && !authStore.groupSyncEnabled)
       return false;
-    if ('requiresSuperAdmin' in link && link.requiresSuperAdmin) return authStore.isSuperAdmin;
+    if ('requiresWrite' in link && link.requiresWrite && !authStore.canWrite) return false;
+    if ('requiresSuperAdmin' in link && link.requiresSuperAdmin) return authStore.canViewSuperAdminPages;
     if ('permission' in link && link.permission) return authStore.hasPermission(link.permission);
     return true;
   }),
@@ -274,6 +277,8 @@ function formatNotificationTime(isoStr: string): string {
 }
 
 async function handleReadNotification(n: AlertNotification) {
+  // Marking read is a write; viewers just see the list.
+  if (!authStore.canWrite) return;
   if (!n.is_read) {
     await alertsStore.markRead(n.id);
     alertsStore.notifications = alertsStore.notifications.filter((x) => x.id !== n.id);

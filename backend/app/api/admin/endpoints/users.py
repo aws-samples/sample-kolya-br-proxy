@@ -115,10 +115,10 @@ async def list_admin_users(
     current_user: User = Depends(get_current_superadmin),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all admin users (super_admin and admin roles)."""
+    """List all admin users (super_admin, admin and viewer roles)."""
     result = await db.execute(
         select(User)
-        .where(User.role.in_([UserRole.SUPER_ADMIN, UserRole.ADMIN]))
+        .where(User.role.in_([UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.VIEWER]))
         .where(User.is_active.is_(True))
         .order_by(User.created_at.desc())
     )
@@ -148,6 +148,9 @@ async def invite_admin(
     user = existing.scalar_one_or_none()
 
     role = UserRole(request.role)
+    # Viewers have fixed read-only access; resource permissions don't apply.
+    permissions = None if role == UserRole.VIEWER else request.permissions
+    is_admin = role != UserRole.VIEWER
 
     if user:
         user_row = cast(Any, user)
@@ -159,15 +162,15 @@ async def invite_admin(
         # Reactivate previously deactivated user
         user_row.is_active = True
         user_row.role = role
-        user_row.permissions = request.permissions
-        user_row.is_admin = True
+        user_row.permissions = permissions
+        user_row.is_admin = is_admin
     else:
         user = User(
             email=request.email,
             role=role,
-            permissions=request.permissions,
+            permissions=permissions,
             is_active=True,
-            is_admin=True,
+            is_admin=is_admin,
             email_verified=False,
         )
         db.add(user)
@@ -249,9 +252,12 @@ async def update_admin(
         if request.role not in VALID_ROLES:
             raise HTTPException(status_code=400, detail="Invalid role")
         user_row.role = UserRole(request.role)
+        user_row.is_admin = user_row.role != UserRole.VIEWER
 
     if request.permissions is not None:
         user_row.permissions = request.permissions
+    if user_row.role == UserRole.VIEWER:
+        user_row.permissions = None
 
     if request.is_active is not None:
         user_row.is_active = request.is_active

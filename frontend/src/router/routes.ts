@@ -48,6 +48,8 @@ const routes: RouteRecordRaw[] = [
         path: 'playground',
         name: 'playground',
         component: () => import('@/pages/PlaygroundPage.vue'),
+        // Needs a plaintext API key and spends quota, so viewers can't use it.
+        meta: { requiresWrite: true },
       },
       {
         path: 'monitor',
