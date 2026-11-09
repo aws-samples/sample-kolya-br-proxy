@@ -12,7 +12,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_audit_log_service, require_permission
+from app.api.deps import (
+    check_resource_scope,
+    get_audit_log_service,
+    require_permission,
+    require_token_access,
+)
 from app.core.database import get_db
 from app.models.alert import AlertRule
 from app.models.audit_log import AuditAction
@@ -146,6 +151,20 @@ async def create_alert_rule(
     db: AsyncSession = Depends(get_db),
     audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
+    # A rule reports the usage of its token or team, so the caller must be
+    # allowed to see that resource.
+    try:
+        token_uuid = UUID(request.token_id) if request.token_id else None
+        team_uuid = UUID(request.team_id) if request.team_id else None
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid ID format"
+        ) from e
+    if token_uuid is not None:
+        await require_token_access(db, current_user, token_uuid)
+    if team_uuid is not None:
+        check_resource_scope(current_user, "manage_teams", str(team_uuid))
+
     try:
         rule = await alert_service.create_rule(
             db=db,
@@ -153,8 +172,8 @@ async def create_alert_rule(
             alert_type=request.alert_type,
             rule_key=request.rule_key,
             threshold_value=request.threshold_value,
-            token_id=UUID(request.token_id) if request.token_id else None,
-            team_id=UUID(request.team_id) if request.team_id else None,
+            token_id=token_uuid,
+            team_id=team_uuid,
             cooldown_hours=request.cooldown_hours,
             notify_email=request.notify_email,
             notify_in_app=request.notify_in_app,

@@ -80,6 +80,17 @@ async def cleanup_oauth_states_task():
             logger.error(f"OAuth state cleanup failed: {e}", exc_info=True)
 
 
+async def cleanup_refresh_tokens_task():
+    """Delete expired refresh tokens; nothing else ever removes them."""
+    from app.services.refresh_token import RefreshTokenService
+
+    async with async_session_maker() as db:
+        try:
+            await RefreshTokenService(db).cleanup_expired_tokens()
+        except Exception as e:
+            logger.error(f"Refresh token cleanup failed: {e}", exc_info=True)
+
+
 def start_scheduler():
     """Start the background task scheduler."""
     global scheduler
@@ -124,6 +135,14 @@ def start_scheduler():
         trigger=IntervalTrigger(minutes=15),
         id="cleanup_oauth_states",
         name="Delete expired OAuth login states",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        cleanup_refresh_tokens_task,
+        trigger=CronTrigger(hour=3, minute=0),
+        id="cleanup_refresh_tokens",
+        name="Delete expired refresh tokens",
         replace_existing=True,
     )
 

@@ -186,31 +186,12 @@ def test_viewer_blocked_end_to_end(viewer_client, method, path):
 
 
 @pytest.mark.asyncio
-async def test_export_keys_rejects_viewer(monkeypatch):
-    """/tokens/export/keys authenticates itself (it accepts ?token= for
-    browser downloads) instead of using get_current_user_from_jwt, so the
-    central gate doesn't run there. Its own super_admin check must hold."""
-    from uuid import uuid4
-
+async def test_export_keys_rejects_viewer():
+    """/tokens/export/keys uses get_current_superadmin, which lets viewers
+    through for read-only pages. Plaintext keys need its own super_admin check."""
     from app.api.admin.endpoints import tokens
-    from app.core.security import create_access_token
 
-    viewer = SimpleNamespace(id=uuid4(), role=UserRole.VIEWER, is_active=True)
-
-    class _AuthService:
-        def __init__(self, _db):
-            pass
-
-        async def get_user_by_id(self, _user_id):
-            return viewer
-
-    monkeypatch.setattr(tokens, "AuthService", _AuthService)
-    request = SimpleNamespace(
-        headers={
-            "authorization": f"Bearer {create_access_token({'sub': str(viewer.id)})}"
-        },
-        query_params={},
-    )
+    viewer = SimpleNamespace(role=UserRole.VIEWER, is_active=True)
     with pytest.raises(HTTPException) as exc_info:
-        await tokens.export_keys_csv(request_obj=request, db=None)
+        await tokens.export_keys_csv(user=viewer, db=None)
     assert exc_info.value.status_code == 403

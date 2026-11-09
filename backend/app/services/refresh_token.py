@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -326,13 +326,9 @@ class RefreshTokenService:
             Number of tokens deleted
         """
         result = await self.db.execute(
-            select(RefreshToken).where(RefreshToken.expires_at < datetime.utcnow())
+            delete(RefreshToken).where(RefreshToken.expires_at < datetime.utcnow())
         )
-        tokens = result.scalars().all()
-
-        count = len(tokens)
-        for token in tokens:
-            await self.db.delete(token)
+        count = result.rowcount or 0
 
         await self.db.commit()
         logger.info(f"Cleaned up {count} expired refresh tokens")

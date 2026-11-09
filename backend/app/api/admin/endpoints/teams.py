@@ -21,6 +21,7 @@ from app.api.deps import (
     get_allowed_resource_ids,
     get_audit_log_service,
     require_permission,
+    require_token_access,
 )
 from app.models.audit_log import AuditAction
 from app.services.audit_log import AuditLogService
@@ -474,6 +475,10 @@ async def add_member(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ID format")
 
+    # Joining a team wipes the token's standalone quotas, so the caller must
+    # be allowed to manage the token itself, not just the team.
+    await require_token_access(db, current_user, token_uuid)
+
     service = TeamService(db)
     member = await service.add_member(
         team_id=team_uuid,
@@ -598,6 +603,7 @@ async def transfer_allocation(
     request: TransferAllocationRequest,
     current_user: User = Depends(require_permission("manage_teams")),
     db: AsyncSession = Depends(get_db),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
     check_resource_scope(current_user, "manage_teams", team_id)
     try:
@@ -621,6 +627,19 @@ async def transfer_allocation(
         token_hash = result.scalar_one_or_none()
         if token_hash:
             await _invalidate_token_cache(token_hash)
+
+    await audit_service.log(
+        action=AuditAction.TEAM_MEMBER_UPDATED,
+        user=current_user,
+        resource_type="team",
+        resource_id=team_id,
+        details={
+            "op": "transfer",
+            "from_token_id": request.from_token_id,
+            "to_token_id": request.to_token_id,
+            "amount": str(request.amount),
+        },
+    )
 
     return {
         "from_token_id": request.from_token_id,

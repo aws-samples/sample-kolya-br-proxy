@@ -54,11 +54,19 @@ async def test_admin_without_key_scope_sees_nothing():
     assert (await traces.list_traces(current_user=admin))["traces"] == []
 
 
-@pytest.mark.parametrize("role", [UserRole.SUPER_ADMIN, UserRole.VIEWER])
 @pytest.mark.asyncio
-async def test_unscoped_roles_see_all(role):
-    result = await traces.list_traces(current_user=_user(role))
+async def test_super_admin_sees_all():
+    result = await traces.list_traces(current_user=_user(UserRole.SUPER_ADMIN))
     assert {t["request_id"] for t in result["traces"]} == {"r-mine", "r-other"}
+
+
+@pytest.mark.asyncio
+async def test_viewer_sees_no_prompt_bodies():
+    viewer = _user(UserRole.VIEWER)
+    assert (await traces.list_traces(current_user=viewer))["traces"] == []
+    with pytest.raises(HTTPException) as exc_info:
+        await traces.get_trace("r-mine", current_user=viewer)
+    assert exc_info.value.status_code == 404
 
 
 @pytest.mark.asyncio

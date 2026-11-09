@@ -8,6 +8,7 @@ API Token management endpoints.
 import asyncio
 import calendar
 import csv
+import re
 import io
 import uuid as uuid_mod
 from datetime import datetime
@@ -15,7 +16,7 @@ from decimal import Decimal
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
@@ -25,11 +26,12 @@ from app.api.deps import (
     check_resource_scope,
     get_allowed_resource_ids,
     get_audit_log_service,
+    get_current_superadmin,
     get_token_service,
     require_permission,
 )
 from app.core.database import get_db
-from app.core.security import decode_jwt_token, decrypt_token
+from app.core.security import decrypt_token
 from app.models.audit_log import AuditAction
 from app.models.model import Model
 from app.models.team import Team, TeamMember
@@ -37,7 +39,6 @@ from app.models.token import APIToken
 from app.models.usage import UsageRecord
 from app.models.user import User, UserRole
 from app.services.audit_log import AuditLogService
-from app.services.auth import AuthService
 from app.services.notification import send_email
 from app.services.token import TokenService
 
@@ -584,38 +585,19 @@ async def list_tokens(
 
 @router.get("/export/keys")
 async def export_keys_csv(
-    request_obj: Request,
+    user: User = Depends(get_current_superadmin),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Export all API keys as CSV file (super_admin only).
 
-    Accepts JWT via Authorization header OR ?token= query param (for window.open downloads).
+    Uses the standard JWT chain (Authorization header, active-user check).
     Returns a downloadable CSV with: Name, Key, Status, Quota, Used, Created.
     The response is a file attachment — key values never appear in JSON responses.
     """
-    jwt_token = None
-    auth_header = request_obj.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        jwt_token = auth_header[7:]
-    if not jwt_token:
-        jwt_token = request_obj.query_params.get("token")
-    if not jwt_token:
-        raise HTTPException(status_code=401, detail="Missing authentication")
-
-    try:
-        payload = decode_jwt_token(jwt_token)
-        if payload.get("type") != "access":
-            raise HTTPException(status_code=401, detail="Invalid token type")
-        user_id = UUID(payload.get("sub"))
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    auth_service = AuthService(db)
-    user = await auth_service.get_user_by_id(user_id)
-    if not user or user.role != UserRole.SUPER_ADMIN:
+    # get_current_superadmin lets viewers through for read-only pages;
+    # plaintext keys are never for viewers.
+    if user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(status_code=403, detail="Super admin access required")
 
     result = await db.execute(select(APIToken))
@@ -1037,6 +1019,12 @@ async def get_plain_token(
     return {"token": plain_token}
 
 
+# Each send emails a plaintext key, so recipients are validated, capped and
+# recorded in the audit log.
+MAX_NOTIFY_RECIPIENTS = 20
+_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
 class NotifyKeyRequest(BaseModel):
     """Email this key's value to its associated users.
 
@@ -1105,11 +1093,24 @@ async def notify_token(
             "the /teams page instead.",
         )
 
-    recipients = [
-        e.strip()
-        for e in (request.emails or token.notify_emails or [])
-        if e and e.strip()
-    ]
+    recipients = list(
+        dict.fromkeys(
+            e.strip().lower()
+            for e in (request.emails or token.notify_emails or [])
+            if e and e.strip()
+        )
+    )
+    invalid = [e for e in recipients if not _EMAIL_RE.fullmatch(e)]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid recipient email: {invalid[0]}",
+        )
+    if len(recipients) > MAX_NOTIFY_RECIPIENTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"At most {MAX_NOTIFY_RECIPIENTS} recipients per send",
+        )
     if not recipients:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1153,7 +1154,7 @@ async def notify_token(
         user=current_user,
         resource_type="api_token",
         resource_id=str(token.id),
-        details={"name": token.name, "recipient_count": len(recipients)},
+        details={"name": token.name, "recipients": recipients},
     )
 
     return NotifyKeyResponse(sent=True, recipients=recipients)
