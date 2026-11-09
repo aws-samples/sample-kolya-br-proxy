@@ -127,7 +127,11 @@ resource "aws_iam_policy" "backend_bedrock" {
           "cognito-idp:AdminCreateUser",
           "cognito-idp:AdminSetUserPassword",
           # Invite checks an existing username's email before resetting it.
-          "cognito-idp:AdminGetUser"
+          "cognito-idp:AdminGetUser",
+          # Deleting an admin looks the Cognito user up by email and removes
+          # it; without these the delete silently left the pool user behind.
+          "cognito-idp:ListUsers",
+          "cognito-idp:AdminDeleteUser"
         ]
         Resource = "*"
       },
