@@ -780,7 +780,10 @@ async def cognito_callback(
     if not _claim_is_true(user_info.get("email_verified")):
         logger.warning(
             "COGNITO_LOGIN_REJECTED: unverified email claim",
-            extra={"event_type": "cognito_unverified_email", "cognito_sub": cognito_sub},
+            extra={
+                "event_type": "cognito_unverified_email",
+                "cognito_sub": cognito_sub,
+            },
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

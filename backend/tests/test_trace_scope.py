@@ -11,7 +11,10 @@ from app.api.deps import get_current_superadmin
 from app.models.user import UserRole
 from app.services.trace_store import TraceRecord, TraceStore
 
-MINE, OTHER = "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+MINE, OTHER = (
+    "11111111-1111-1111-1111-111111111111",
+    "22222222-2222-2222-2222-222222222222",
+)
 
 
 def _user(role, permissions=None):

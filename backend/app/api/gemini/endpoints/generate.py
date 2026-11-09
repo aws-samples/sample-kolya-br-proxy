@@ -64,6 +64,7 @@ def sanitize_gemini_error(raw: bytes | str, status_code: int) -> dict:
         }
     }
 
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 background_tasks = BackgroundTaskManager()
