@@ -116,7 +116,7 @@ async def list_models(
         logger.error(f"Failed to list models: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve models: {str(e)}",
+            detail="Failed to retrieve models",
         )
 
 
@@ -164,7 +164,7 @@ async def list_bedrock_models(
         logger.error(f"Failed to list Bedrock models: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve models from AWS Bedrock: {str(e)}",
+            detail="Failed to retrieve models from AWS Bedrock",
         )
 
 
@@ -206,5 +206,5 @@ async def list_simple_models(
         logger.error(f"Failed to list simple models: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve models: {str(e)}",
+            detail="Failed to retrieve models",
         )

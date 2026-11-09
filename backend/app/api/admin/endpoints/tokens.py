@@ -902,7 +902,7 @@ async def delete_token(
             "Remove the member from the team on the /teams page instead.",
         )
 
-    await _invalidate_token_cache(token.token_hash)
+    token_hash = token.token_hash
 
     await audit_service.log(
         action=AuditAction.TOKEN_DELETED,
@@ -912,8 +912,10 @@ async def delete_token(
         details={"name": token.name},
     )
 
-    # Delete token
+    # Delete token, then drop the cache entry. Invalidating first would let a
+    # concurrent request re-cache the still-active row for the full TTL.
     await token_service.delete_token(token_uuid)
+    await _invalidate_token_cache(token_hash)
 
     return None
 
@@ -959,10 +961,11 @@ async def revoke_token(
                 detail="Access denied",
             )
 
-    await _invalidate_token_cache(token.token_hash)
+    token_hash = token.token_hash
 
-    # Revoke token
+    # Revoke first, then drop the cache entry (see delete_token above).
     await token_service.revoke_token(token_uuid)
+    await _invalidate_token_cache(token_hash)
     await audit_service.log(
         action=AuditAction.API_TOKEN_REVOKED,
         user=current_user,

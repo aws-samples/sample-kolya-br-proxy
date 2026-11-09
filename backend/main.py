@@ -336,6 +336,12 @@ def create_app() -> FastAPI:
 
     app.add_middleware(ObservabilityMiddleware)
 
+    # Body cap sits outside everything else so oversized requests are cut off
+    # before any layer buffers them.
+    from app.middleware.body_limit import BodySizeLimitMiddleware
+
+    app.add_middleware(BodySizeLimitMiddleware)
+
     # Auto-instrument FastAPI routes for X-Ray tracing (no-op when disabled)
     from app.core.tracing import instrument_app
 

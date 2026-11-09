@@ -59,11 +59,11 @@ class CachedTokenService:
                     await self.cache.delete(cache_key)
                     return None
 
-                if client_ip and token.allowed_ips:
-                    if not self.token_service._is_ip_allowed(
-                        client_ip, token.allowed_ips
-                    ):
-                        return None
+                if token.allowed_ips and not (
+                    client_ip
+                    and self.token_service._is_ip_allowed(client_ip, token.allowed_ips)
+                ):
+                    return None
 
                 logger.debug(f"Token cache hit: {token.id}")
                 return token

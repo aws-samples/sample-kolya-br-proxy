@@ -189,7 +189,7 @@ async def test_streaming_auth_dependency_releases_session():
         finally:
             await session.close()
 
-    async def fake_validate(_service, _plain):
+    async def fake_validate(_service, _plain, _client_ip=None):
         # At validation time the session is still open (not yet closed).
         released["closed_before_return"] = session.close.await_count
         return token
@@ -201,7 +201,9 @@ async def test_streaming_auth_dependency_releases_session():
         patch.object(deps_module, "_validate_token_with_cache", fake_validate),
         patch.object(deps_module, "set_log_context", MagicMock()),
     ):
-        result = await deps_module.get_current_token_streaming(credentials=creds)
+        result = await deps_module.get_current_token_streaming(
+            request=SimpleNamespace(headers={}, client=None), credentials=creds
+        )
 
     assert result is token
     # close() had not run yet during validation, but must have run by return.

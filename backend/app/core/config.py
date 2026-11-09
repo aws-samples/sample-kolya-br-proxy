@@ -114,6 +114,19 @@ class Settings(BaseSettings):
         "Marengo Embed 3.0 are not served in every region (not in us-west-2), so "
         "embeddings are routed here independently of AWS_REGION.",
     )
+    TRUSTED_PROXY_HOPS: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "Proxies in front of the app that append to X-Forwarded-For "
+            "(1 = ALB only). 0 ignores the header and uses the peer address."
+        ),
+    )
+    MAX_REQUEST_BODY_BYTES: int = Field(
+        default=64 * 1024 * 1024,
+        ge=1024,
+        description="Largest accepted request body; bigger requests get 413.",
+    )
     EMBEDDING_MAX_IMAGE_BYTES: int = Field(
         default=20 * 1024 * 1024,
         ge=1,
