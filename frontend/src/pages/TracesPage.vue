@@ -27,7 +27,7 @@
         @click="toggleAuto"
       />
       <q-btn
-        v-if="authStore.canWrite"
+        v-if="authStore.isSuperAdmin"
         flat
         dense
         icon="delete_outline"

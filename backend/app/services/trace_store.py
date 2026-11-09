@@ -5,7 +5,8 @@ Stores the last N full API traces (request body, response, usage) for
 debugging and inspection via the /admin/traces endpoint.
 
 Controlled by TRACE_ENABLED env var (default: True).
-Production disables via KBR_TRACE_ENABLED=false in ConfigMap.
+Disable with KBR_TRACE_ENABLED=false. Reads are scoped per token in
+the admin endpoint because records contain full prompt and response text.
 """
 
 from collections import deque
