@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.api.deps import get_current_token_streaming
 from app.api.v1.endpoints.chat import record_usage
 from app.core.config import get_settings
+from app.services.stream_usage_estimate import StreamUsageFallback
 from app.core.stream_heartbeat import HEARTBEAT, with_heartbeat
 from app.core.database import session_scope
 from app.models.model import Model
@@ -243,11 +244,18 @@ async def _stream_responses(
     last_heartbeat = time.time()
     usage_recorded = False
     served_tier = body.get("service_tier")
+    usage_fallback = StreamUsageFallback()
 
     def _record():
         """Record usage once, on any exit path (incl. client disconnect)."""
         nonlocal usage_recorded
-        if usage_recorded or not any(usage.values()):
+        if usage_recorded:
+            return
+        # No response.completed seen (client left first): bill what streamed.
+        usage["non_cached_prompt"], usage["completion"] = usage_fallback.resolve(
+            usage["non_cached_prompt"], usage["completion"], body
+        )
+        if not any(usage.values()):
             return
         usage_recorded = True
         background_tasks.create_task(
@@ -297,7 +305,14 @@ async def _stream_responses(
                 except json.JSONDecodeError:
                     continue
                 etype = event.get("type")
+                if (
+                    isinstance(etype, str)
+                    and etype.endswith(".delta")
+                    and isinstance(event.get("delta"), str)
+                ):
+                    usage_fallback.add_output(event["delta"])
                 if etype in ("response.completed", "response.incomplete"):
+                    usage_fallback.final_usage_seen = True
                     resp_obj = event.get("response") or {}
                     usage = _usage_from_response(resp_obj.get("usage") or {})
                     if resp_obj.get("service_tier"):

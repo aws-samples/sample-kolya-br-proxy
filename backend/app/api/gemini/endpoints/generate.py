@@ -20,8 +20,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_token_from_gemini_key
-from app.core.database import get_db
+from app.api.deps import (
+    get_current_token_from_gemini_key,
+    get_current_token_from_gemini_key_streaming,
+)
+from app.core.database import get_db, session_scope
 from app.models.model import Model
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -305,8 +308,7 @@ async def generate_content(
 async def stream_generate_content(
     model_path: str,
     request: Request,
-    token: APIToken = Depends(get_current_token_from_gemini_key),
-    db: AsyncSession = Depends(get_db),
+    token: APIToken = Depends(get_current_token_from_gemini_key_streaming),
 ):
     """
     Streaming Gemini streamGenerateContent proxy.
@@ -326,7 +328,10 @@ async def stream_generate_content(
         f"request_id={request_id}, token_id={token.id}"
     )
 
-    await _validate_access(token, model_name, db)
+    # Short-lived session: the stream below can run for minutes and must not
+    # hold a pooled connection (see get_current_token_streaming).
+    async with session_scope() as db:
+        await _validate_access(token, model_name, db)
 
     raw_body = await request.body()
     url, extra_headers = await build_gemini_url_and_headers(

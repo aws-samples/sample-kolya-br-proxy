@@ -378,6 +378,36 @@ async def get_current_token_from_gemini_key(
     return token
 
 
+async def get_current_token_from_gemini_key_streaming(request: Request) -> APIToken:
+    """Gemini-key variant of :func:`get_current_token_streaming`.
+
+    Validates inside a short-lived ``session_scope`` so a long
+    streamGenerateContent response holds no pooled DB connection.
+    """
+    plain_token = request.query_params.get("key") or request.headers.get(
+        "x-goog-api-key"
+    )
+    if not plain_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key. Provide via ?key= query parameter or x-goog-api-key header.",
+        )
+
+    async with session_scope() as db:
+        token = await _validate_token_with_cache(
+            TokenService(db), plain_token, client_ip_from_request(request)
+        )
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API key",
+        )
+
+    set_log_context(token_name=token.name, token_id=str(token.id))
+    return token
+
+
 # HTTP methods a viewer may use. Everything else is a write.
 _VIEWER_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 

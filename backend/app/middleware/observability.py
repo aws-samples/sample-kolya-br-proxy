@@ -11,6 +11,22 @@ from app.core.metrics import emit_http_metrics, is_metrics_enabled
 from app.middleware.security import HEALTH_PATHS
 
 
+UNMATCHED_PATH = "unmatched"
+
+
+def metric_path(scope) -> str:
+    """Route template for the Path dimension, never the raw URL.
+
+    The raw path is attacker-controlled; every distinct value would create a
+    new CloudWatch metric. The router stores the matched route in the scope,
+    so use its template (``/v1beta/models/{model_path:path}...``) and fold
+    anything that matched nothing into one value.
+    """
+    route = scope.get("route")
+    template = getattr(route, "path_format", None) or getattr(route, "path", None)
+    return template if isinstance(template, str) and template else UNMATCHED_PATH
+
+
 class ObservabilityMiddleware:
     """ASGI middleware that emits HTTP-level metrics for all requests."""
 
@@ -47,7 +63,7 @@ class ObservabilityMiddleware:
             try:
                 await emit_http_metrics(
                     method=method,
-                    path=path,
+                    path=metric_path(scope),
                     status_code=status_code,
                     duration_s=round(duration, 3),
                 )
