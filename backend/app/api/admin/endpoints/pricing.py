@@ -17,6 +17,8 @@ from app.services.pricing import (
 )
 from app.services.pricing_updater import PricingUpdater
 from app.api.deps import get_current_superadmin
+from app.models.audit_log import AuditAction
+from app.services.audit_log import AuditLogService
 from app.models.user import User
 import logging
 
@@ -43,6 +45,12 @@ async def update_pricing(
     try:
         updater = PricingUpdater(db)
         stats = await updater.update_all_pricing()
+        await AuditLogService(db).log(
+            action=AuditAction.PRICING_UPDATED,
+            user=current_user,
+            resource_type="model_pricing",
+            details={"updated": stats.get("updated"), "source": stats.get("source")},
+        )
 
         return {
             "success": True,
