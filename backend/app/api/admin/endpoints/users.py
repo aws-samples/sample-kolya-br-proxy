@@ -28,6 +28,19 @@ router = APIRouter()
 
 VALID_ROLES = {r.value for r in UserRole}
 
+# Cognito errors caused by the caller's input (e.g. a temporary password that
+# violates the pool's policy). These are 400s, not server errors.
+_COGNITO_CLIENT_INPUT_ERRORS = frozenset(
+    {"InvalidPasswordException", "InvalidParameterException"}
+)
+
+
+def _cognito_http_status(err: ClientError) -> int:
+    code = err.response.get("Error", {}).get("Code", "")
+    if code in _COGNITO_CLIENT_INPUT_ERRORS:
+        return status.HTTP_400_BAD_REQUEST
+    return status.HTTP_500_INTERNAL_SERVER_ERROR
+
 
 @lru_cache
 def _get_cognito_client():
@@ -209,13 +222,13 @@ async def invite_admin(
                 except ClientError as reset_err:
                     logger.error(f"Failed to reset Cognito password: {reset_err}")
                     raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        status_code=_cognito_http_status(reset_err),
                         detail=f"Failed to reset Cognito password: {reset_err.response['Error']['Message']}",
                     ) from reset_err
             else:
                 logger.error(f"Failed to create Cognito user: {e}")
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    status_code=_cognito_http_status(e),
                     detail=f"Failed to create Cognito user: {e.response['Error']['Message']}",
                 ) from e
 

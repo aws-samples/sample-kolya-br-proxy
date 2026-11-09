@@ -81,7 +81,7 @@
         <q-card-section>
           <q-input v-model="inviteForm.email" label="Email" type="email" outlined dark class="q-mb-md" />
           <q-input v-model="inviteForm.username" label="Username" outlined dark class="q-mb-md" hint="Cognito login username" />
-          <q-input v-model="inviteForm.temp_password" label="Temporary Password" type="password" outlined dark class="q-mb-md" hint="User must change on first login" />
+          <q-input v-model="inviteForm.temp_password" label="Temporary Password" type="password" outlined dark class="q-mb-md" hint="Min 8 chars with upper, lower, number and symbol. User must change it on first login." />
           <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined dark class="q-mb-md" />
           <div v-if="inviteForm.role === 'viewer'" class="text-caption text-grey q-mb-md">{{ viewerHint }}</div>
           <div v-if="inviteForm.role === 'admin'" class="q-mb-md">
