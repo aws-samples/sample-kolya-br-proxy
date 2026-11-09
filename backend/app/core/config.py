@@ -267,8 +267,12 @@ class Settings(BaseSettings):
         return self._csv_list(self.MANTLE_DISCOVERY_REGIONS)
 
     def get_allowed_origins(self) -> List[str]:
-        """Get CORS allowed origins as a list."""
-        return self._csv_list(self.ALLOWED_ORIGINS) or ["*"]
+        """Get CORS allowed origins as a list.
+
+        Empty means no cross-origin access. It used to mean "*", which with
+        allow_credentials=True let any site use the refresh cookie.
+        """
+        return self._csv_list(self.ALLOWED_ORIGINS)
 
     def get_microsoft_redirect_uris(self) -> List[str]:
         """Get allowed Microsoft OAuth redirect URIs as a list."""
@@ -312,7 +316,8 @@ class Settings(BaseSettings):
         # Only allow wildcard CORS in local environment
         env = os.getenv("KBR_ENV", "non-prod")
 
-        if v == "*" and env != "local":
+        origins = [o.strip().strip('"').strip("'") for o in (v or "").split(",")]
+        if "*" in origins and env != "local":
             raise ValueError(
                 f"Wildcard CORS origins ('*') not allowed in {env} environment. "
                 "Only KBR_ENV=local supports '*'. Set specific allowed origins instead."
