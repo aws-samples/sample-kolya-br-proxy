@@ -36,21 +36,30 @@ export default defineRouter(function (/* { store, ssrContext } */) {
   });
 
   // Navigation guard for authentication
-  Router.beforeEach((to, from, next) => {
+  Router.beforeEach(async (to, from, next) => {
     const requiresAuth = to.matched.some((record) => record.meta.requiresAuth);
     const requiresSuperAdmin = to.matched.some((record) => record.meta.requiresSuperAdmin);
+    const requiresWrite = to.matched.some((record) => record.meta.requiresWrite);
     const storedCredential = localStorage.getItem(ACCESS_CREDENTIAL_STORAGE_KEY);
 
     if (requiresAuth && !storedCredential) {
       next('/login');
     } else if (!requiresAuth && storedCredential && to.path === '/login') {
       next('/');
-    } else if (requiresSuperAdmin) {
+    } else if (requiresSuperAdmin || requiresWrite) {
       const authStore = useAuthStore();
-      if (!authStore.isSuperAdmin) {
-        next('/');
-      } else {
+      // On a hard reload the user profile may not be loaded yet; role checks
+      // against a null user would wrongly bounce privileged users to '/'.
+      if (!authStore.user) {
+        await authStore.initializeAuth();
+      }
+      const allowed =
+        (!requiresSuperAdmin || authStore.canViewSuperAdminPages) &&
+        (!requiresWrite || authStore.canWrite);
+      if (allowed) {
         next();
+      } else {
+        next('/');
       }
     } else {
       next();

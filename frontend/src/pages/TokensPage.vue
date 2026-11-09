@@ -18,6 +18,7 @@
           </template>
         </q-input>
         <q-btn
+          v-if="authStore.canWrite"
           color="grey-8"
           icon="add"
           label="Create Key"
@@ -25,6 +26,7 @@
           unelevated
         />
         <q-btn
+          v-if="authStore.canWrite"
           color="grey-8"
           icon="playlist_add"
           label="Batch Create"
@@ -69,7 +71,9 @@
                 <template v-else-if="col.name === 'key'">
                   <div class="row items-center no-wrap">
                     <span class="text-mono">{{ props.row.key_prefix }}_••••••••</span>
+                    <!-- Viewers never get plaintext keys (backend returns 403). -->
                     <q-btn
+                      v-if="authStore.canWrite"
                       flat
                       dense
                       round
@@ -119,7 +123,7 @@
                   />
                 </template>
                 <template v-else-if="col.name === 'actions'">
-                  <div class="row no-wrap items-center action-btns">
+                  <div v-if="authStore.canWrite" class="row no-wrap items-center action-btns">
                     <q-btn
                       flat
                       dense
@@ -783,6 +787,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import { useTokensStore } from '../stores/tokens';
 import { useTeamsStore } from '@/stores/teams';
 import { useModelsStore } from '@/stores/models';
@@ -791,6 +796,8 @@ import type { CreateAlertRulePayload } from '@/stores/alerts';
 import { Notify, Dialog, copyToClipboard } from 'quasar';
 import { getApiBaseUrl } from '@/utils/api';
 import type { APIToken, APITokenWithKey, CreateTokenRequest, TokenMetadata, BatchCreateTokenRequest } from '../stores/tokens';
+
+const authStore = useAuthStore();
 
 const tokensStore = useTokensStore();
 const teamsStore = useTeamsStore();

@@ -73,10 +73,32 @@ function waitForRefresh(): Promise<string> {
 }
 
 // Add response interceptor for retry logic and auth handling
+// HTTP methods safe to retry automatically. Retrying a write on a 5xx can
+// apply it twice if the server committed before failing.
+const RETRYABLE_METHODS = new Set(['get', 'head', 'options']);
+
+/**
+ * The backend wraps errors as {"error": {"message": ...}}, but callers across
+ * the app read `response.data.detail`. Mirror the message into `detail` so every
+ * caller sees the real reason instead of a generic fallback.
+ */
+function normalizeErrorDetail(error: {
+  response?: { data?: { detail?: unknown; error?: { message?: unknown } } };
+}): void {
+  const data = error.response?.data;
+  if (data && typeof data === 'object' && data.detail === undefined) {
+    const message = data.error?.message;
+    if (typeof message === 'string' && message) {
+      data.detail = message;
+    }
+  }
+}
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const config = error.config;
+    normalizeErrorDetail(error);
 
     // Handle 401 Unauthorized - Token expired
     if (error.response?.status === 401) {
@@ -174,7 +196,9 @@ api.interceptors.response.use(
     const maxRetries = 2;
     const isServerError = error.response?.status >= 500;
     const isNetworkError = !error.response; // No response = server unreachable
-    const shouldRetry = config.__retryCount < maxRetries && (isServerError || isNetworkError);
+    const isRetryableMethod = RETRYABLE_METHODS.has((config.method || 'get').toLowerCase());
+    const shouldRetry =
+      isRetryableMethod && config.__retryCount < maxRetries && (isServerError || isNetworkError);
 
     if (shouldRetry) {
       config.__retryCount += 1;
@@ -183,7 +207,9 @@ api.interceptors.response.use(
       return api(config);
     }
 
-    return Promise.reject(new Error(error.message || 'Request failed'));
+    // Reject with the original AxiosError (an Error subclass) so callers keep
+    // access to `response` and can show the server's message.
+    return Promise.reject(error as Error);
   },
 );
 

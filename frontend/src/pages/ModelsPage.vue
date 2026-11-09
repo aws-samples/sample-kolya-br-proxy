@@ -80,7 +80,7 @@
 
     <!-- Models Table -->
     <div v-if="step === 2 && selectedTokenId" style="margin-left: 48px">
-      <div class="q-mb-md">
+      <div v-if="authStore.canWrite" class="q-mb-md">
         <q-btn
           color="grey-8"
           icon="add"
@@ -102,6 +102,7 @@
         <template v-slot:body-cell-action="props">
           <q-td :props="props">
             <q-btn
+              v-if="authStore.canWrite"
               flat
               dense
               round
@@ -274,6 +275,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import { Notify } from 'quasar';
 import { api } from '@/boot/axios';
 
@@ -301,6 +303,8 @@ interface AwsModel {
 
 import { useModelsStore } from '@/stores/models';
 import { useTokensStore } from '@/stores/tokens';
+
+const authStore = useAuthStore();
 
 const modelsStore = useModelsStore();
 const tokensStore = useTokensStore();

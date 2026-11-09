@@ -221,7 +221,7 @@ async def list_activity(
         AuditLog.created_at >= start_date,
     ]
 
-    if current_user.role != UserRole.SUPER_ADMIN:
+    if current_user.role not in (UserRole.SUPER_ADMIN, UserRole.VIEWER):
         super_admin_ids = await _get_super_admin_ids(db)
         if super_admin_ids:
             filters.append(AuditLog.user_id.notin_(super_admin_ids))

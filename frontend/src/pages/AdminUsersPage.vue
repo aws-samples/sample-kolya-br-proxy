@@ -3,7 +3,7 @@
     <div class="row items-center q-mb-lg">
       <div class="text-h5">Admin Users</div>
       <q-space />
-      <q-btn color="primary" icon="person_add" label="Invite Admin" @click="showInviteDialog = true" />
+      <q-btn v-if="authStore.canWrite" color="primary" icon="person_add" label="Invite User" @click="showInviteDialog = true" />
     </div>
 
     <q-table
@@ -24,13 +24,16 @@
       </template>
       <template v-slot:body-cell-role="props">
         <q-td :props="props">
-          <q-badge :color="props.row.role === 'super_admin' ? 'purple' : 'blue'" :label="props.row.role" />
+          <q-badge :color="roleColor(props.row.role)" :label="props.row.role" />
         </q-td>
       </template>
       <template v-slot:body-cell-permissions="props">
         <q-td :props="props">
           <template v-if="props.row.role === 'super_admin'">
             <q-badge color="purple" label="all" />
+          </template>
+          <template v-else-if="props.row.role === 'viewer'">
+            <q-badge color="grey-7" label="read-only" />
           </template>
           <template v-else-if="props.row.permissions">
             <q-badge
@@ -53,6 +56,7 @@
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
+          <template v-if="authStore.canWrite">
           <q-btn
             flat dense round size="xs" icon="edit" class="action-btn"
             @click="editUser(props.row)"
@@ -63,6 +67,7 @@
             </q-tooltip>
           </q-btn>
           <q-btn flat dense round size="xs" icon="block" color="negative" class="action-btn" @click="deactivateUser(props.row)" v-if="props.row.role !== 'super_admin'" />
+          </template>
         </q-td>
       </template>
     </q-table>
@@ -71,13 +76,14 @@
     <q-dialog v-model="showInviteDialog">
       <q-card dark style="min-width: 550px">
         <q-card-section>
-          <div class="text-h6">Invite Admin</div>
+          <div class="text-h6">Invite User</div>
         </q-card-section>
         <q-card-section>
           <q-input v-model="inviteForm.email" label="Email" type="email" outlined dark class="q-mb-md" />
           <q-input v-model="inviteForm.username" label="Username" outlined dark class="q-mb-md" hint="Cognito login username" />
-          <q-input v-model="inviteForm.temp_password" label="Temporary Password" type="password" outlined dark class="q-mb-md" hint="User must change on first login" />
+          <q-input v-model="inviteForm.temp_password" label="Temporary Password" type="password" outlined dark class="q-mb-md" hint="Min 8 chars with upper, lower, number and symbol. User must change it on first login." />
           <q-select v-model="inviteForm.role" :options="roleOptions" label="Role" outlined dark class="q-mb-md" />
+          <div v-if="inviteForm.role === 'viewer'" class="text-caption text-grey q-mb-md">{{ viewerHint }}</div>
           <div v-if="inviteForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
             <PermissionEditor v-model="inviteForm.permissions" :resources="resources" />
@@ -118,6 +124,7 @@
         </q-card-section>
         <q-card-section>
           <q-select v-model="editForm.role" :options="roleOptions" label="Role" outlined dark class="q-mb-md" />
+          <div v-if="editForm.role === 'viewer'" class="text-caption text-grey q-mb-md">{{ viewerHint }}</div>
           <div v-if="editForm.role === 'admin'" class="q-mb-md">
             <div class="text-subtitle2 q-mb-sm">Permissions</div>
             <PermissionEditor v-model="editForm.permissions" :resources="resources" />
@@ -165,7 +172,15 @@ const showEditDialog = ref(false);
 const inviteLink = ref('');
 const resources = ref<Resources>({ api_keys: [], teams: [], models: [] });
 
-const roleOptions = ['super_admin', 'admin'];
+const roleOptions = ['super_admin', 'admin', 'viewer'];
+const viewerHint =
+  'Read-only: can view every page, but cannot change anything or see API key values.';
+
+function roleColor(role: string): string {
+  if (role === 'super_admin') return 'purple';
+  if (role === 'viewer') return 'grey-7';
+  return 'blue';
+}
 
 const columns = [
   { name: 'email', label: 'Email', field: 'email', align: 'left' as const },

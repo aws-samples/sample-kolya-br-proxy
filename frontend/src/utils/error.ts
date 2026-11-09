@@ -3,9 +3,14 @@ export function extractErrorMessage(
   fallback = 'Operation failed',
 ): string {
   if (error && typeof error === 'object' && 'response' in error) {
-    const resp = (error as { response?: { data?: { detail?: string } } })
-      .response;
-    return resp?.data?.detail || fallback;
+    const data = (
+      error as {
+        response?: { data?: { detail?: unknown; error?: { message?: unknown } } };
+      }
+    ).response?.data;
+    // Backend envelope is {"error": {"message"}}; FastAPI default is {"detail"}.
+    const message = data?.error?.message ?? data?.detail;
+    if (typeof message === 'string' && message) return message;
   }
   return fallback;
 }
