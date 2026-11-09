@@ -8,6 +8,8 @@ Does NOT use ``BaseHTTPMiddleware`` which would buffer ``StreamingResponse``.
 import time
 
 from app.core.metrics import emit_http_metrics, is_metrics_enabled
+from app.middleware.security import HEALTH_PATHS
+
 
 
 class ObservabilityMiddleware:
@@ -25,7 +27,7 @@ class ObservabilityMiddleware:
         # Skip health checks, admin routes, and CORS preflight — noise
         method = scope.get("method", "")
         if (
-            path.startswith("/health")
+            path in HEALTH_PATHS
             or path.startswith("/admin")
             or method == "OPTIONS"
         ):

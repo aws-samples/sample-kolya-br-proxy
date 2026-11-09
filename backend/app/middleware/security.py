@@ -13,6 +13,12 @@ from starlette.types import ASGIApp
 logger = logging.getLogger(__name__)
 
 
+
+# Unauthenticated probe endpoints served by app.api.health.
+HEALTH_PATHS = frozenset(
+    {"/health", "/health/", "/health/ready", "/health/live", "/health/metrics"}
+)
+
 class SecurityMiddleware(BaseHTTPMiddleware):
     """
     Security middleware for API protection.
@@ -172,8 +178,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         method = request.method
         path = request.url.path
 
-        # Skip security checks for health endpoints
-        if path.startswith("/health"):
+        # Skip security checks for the probe endpoints only. Exact match so a
+        # path like /healthz-anything can't ride the exemption.
+        if path in HEALTH_PATHS:
             return await call_next(request)
 
         # OAuth callbacks come as POST from identity providers (e.g. login.microsoftonline.com)
