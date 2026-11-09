@@ -61,13 +61,13 @@
       "picomatch": ">=4.0.4",
       "js-yaml": ">=4.3.1 <5",
       "minimatch@3.1.5>brace-expansion": "1.1.21",
-      "minimatch@10.2.4>brace-expansion": "5.0.12",
       "yaml": ">=2.8.3",
       "@babel/core": ">=7.29.6 <8",
       "browserslist": ">=4.28.7",
       "@humanfs/node": ">=0.16.8",
       "postcss-selector-parser": ">=7.1.6",
-      "nanoid": ">=3.3.18"
+      "nanoid": ">=3.3.18",
+      "minimatch@>=7.0.0 <11.0.1": ">=11.0.1 <12"
     }
   },
   "devDependencies": {
