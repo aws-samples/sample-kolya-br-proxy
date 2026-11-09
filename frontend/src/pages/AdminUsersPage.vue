@@ -3,7 +3,7 @@
     <div class="row items-center q-mb-lg">
       <div class="text-h5">Admin Users</div>
       <q-space />
-      <q-btn v-if="!authStore.groupSyncEnabled" color="primary" icon="person_add" label="Invite Admin" @click="showInviteDialog = true" />
+      <q-btn color="primary" icon="person_add" label="Invite Admin" @click="showInviteDialog = true" />
     </div>
 
     <q-table

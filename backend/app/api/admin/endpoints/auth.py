@@ -66,7 +66,11 @@ class UserResponse(BaseModel):
             permissions=user.permissions,
             email_verified=user.email_verified,
             current_balance=str(user.current_balance),
-            group_sync_enabled=settings.MICROSOFT_ENABLE_GROUP_SYNC,
+            # Group sync only applies to Microsoft logins, so it is only
+            # meaningful when Microsoft OAuth is actually configured.
+            group_sync_enabled=bool(
+                settings.MICROSOFT_ENABLE_GROUP_SYNC and settings.MICROSOFT_CLIENT_ID
+            ),
         )
 
     class Config:
