@@ -13,11 +13,11 @@ from starlette.types import ASGIApp
 logger = logging.getLogger(__name__)
 
 
-
 # Unauthenticated probe endpoints served by app.api.health.
 HEALTH_PATHS = frozenset(
     {"/health", "/health/", "/health/ready", "/health/live", "/health/metrics"}
 )
+
 
 class SecurityMiddleware(BaseHTTPMiddleware):
     """

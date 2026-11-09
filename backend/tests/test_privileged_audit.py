@@ -25,7 +25,9 @@ HANDLERS = {
 }
 
 
-@pytest.mark.parametrize("handler,action", HANDLERS.items(), ids=lambda x: getattr(x, "__name__", x))
+@pytest.mark.parametrize(
+    "handler,action", HANDLERS.items(), ids=lambda x: getattr(x, "__name__", x)
+)
 def test_handler_writes_audit(handler, action):
     assert hasattr(AuditAction, action)
     assert f"AuditAction.{action}" in inspect.getsource(handler)

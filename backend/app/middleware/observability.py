@@ -11,7 +11,6 @@ from app.core.metrics import emit_http_metrics, is_metrics_enabled
 from app.middleware.security import HEALTH_PATHS
 
 
-
 class ObservabilityMiddleware:
     """ASGI middleware that emits HTTP-level metrics for all requests."""
 
@@ -26,11 +25,7 @@ class ObservabilityMiddleware:
 
         # Skip health checks, admin routes, and CORS preflight — noise
         method = scope.get("method", "")
-        if (
-            path in HEALTH_PATHS
-            or path.startswith("/admin")
-            or method == "OPTIONS"
-        ):
+        if path in HEALTH_PATHS or path.startswith("/admin") or method == "OPTIONS":
             return await self.app(scope, receive, send)
 
         if not is_metrics_enabled():

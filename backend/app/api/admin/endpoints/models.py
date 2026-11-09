@@ -364,7 +364,11 @@ async def add_model(
             user=_current_user,
             resource_type="model",
             resource_id=str(new_model.id),
-            details={"op": "added", "token_id": str(token_uuid), "model": request.model_name},
+            details={
+                "op": "added",
+                "token_id": str(token_uuid),
+                "model": request.model_name,
+            },
         )
 
         logger.info(
@@ -417,7 +421,11 @@ async def delete_model(
             user=_current_user,
             resource_type="model",
             resource_id=str(model.id),
-            details={"op": "removed", "token_id": str(model.token_id), "model": model.model_name},
+            details={
+                "op": "removed",
+                "token_id": str(model.token_id),
+                "model": model.model_name,
+            },
         )
 
         logger.info(f"Model {model.model_name} deleted by user {_current_user.id}")

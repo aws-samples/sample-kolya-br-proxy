@@ -38,7 +38,9 @@ class AuditAction(enum.Enum):
     API_KEY_NOTIFIED = "api_key_notified"  # pragma: allowlist secret  # nosemgrep
     API_KEY_VIEWED = "api_key_viewed"  # pragma: allowlist secret  # nosemgrep
     API_KEYS_EXPORTED = "api_keys_exported"  # pragma: allowlist secret  # nosemgrep
-    TOKEN_BALANCE_ADJUSTED = "token_balance_adjusted"  # pragma: allowlist secret  # nosemgrep
+    TOKEN_BALANCE_ADJUSTED = (
+        "token_balance_adjusted"  # pragma: allowlist secret  # nosemgrep
+    )
 
     # User Management
     USER_CREATED = "user_created"
