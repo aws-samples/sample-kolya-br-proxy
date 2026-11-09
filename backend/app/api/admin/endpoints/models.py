@@ -217,7 +217,7 @@ async def list_aws_available_models(
         logger.error(f"Failed to list Bedrock models: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve models from AWS Bedrock: {str(e)}",
+            detail="Failed to retrieve models from AWS Bedrock",
         )
 
 
@@ -320,7 +320,7 @@ async def list_enabled_models(
         logger.error(f"Failed to list enabled models: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve enabled models: {str(e)}",
+            detail="Failed to retrieve enabled models",
         )
 
 
@@ -414,7 +414,7 @@ async def add_model(
         logger.error(f"Failed to add model: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to add model: {str(e)}",
+            detail="Failed to add model",
         )
 
 
@@ -465,5 +465,5 @@ async def delete_model(
         logger.error(f"Failed to delete model: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to delete model: {str(e)}",
+            detail="Failed to delete model",
         )
