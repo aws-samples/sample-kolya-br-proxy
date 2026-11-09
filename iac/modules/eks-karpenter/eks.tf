@@ -30,6 +30,10 @@ module "eks" {
       }
       vpc-cni = {
         before_compute = true
+        # Enforce NetworkPolicy. Without it every policy in the cluster is
+        # ignored, including the one that limits Redis (unauthenticated,
+        # holds the API-token cache) to backend pods.
+        configuration_values = jsonencode({ enableNetworkPolicy = "true" })
       }
     } : {},
     {
