@@ -34,6 +34,11 @@ def map_stop_reason_to_finish_reason(stop_reason: str | None) -> str:
     return _STOP_REASON_TO_FINISH_REASON.get(stop_reason, "stop")
 
 
+# Bedrock accepts images up to 3.75 MB; leave headroom but stop runaway
+# downloads well before they threaten pod memory.
+MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024
+
+
 class RequestTranslator:
     """Translates OpenAI requests to Bedrock format."""
 
@@ -65,33 +70,34 @@ class RequestTranslator:
 
     @staticmethod
     async def _fetch_and_encode_image(image_url: str):
-        """
-        Fetch image from URL and encode as base64.
+        """Fetch a public image URL and encode it as a base64 content part.
 
-        Args:
-            image_url: URL to image
-
-        Returns:
-            BedrockContentPart with image data
+        The URL comes from the request body, so it goes through
+        fetch_public_url: public addresses only, no redirects, size-capped.
         """
         import base64
-        import httpx
+
+        from app.core.safe_fetch import UnsafeURLError, fetch_public_url
         from app.schemas.bedrock import BedrockContentPart
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(image_url)
-                response.raise_for_status()
-
-            media_type = response.headers.get("content-type", "image/jpeg")
-            image_data = base64.b64encode(response.content).decode("utf-8")
-
-            return BedrockContentPart(
-                type="image",
-                source={"type": "base64", "media_type": media_type, "data": image_data},
+            body, content_type = await fetch_public_url(
+                image_url,
+                max_bytes=MAX_REMOTE_IMAGE_BYTES,
+                content_type_prefix="image/",
             )
-        except Exception as e:
-            raise ValueError(f"Failed to fetch image from URL: {str(e)}")
+        except UnsafeURLError as e:
+            raise ValueError(f"Failed to fetch image from URL: {e}") from e
+
+        media_type = content_type.split(";", 1)[0].strip() or "image/jpeg"
+        return BedrockContentPart(
+            type="image",
+            source={
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64.b64encode(body).decode("utf-8"),
+            },
+        )
 
     @staticmethod
     async def openai_to_bedrock(request: ChatCompletionRequest) -> BedrockRequest:

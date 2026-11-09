@@ -268,9 +268,12 @@ class TokenService:
             return None
 
         # Check IP restrictions
-        if client_ip and token.allowed_ips:
-            if not self._is_ip_allowed(client_ip, token.allowed_ips):
-                return None
+        # A key with an IP allowlist fails closed when the caller IP is unknown.
+        if token.allowed_ips and not (
+            client_ip and self._is_ip_allowed(client_ip, token.allowed_ips)
+        ):
+            logger.warning(f"Token {token.id} rejected: client IP not in allowlist")
+            return None
 
         # Note: Model restrictions are now checked via the models relationship in the endpoint
 

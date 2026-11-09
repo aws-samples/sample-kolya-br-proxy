@@ -28,9 +28,28 @@ from app.services.token import TokenService
 logger = logging.getLogger(__name__)
 
 
+def client_ip_from_request(request: Request) -> Optional[str]:
+    """Caller IP as seen by the load balancer.
+
+    The ALB appends the peer address to X-Forwarded-For, so the entry
+    TRUSTED_PROXY_HOPS from the right is the one no client can forge;
+    anything further left is client-supplied.
+    """
+    from app.core.config import get_settings
+
+    hops = get_settings().TRUSTED_PROXY_HOPS
+    forwarded = request.headers.get("x-forwarded-for")
+    if hops > 0 and forwarded:
+        entries = [e.strip() for e in forwarded.split(",") if e.strip()]
+        if entries:
+            return entries[-min(hops, len(entries))]
+    return request.client.host if request.client else None
+
+
 async def _validate_token_with_cache(
-    token_service: TokenService, plain_token: str
+    token_service: TokenService, plain_token: str, client_ip: Optional[str] = None
 ) -> Optional[APIToken]:
+    """Validate a key, enforcing its allowed_ips when the key has any."""
     try:
         from app.core.redis import get_redis, RedisCache
         from app.services.token_cache import CachedTokenService
@@ -38,10 +57,14 @@ async def _validate_token_with_cache(
         redis_client = await get_redis()
         cache = RedisCache(redis_client)
         cached_service = CachedTokenService(token_service, cache)
-        return await cached_service.validate_token_cached(plain_token=plain_token)
+        return await cached_service.validate_token_cached(
+            plain_token=plain_token, client_ip=client_ip
+        )
     except Exception:
         logger.warning("Redis token cache failed, falling back to DB")
-        return await token_service.validate_token(plain_token=plain_token)
+        return await token_service.validate_token(
+            plain_token=plain_token, client_ip=client_ip
+        )
 
 
 # HTTP Bearer token scheme
@@ -120,6 +143,7 @@ async def get_oauth_service(db: AsyncSession = Depends(get_db)):
 
 
 async def get_current_token(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     token_service: TokenService = Depends(get_token_service),
 ) -> APIToken:
@@ -144,7 +168,9 @@ async def get_current_token(
         HTTPException: If token is invalid or access is denied
     """
     plain_token = credentials.credentials
-    token = await _validate_token_with_cache(token_service, plain_token)
+    token = await _validate_token_with_cache(
+        token_service, plain_token, client_ip_from_request(request)
+    )
 
     if not token:
         raise HTTPException(
@@ -158,6 +184,7 @@ async def get_current_token(
 
 
 async def get_current_token_streaming(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> APIToken:
     """Validate the API token without holding a DB connection for the request.
@@ -177,7 +204,9 @@ async def get_current_token_streaming(
     plain_token = credentials.credentials
     async with session_scope() as db:
         token_service = TokenService(db)
-        token = await _validate_token_with_cache(token_service, plain_token)
+        token = await _validate_token_with_cache(
+            token_service, plain_token, client_ip_from_request(request)
+        )
 
     if not token:
         raise HTTPException(
@@ -214,7 +243,9 @@ async def get_current_token_flexible(
             detail="Missing API key. Provide via Authorization: Bearer or x-api-key header.",
         )
 
-    token = await _validate_token_with_cache(token_service, api_key)
+    token = await _validate_token_with_cache(
+        token_service, api_key, client_ip_from_request(request)
+    )
 
     if not token:
         raise HTTPException(
@@ -250,7 +281,9 @@ async def get_current_token_flexible_streaming(
 
     async with session_scope() as db:
         token_service = TokenService(db)
-        token = await _validate_token_with_cache(token_service, api_key)
+        token = await _validate_token_with_cache(
+            token_service, api_key, client_ip_from_request(request)
+        )
 
     if not token:
         raise HTTPException(
@@ -263,6 +296,7 @@ async def get_current_token_flexible_streaming(
 
 
 async def get_current_token_from_api_key(
+    request: Request,
     x_api_key: str = Header(..., alias="x-api-key"),
     token_service: TokenService = Depends(get_token_service),
 ) -> APIToken:
@@ -282,7 +316,9 @@ async def get_current_token_from_api_key(
     Raises:
         HTTPException: If token is invalid or access is denied
     """
-    token = await _validate_token_with_cache(token_service, x_api_key)
+    token = await _validate_token_with_cache(
+        token_service, x_api_key, client_ip_from_request(request)
+    )
 
     if not token:
         raise HTTPException(
@@ -328,7 +364,9 @@ async def get_current_token_from_gemini_key(
             detail="Missing API key. Provide via ?key= query parameter or x-goog-api-key header.",
         )
 
-    token = await _validate_token_with_cache(token_service, plain_token)
+    token = await _validate_token_with_cache(
+        token_service, plain_token, client_ip_from_request(request)
+    )
 
     if not token:
         raise HTTPException(
