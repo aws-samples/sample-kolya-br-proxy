@@ -19,6 +19,7 @@ import httpx
 
 from app.api.deps import get_current_token_streaming
 from app.core.config import get_settings
+from app.services.stream_usage_estimate import StreamUsageFallback
 from app.core.stream_heartbeat import HEARTBEAT, with_heartbeat
 from app.services.openai_gpt_catalog import is_ultrafast
 from app.core.database import get_db, session_scope
@@ -713,6 +714,7 @@ async def stream_mantle_completion(
     total_cache_write_tokens = 0
     served_tier = payload.get("service_tier")
     last_heartbeat = time.time()
+    usage_fallback = StreamUsageFallback()
 
     try:
         async for chunk in with_heartbeat(
@@ -737,8 +739,17 @@ async def stream_mantle_completion(
                         data = _json.loads(line[6:])
                         if data.get("service_tier"):
                             served_tier = data["service_tier"]
+                        for choice in data.get("choices") or []:
+                            delta = choice.get("delta") or {}
+                            usage_fallback.add_output(delta.get("content"))
+                            usage_fallback.add_output(delta.get("reasoning_content"))
+                            for call in delta.get("tool_calls") or []:
+                                usage_fallback.add_output(
+                                    (call.get("function") or {}).get("arguments")
+                                )
                         usage = data.get("usage")
                         if usage:
+                            usage_fallback.final_usage_seen = True
                             total_prompt_tokens = usage.get(
                                 "prompt_tokens", total_prompt_tokens
                             )
@@ -791,7 +802,11 @@ async def stream_mantle_completion(
 
     finally:
         # Record usage even when the downstream client closes the generator at
-        # a yielded chunk after upstream usage has already been parsed.
+        # a yielded chunk after upstream usage has already been parsed. If the
+        # usage chunk never came, bill what was streamed.
+        total_prompt_tokens, total_completion_tokens = usage_fallback.resolve(
+            total_prompt_tokens, total_completion_tokens, payload
+        )
         non_cached_prompt = max(
             0,
             total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
@@ -862,6 +877,7 @@ async def stream_chat_completion(
     last_heartbeat = time.time()
     client_disconnected = False
     usage_recorded = False
+    usage_fallback = StreamUsageFallback()
 
     def _record_stream_usage():
         """Record usage once, from the tokens seen so far.
@@ -872,9 +888,14 @@ async def stream_chat_completion(
         ``usage_recorded`` guard so the normal and error paths don't double
         count.
         """
-        nonlocal usage_recorded
+        nonlocal usage_recorded, total_input_tokens, total_output_tokens
         if usage_recorded:
             return
+        # The final usage event may never have arrived (client disconnected
+        # just before it); bill what was streamed rather than nothing.
+        total_input_tokens, total_output_tokens = usage_fallback.resolve(
+            total_input_tokens, total_output_tokens, bedrock_request
+        )
         if not any(
             (
                 total_input_tokens,
@@ -1001,14 +1022,17 @@ async def stream_chat_completion(
                         last_heartbeat = current_time
 
             elif event.type == "content_block_delta":
-                # Skip deltas for thinking blocks
+                # Skip deltas for thinking blocks (still billed as output)
                 if event.index is not None and event.index in thinking_blocks:
+                    if event.delta:
+                        usage_fallback.add_output(event.delta.get("thinking"))
                     continue
                 # Measure time to first content token
                 if ttft is None:
                     ttft = time.time() - start_time
                 # Stream content delta
                 if event.delta and "text" in event.delta:
+                    usage_fallback.add_output(event.delta["text"])
                     chunk = ResponseTranslator.create_stream_chunk(
                         request_id=request_id,
                         model=model,
@@ -1020,6 +1044,7 @@ async def stream_chat_completion(
                     # Tool use input delta
                     if event.index is not None and event.index in tool_use_blocks:
                         partial_json = event.delta["partial_json"]
+                        usage_fallback.add_output(partial_json)
                         tool_use_blocks[event.index]["input"] += partial_json
                         # Send tool call arguments delta
                         chunk = ResponseTranslator.create_stream_chunk(
@@ -1046,6 +1071,8 @@ async def stream_chat_completion(
                 # sends both input and output tokens in its trailing metadata,
                 # which the Bedrock adapter also maps to message_delta.
                 if event.usage:
+                    if event.usage.output_tokens is not None:
+                        usage_fallback.final_usage_seen = True
                     total_input_tokens = event.usage.input_tokens or total_input_tokens
                     total_output_tokens = (
                         event.usage.output_tokens or total_output_tokens

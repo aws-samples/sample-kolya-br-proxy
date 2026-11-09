@@ -5,6 +5,7 @@
 Authentication endpoints for user registration and login.
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -253,8 +254,24 @@ async def revoke_refresh_token(
             detail="Missing refresh token",
         )
 
+    # This route is unauthenticated, and the PBKDF2 hash below is deliberately
+    # slow. Reject anything that is not a valid refresh JWT before hashing, and
+    # hash off the event loop, so junk requests cannot stall the worker.
     try:
-        token_hash = hash_refresh_token(presented_credential)
+        payload = decode_jwt_token(presented_credential)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        ) from e
+    if payload.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+        )
+
+    try:
+        token_hash = await asyncio.to_thread(hash_refresh_token, presented_credential)
         revoked = await refresh_token_service.revoke_token(
             token_hash, reason="User requested revocation"
         )

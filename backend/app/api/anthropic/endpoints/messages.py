@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_token_flexible_streaming
 from app.core.config import get_settings
+from app.services.stream_usage_estimate import StreamUsageFallback
 from app.core.stream_heartbeat import HEARTBEAT, with_heartbeat
 from app.core.database import session_scope
 from app.models.token import APIToken
@@ -414,6 +415,7 @@ async def stream_anthropic_messages(
     last_heartbeat = time.time()
     client_disconnected = False
     usage_recorded = False
+    usage_fallback = StreamUsageFallback()
 
     def _record_stream_usage():
         """Record usage once, from the tokens accumulated so far.
@@ -427,6 +429,16 @@ async def stream_anthropic_messages(
         nonlocal usage_recorded
         if usage_recorded:
             return
+        # The final usage event may never have arrived (client disconnected
+        # just before it); bill what was streamed rather than nothing.
+        (
+            accumulated_usage["input_tokens"],
+            accumulated_usage["output_tokens"],
+        ) = usage_fallback.resolve(
+            accumulated_usage.get("input_tokens", 0),
+            accumulated_usage.get("output_tokens", 0),
+            bedrock_request,
+        )
         total_input = accumulated_usage.get("input_tokens", 0)
         total_output = accumulated_usage.get("output_tokens", 0)
         total_cache_creation = accumulated_usage.get("cache_creation_input_tokens", 0)
@@ -500,6 +512,15 @@ async def stream_anthropic_messages(
             # Measure time to first content token
             if ttft is None and event.type == "content_block_delta":
                 ttft = time.time() - start_time
+
+            if event.type == "content_block_delta" and event.delta:
+                usage_fallback.add_output(
+                    event.delta.get("text")
+                    or event.delta.get("thinking")
+                    or event.delta.get("partial_json")
+                )
+            elif event.type == "message_delta" and event.usage:
+                usage_fallback.final_usage_seen = True
 
             # Accumulate content for trace
             if event.type == "content_block_start" and event.content_block:
@@ -1383,6 +1404,7 @@ async def _stream_mantle_as_anthropic(
     text_block_index: int | None = None
     tool_calls: dict[int, dict[str, str]] = {}
     stop_reason = "end_turn"
+    usage_fallback = StreamUsageFallback()
 
     try:
         yield (
@@ -1410,6 +1432,7 @@ async def _stream_mantle_as_anthropic(
 
                 usage = data.get("usage")
                 if usage:
+                    usage_fallback.final_usage_seen = True
                     total_prompt_tokens = usage.get(
                         "prompt_tokens", total_prompt_tokens
                     )
@@ -1434,7 +1457,10 @@ async def _stream_mantle_as_anthropic(
                     stop_reason = "max_tokens"
 
                 delta = choice.get("delta") or {}
+                usage_fallback.add_output(delta.get("reasoning_content"))
                 text = delta.get("content")
+                if isinstance(text, str):
+                    usage_fallback.add_output(text)
                 if isinstance(text, str) and text:
                     if text_block_index is None:
                         text_block_index = next_block_index
@@ -1459,6 +1485,7 @@ async def _stream_mantle_as_anthropic(
                     if function.get("name"):
                         buffered["name"] = function["name"]
                     if isinstance(function.get("arguments"), str):
+                        usage_fallback.add_output(function["arguments"])
                         buffered["arguments"] += function["arguments"]
 
         if tool_calls:
@@ -1509,6 +1536,10 @@ async def _stream_mantle_as_anthropic(
             f"data: {_json.dumps({'type': 'error', 'error': {'type': 'server_error', 'message': 'Internal server error'}})}\n\n"
         )
     finally:
+        # No usage chunk seen (client left first): bill what was streamed.
+        total_prompt_tokens, total_completion_tokens = usage_fallback.resolve(
+            total_prompt_tokens, total_completion_tokens, payload
+        )
         non_cached_prompt = max(
             0,
             total_prompt_tokens - total_cached_tokens - total_cache_write_tokens,
