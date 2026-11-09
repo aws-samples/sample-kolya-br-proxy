@@ -35,6 +35,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _claim_is_true(value: object) -> bool:
+    """OIDC boolean claim; Cognito's userinfo returns it as "true"/"false"."""
+    return value is True or (isinstance(value, str) and value.lower() == "true")
+
+
 class UserResponse(BaseModel):
     """User response model."""
 
@@ -766,6 +771,20 @@ async def cognito_callback(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to get user information from Cognito",
+        )
+
+    # Users are matched to local accounts by email, so the email must be one
+    # Cognito has verified. A Cognito user can rewrite their own email
+    # attribute (it becomes unverified until confirmed); trusting it would let
+    # any invited user log in as another account, including super_admin.
+    if not _claim_is_true(user_info.get("email_verified")):
+        logger.warning(
+            "COGNITO_LOGIN_REJECTED: unverified email claim",
+            extra={"event_type": "cognito_unverified_email", "cognito_sub": cognito_sub},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email address is not verified. Verify it in Cognito and try again.",
         )
 
     # Check if user exists with this email

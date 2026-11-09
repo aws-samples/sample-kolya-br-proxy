@@ -116,6 +116,13 @@ resource "aws_cognito_user_pool" "main" {
   alias_attributes         = ["email", "preferred_username"]
   auto_verified_attributes = ["email"]
 
+  # A user-initiated email change stays pending until the new address is
+  # verified; the old, verified address remains in effect meanwhile. The
+  # backend links Cognito logins to local users by email.
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
+
   # Lambda triggers for email domain validation (only for self-registration)
   lambda_config {
     pre_sign_up = aws_lambda_function.pre_signup.arn
@@ -226,6 +233,9 @@ resource "aws_cognito_user_pool_client" "main" {
   prevent_user_existence_errors = "ENABLED"
 
   # Read and write attributes
+  # email must stay writable: it is a required pool attribute and Cognito
+  # rejects clients without write access to required attributes. Changes
+  # are held until verified (user_attribute_update_settings on the pool).
   read_attributes  = ["email", "email_verified", "preferred_username"]
   write_attributes = ["email", "preferred_username"]
 

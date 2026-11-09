@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_superadmin
+from app.models.audit_log import AuditAction
+from app.services.audit_log import AuditLogService
 from app.core.config import get_settings
 from app.core.config_sync import publish_config_change
 from app.core.database import get_db
@@ -119,6 +121,13 @@ async def update_observability_config(
 
     if not changes:
         return {"success": True, "message": "No changes requested", "changes": {}}
+
+    await AuditLogService(db).log(
+        action=AuditAction.OBSERVABILITY_UPDATED,
+        user=current_user,
+        resource_type="observability",
+        details=changes,
+    )
 
     redis_client = await get_redis()
     if redis_client:

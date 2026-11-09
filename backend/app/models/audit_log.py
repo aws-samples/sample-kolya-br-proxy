@@ -36,6 +36,9 @@ class AuditAction(enum.Enum):
     API_TOKEN_CREATED = "api_token_created"
     API_TOKEN_REVOKED = "api_token_revoked"
     API_KEY_NOTIFIED = "api_key_notified"  # pragma: allowlist secret  # nosemgrep
+    API_KEY_VIEWED = "api_key_viewed"  # pragma: allowlist secret  # nosemgrep
+    API_KEYS_EXPORTED = "api_keys_exported"  # pragma: allowlist secret  # nosemgrep
+    TOKEN_BALANCE_ADJUSTED = "token_balance_adjusted"  # pragma: allowlist secret  # nosemgrep
 
     # User Management
     USER_CREATED = "user_created"
@@ -57,6 +60,8 @@ class AuditAction(enum.Enum):
     TEAM_UPDATED = "team_updated"
     TEAM_DELETED = "team_deleted"
     MODEL_UPDATED = "model_updated"
+    PRICING_UPDATED = "pricing_updated"
+    OBSERVABILITY_UPDATED = "observability_updated"
 
     # Team Members
     TEAM_MEMBER_ADDED = "team_member_added"

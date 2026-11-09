@@ -669,6 +669,13 @@ async def export_keys_csv(
             ]
         )
 
+    await AuditLogService(db).log(
+        action=AuditAction.API_KEYS_EXPORTED,
+        user=user,
+        resource_type="api_token",
+        details={"count": len(tokens)},
+    )
+
     filename = f"api_keys_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
 
     return Response(
@@ -916,6 +923,7 @@ async def revoke_token(
     token_id: str,
     current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -955,6 +963,13 @@ async def revoke_token(
 
     # Revoke token
     await token_service.revoke_token(token_uuid)
+    await audit_service.log(
+        action=AuditAction.API_TOKEN_REVOKED,
+        user=current_user,
+        resource_type="api_token",
+        resource_id=str(token_uuid),
+        details={"name": token.name},
+    )
 
     # Return updated token
     token = await token_service.get_token_by_id(token_uuid)
@@ -969,6 +984,7 @@ async def get_plain_token(
     token_id: str,
     current_user: User = Depends(require_permission("manage_api_keys")),
     token_service: TokenService = Depends(get_token_service),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
     """
     Get the plain (decrypted) token value.
@@ -1011,6 +1027,13 @@ async def get_plain_token(
             detail="Failed to decrypt token",
         )
 
+    await audit_service.log(
+        action=AuditAction.API_KEY_VIEWED,
+        user=current_user,
+        resource_type="api_token",
+        resource_id=str(token_uuid),
+        details={"name": token.name},
+    )
     return {"token": plain_token}
 
 
@@ -1227,6 +1250,13 @@ async def adjust_token_balance(
     )
     db.add(adjustment)
     await db.commit()
+    await AuditLogService(db).log(
+        action=AuditAction.TOKEN_BALANCE_ADJUSTED,
+        user=current_user,
+        resource_type="api_token",
+        resource_id=str(token.id),
+        details={"amount": str(request.amount), "note": request.note},
+    )
 
     await _invalidate_token_cache(token.token_hash)
 

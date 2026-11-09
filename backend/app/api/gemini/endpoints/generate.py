@@ -8,6 +8,7 @@ verbatim — only authentication is swapped (proxy token → real API key).
 
 import json
 import logging
+import re
 import time
 import uuid
 from decimal import Decimal
@@ -30,6 +31,38 @@ from app.services.gemini_client import (
     is_gemini_configured,
 )
 from app.services.pricing import ModelPricing
+
+
+_PROJECT_RE = re.compile(r"projects/[^/\s\"']+")
+_SERVICE_ACCOUNT_RE = re.compile(r"[\w.+-]+@[\w-]+\.iam\.gserviceaccount\.com")
+_PROJECT_WORD_RE = re.compile(r"\b(project)\s+[\w-]+", re.IGNORECASE)
+
+
+def sanitize_gemini_error(raw: bytes | str, status_code: int) -> dict:
+    """Upstream error in Google's shape, minus our provider identifiers.
+
+    Callers keep ``code`` and ``status`` (SDKs branch on them) and a message
+    with project IDs and service accounts redacted. ``details`` is dropped:
+    it carries quota metadata such as ``consumer: projects/<number>``.
+    """
+    text = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
+    try:
+        err = json.loads(text).get("error", {})
+    except (ValueError, AttributeError):
+        err = {}
+    if not isinstance(err, dict):
+        err = {}
+    message = str(err.get("message") or "Upstream Gemini API error")
+    message = _SERVICE_ACCOUNT_RE.sub("<service-account>", message)
+    message = _PROJECT_RE.sub("projects/<redacted>", message)
+    message = _PROJECT_WORD_RE.sub(r"\1 <redacted>", message)
+    return {
+        "error": {
+            "code": err.get("code", status_code),
+            "status": err.get("status", "UNKNOWN"),
+            "message": message,
+        }
+    }
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -224,7 +257,10 @@ async def generate_content(
         logger.error(
             f"Gemini API error: status={resp.status_code}, body={resp.text[:500]}"
         )
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        return JSONResponse(
+            content=sanitize_gemini_error(resp.content, resp.status_code),
+            status_code=resp.status_code,
+        )
 
     # Parse response for usage billing
     resp_data = resp.json()
@@ -363,7 +399,8 @@ async def _stream_proxy(
                         f"Gemini stream error: status={resp.status_code}, "
                         f"body={error_body[:500].decode(errors='replace')}"
                     )
-                    yield f"data: {error_body.decode(errors='replace')}\n\n"
+                    sanitized = sanitize_gemini_error(error_body, resp.status_code)
+                    yield f"data: {json.dumps(sanitized)}\n\n"
                     return
 
                 async for line in resp.aiter_lines():

@@ -16,6 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_permission
+from app.models.audit_log import AuditAction
+from app.services.audit_log import AuditLogService
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model import Model
@@ -338,6 +340,17 @@ async def add_model(
                 existing_model.is_deleted = False
                 existing_model.deleted_at = None
                 await db.commit()
+                await AuditLogService(db).log(
+                    action=AuditAction.MODEL_UPDATED,
+                    user=_current_user,
+                    resource_type="model",
+                    resource_id=str(existing_model.id),
+                    details={
+                        "op": "reactivated",
+                        "token_id": str(token_uuid),
+                        "model": request.model_name,
+                    },
+                )
                 return {"message": f"Model {request.model_name} reactivated"}
 
         # Create new model
@@ -346,6 +359,13 @@ async def add_model(
         )
         db.add(new_model)
         await db.commit()
+        await AuditLogService(db).log(
+            action=AuditAction.MODEL_UPDATED,
+            user=_current_user,
+            resource_type="model",
+            resource_id=str(new_model.id),
+            details={"op": "added", "token_id": str(token_uuid), "model": request.model_name},
+        )
 
         logger.info(
             f"Model {request.model_name} added to token {token_uuid} by user {_current_user.id}"
@@ -392,6 +412,13 @@ async def delete_model(
         model.is_active = False
         model.deleted_at = datetime.utcnow()
         await db.commit()
+        await AuditLogService(db).log(
+            action=AuditAction.MODEL_UPDATED,
+            user=_current_user,
+            resource_type="model",
+            resource_id=str(model.id),
+            details={"op": "removed", "token_id": str(model.token_id), "model": model.model_name},
+        )
 
         logger.info(f"Model {model.model_name} deleted by user {_current_user.id}")
 

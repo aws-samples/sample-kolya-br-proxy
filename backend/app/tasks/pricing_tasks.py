@@ -5,6 +5,7 @@ Background tasks for pricing updates.
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from app.core.database import async_session_maker
 from app.services.pricing_updater import PricingUpdater
 from app.services.gemini_pricing_updater import GeminiPricingUpdater
@@ -61,6 +62,24 @@ async def update_gemini_pricing_task():
             logger.error(f"Gemini pricing update task failed: {e}", exc_info=True)
 
 
+async def cleanup_oauth_states_task():
+    """Delete expired OAuth login states.
+
+    /admin/auth/*/login is unauthenticated and inserts a row per call;
+    rows were only removed when their own state came back, so abandoned
+    logins accumulated forever.
+    """
+    from app.services.oauth import OAuthService
+
+    async with async_session_maker() as db:
+        try:
+            deleted = await OAuthService(db).cleanup_expired_states()
+            if deleted:
+                logger.info(f"Deleted {deleted} expired OAuth states")
+        except Exception as e:
+            logger.error(f"OAuth state cleanup failed: {e}", exc_info=True)
+
+
 def start_scheduler():
     """Start the background task scheduler."""
     global scheduler
@@ -97,6 +116,14 @@ def start_scheduler():
         trigger=CronTrigger(hour=2, minute=30),
         id="update_gemini_pricing",
         name="Update Gemini model pricing from Google",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        cleanup_oauth_states_task,
+        trigger=IntervalTrigger(minutes=15),
+        id="cleanup_oauth_states",
+        name="Delete expired OAuth login states",
         replace_existing=True,
     )
 

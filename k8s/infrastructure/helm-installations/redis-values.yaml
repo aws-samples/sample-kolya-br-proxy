@@ -15,3 +15,17 @@ master:
       memory: 256Mi
 metrics:
   enabled: false
+# Only the backend may reach Redis. It holds the API-token auth cache and
+# the config-sync channel, and auth is disabled, so any pod that can
+# connect could mark arbitrary tokens valid. The chart's default policy
+# admits every pod on 6379.
+networkPolicy:
+  enabled: true
+  allowExternal: false
+  extraIngress:
+    - ports:
+        - port: 6379
+      from:
+        - podSelector:
+            matchLabels:
+              app: backend

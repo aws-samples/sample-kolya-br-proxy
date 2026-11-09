@@ -101,22 +101,13 @@ async def liveness_check() -> Dict[str, Any]:
 
 @health_router.get("/metrics")
 async def metrics_endpoint() -> Dict[str, Any]:
-    """
-    Observability configuration status.
+    """Minimal status for the metrics probe.
 
-    Returns:
-        Dict containing current observability settings
+    Runtime observability settings (log level, exporter) used to be listed
+    here, but this endpoint is unauthenticated. Super-admins can read them
+    from the admin settings API instead.
     """
-    settings = get_settings()
-
     return {
         "service": "kolya-br-proxy",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "1.0.0",
-        "observability": {
-            "log_level": settings.LOG_LEVEL,
-            "log_format": settings.LOG_FORMAT,
-            "metrics_enabled": settings.ENABLE_METRICS,
-            "tracing_exporter": settings.OTEL_EXPORTER or "disabled",
-        },
     }
