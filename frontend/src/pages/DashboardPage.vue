@@ -462,7 +462,15 @@ async function exportCsv() {
             r.request_count,
             r.total_cost,
           ];
-      return row.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',');
+      // Prefix cells a spreadsheet would treat as a formula (token names are
+      // user-controlled), then quote.
+      return row
+        .map((v) => {
+          const text = String(v);
+          const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+          return `"${safe.replace(/"/g, '""')}"`;
+        })
+        .join(',');
     });
 
     const csv = [headers.join(','), ...csvRows].join('\n');

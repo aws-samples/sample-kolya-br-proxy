@@ -190,6 +190,8 @@ async def invite_admin(
 
     # Create Cognito user with temporary password
     settings = get_settings()
+    cognito_username = None
+    password_reset = False
     if settings.COGNITO_USER_POOL_ID:
         cognito_username = request.username
         if "@" in cognito_username:
@@ -211,6 +213,21 @@ async def invite_admin(
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
             if error_code == "UsernameExistsException":
+                # Only re-invite the pool user this email belongs to. Resetting
+                # whoever holds the username would let an invite take over or
+                # lock out an unrelated account.
+                existing_email = await _cognito_user_email(
+                    cognito_client, settings.COGNITO_USER_POOL_ID, cognito_username
+                )
+                if (existing_email or "").lower() != request.email.lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"Cognito username '{cognito_username}' belongs to "
+                            "another account. Choose a different username."
+                        ),
+                    ) from e
+                password_reset = True
                 try:
                     await asyncio.to_thread(
                         cognito_client.admin_set_user_password,
@@ -240,10 +257,29 @@ async def invite_admin(
         user=current_user,
         resource_type="user",
         resource_id=str(user.id),
-        details={"email": user.email, "role": request.role},
+        details={
+            "email": user.email,
+            "role": request.role,
+            "cognito_username": cognito_username,
+            "password_reset": password_reset,
+        },
     )
 
     return AdminUserResponse.from_user(user)
+
+
+async def _cognito_user_email(client, pool_id: str, username: str) -> str | None:
+    """Email attribute of an existing Cognito user, or None if unreadable."""
+    try:
+        resp = await asyncio.to_thread(
+            client.admin_get_user, UserPoolId=pool_id, Username=username
+        )
+    except ClientError:
+        return None
+    for attr in resp.get("UserAttributes", []):
+        if attr.get("Name") == "email":
+            return attr.get("Value")
+    return None
 
 
 @router.put("/{user_id}", response_model=AdminUserResponse)
