@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_current_token_flexible_streaming
 from app.core.config import get_settings
+from app.core.stream_heartbeat import HEARTBEAT, with_heartbeat
 from app.core.database import session_scope
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -463,9 +464,16 @@ async def stream_anthropic_messages(
 
     try:
         actual_model_emitted = False
-        async for event in bedrock_client.invoke_stream(
-            model, bedrock_request, fallback_models=fb_models
+        async for event in with_heartbeat(
+            bedrock_client.invoke_stream(
+                model, bedrock_request, fallback_models=fb_models
+            ),
+            settings.STREAM_HEARTBEAT_INTERVAL,
         ):
+            if event is HEARTBEAT:
+                yield 'event: ping\ndata: {"type": "ping"}\n\n'
+                last_heartbeat = time.time()
+                continue
             # Emit x-actual-model SSE comment on Level 2 degradation
             if event.actual_model and not actual_model_emitted:
                 yield f": x-actual-model {event.actual_model}\n\n"
@@ -900,7 +908,13 @@ async def _stream_gemini_as_anthropic(
             f"data: {_json.dumps({'type': 'message_start', 'message': {'id': request_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
         )
 
-        async for chunk in GeminiClient.invoke_stream(payload):
+        async for chunk in with_heartbeat(
+            GeminiClient.invoke_stream(payload),
+            get_settings().STREAM_HEARTBEAT_INTERVAL,
+        ):
+            if chunk is HEARTBEAT:
+                yield 'event: ping\ndata: {"type": "ping"}\n\n'
+                continue
             for line in chunk.splitlines():
                 if not line.startswith("data: ") or line.strip() == "data: [DONE]":
                     continue
@@ -1376,7 +1390,13 @@ async def _stream_mantle_as_anthropic(
             f"data: {_json.dumps({'type': 'message_start', 'message': {'id': request_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'usage': {'input_tokens': 0, 'output_tokens': 0}}})}\n\n"
         )
 
-        async for chunk in MantleClient.invoke_stream(payload):
+        async for chunk in with_heartbeat(
+            MantleClient.invoke_stream(payload),
+            get_settings().STREAM_HEARTBEAT_INTERVAL,
+        ):
+            if chunk is HEARTBEAT:
+                yield 'event: ping\ndata: {"type": "ping"}\n\n'
+                continue
             for line in chunk.splitlines():
                 if not line.startswith("data: ") or line.strip() == "data: [DONE]":
                     continue

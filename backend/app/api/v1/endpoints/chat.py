@@ -19,6 +19,7 @@ import httpx
 
 from app.api.deps import get_current_token_streaming
 from app.core.config import get_settings
+from app.core.stream_heartbeat import HEARTBEAT, with_heartbeat
 from app.services.openai_gpt_catalog import is_ultrafast
 from app.core.database import get_db, session_scope
 from app.models.token import APIToken
@@ -517,7 +518,13 @@ async def stream_gemini_completion(
     last_heartbeat = time.time()
 
     try:
-        async for chunk in GeminiClient.invoke_stream(payload):
+        async for chunk in with_heartbeat(
+            GeminiClient.invoke_stream(payload), settings.STREAM_HEARTBEAT_INTERVAL
+        ):
+            if chunk is HEARTBEAT:
+                yield ": heartbeat\n\n"
+                last_heartbeat = time.time()
+                continue
             current_time = time.time()
 
             # Send heartbeat if idle too long
@@ -708,7 +715,13 @@ async def stream_mantle_completion(
     last_heartbeat = time.time()
 
     try:
-        async for chunk in MantleClient.invoke_stream(payload):
+        async for chunk in with_heartbeat(
+            MantleClient.invoke_stream(payload), settings.STREAM_HEARTBEAT_INTERVAL
+        ):
+            if chunk is HEARTBEAT:
+                yield ": heartbeat\n\n"
+                last_heartbeat = time.time()
+                continue
             current_time = time.time()
 
             # Send heartbeat if idle too long
@@ -900,9 +913,16 @@ async def stream_chat_completion(
 
     try:
         actual_model_emitted = False
-        async for event in bedrock_client.invoke_stream(
-            model, bedrock_request, fallback_models=fb_models
+        async for event in with_heartbeat(
+            bedrock_client.invoke_stream(
+                model, bedrock_request, fallback_models=fb_models
+            ),
+            settings.STREAM_HEARTBEAT_INTERVAL,
         ):
+            if event is HEARTBEAT:
+                yield ": heartbeat\n\n"
+                last_heartbeat = time.time()
+                continue
             # Emit x-actual-model SSE comment on Level 2 degradation
             if event.actual_model and not actual_model_emitted:
                 yield f": x-actual-model {event.actual_model}\n\n"
