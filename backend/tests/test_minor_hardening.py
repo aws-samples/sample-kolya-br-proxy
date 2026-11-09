@@ -85,7 +85,7 @@ def _invite_request(email, username):
         email=email,
         username=username,
         role="admin",
-        permissions={"manage_api_keys": "all"},
+        permissions={"manage_api_keys": "all"},  # pragma: allowlist secret
         temp_password="Temp-Passw0rd!",  # pragma: allowlist secret
     )
 
