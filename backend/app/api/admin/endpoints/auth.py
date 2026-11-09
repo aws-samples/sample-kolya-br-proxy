@@ -796,6 +796,12 @@ async def cognito_callback(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
+    if user and not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account deactivated. Contact admin.",
+        )
+
     if user:
         # Link Cognito account to existing user if not already linked
         from app.models.user import AuthMethod

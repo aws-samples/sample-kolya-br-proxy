@@ -171,7 +171,6 @@ import { useTokensStore } from '@/stores/tokens';
 import { useDashboardStore } from '@/stores/dashboard';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/boot/axios';
-import { getApiBaseUrl } from '@/utils/api';
 import { calculateRemainingLifetimeBalance, formatCostUsd } from '@/utils/balance';
 
 const tokensStore = useTokensStore();
@@ -488,13 +487,24 @@ async function exportCsv() {
   }
 }
 
-function exportKeys() {
-  const token = localStorage.getItem('access_token');
-  if (!token) return;
-  window.open(
-    `${getApiBaseUrl()}/admin/tokens/export/keys?token=${encodeURIComponent(token)}`,
-    '_blank',
-  );
+async function exportKeys() {
+  // Fetch through the API client so the JWT travels in the Authorization
+  // header, never in a URL that ends up in history or access logs.
+  try {
+    const response = await api.get('/admin/tokens/export/keys', { responseType: 'blob' });
+    const disposition = String(response.headers['content-disposition'] || '');
+    const match = /filename="([^"]+)"/.exec(disposition);
+    const url = URL.createObjectURL(response.data as Blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = match?.[1] || 'api_keys.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } catch {
+    Notify.create({ type: 'negative', message: 'Failed to export keys', position: 'top' });
+  }
 }
 
 onMounted(async () => {

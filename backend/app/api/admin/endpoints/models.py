@@ -12,10 +12,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_permission
+from app.api.deps import (
+    get_allowed_resource_ids,
+    require_permission,
+    require_token_access,
+)
+from app.models.token import APIToken
 from app.models.audit_log import AuditAction
 from app.services.audit_log import AuditLogService
 from app.core.config import get_settings
@@ -228,19 +233,34 @@ async def list_enabled_models(
     Returns models that user has added, with model_id fetched from AWS cache.
     If token_id is provided, only returns models for that token.
     """
+    if token_id:
+        try:
+            token_uuid = UUID(token_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid token_id format")
+        await require_token_access(db, _current_user, token_uuid)
     try:
         # Get enabled models from database (exclude deleted)
         query = select(Model).where(Model.is_active, Model.is_deleted.is_(False))
 
         # Filter by token_id if provided
         if token_id:
-            try:
-                token_uuid = UUID(token_id)
-                query = query.where(Model.token_id == token_uuid)
-            except ValueError:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid token_id format",
+            query = query.where(Model.token_id == token_uuid)
+        else:
+            # Scoped admins only see entitlements of tokens they can manage.
+            allowed = get_allowed_resource_ids(_current_user, "manage_api_keys")
+            if allowed is not None:
+                allowed_uuids = []
+                for raw in allowed:
+                    try:
+                        allowed_uuids.append(UUID(str(raw)))
+                    except ValueError:
+                        continue
+                query = query.join(APIToken, APIToken.id == Model.token_id).where(
+                    or_(
+                        APIToken.user_id == _current_user.id,
+                        APIToken.id.in_(allowed_uuids),
+                    )
                 )
 
         result = await db.execute(query)
@@ -317,9 +337,12 @@ async def add_model(
     with association to a specific API token.
     """
     try:
-        # Validate token_id
         token_uuid = UUID(request.token_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid token_id format")
+    await require_token_access(db, _current_user, token_uuid)
 
+    try:
         # Check if model already exists for this token
         result = await db.execute(
             select(Model).where(
@@ -409,6 +432,10 @@ async def delete_model(
         model = result.scalar_one_or_none()
 
         if not model:
+            raise HTTPException(status_code=404, detail="Model not found")
+        try:
+            await require_token_access(db, _current_user, model.token_id)
+        except HTTPException:
             raise HTTPException(status_code=404, detail="Model not found")
 
         # Soft delete - mark as deleted and inactive

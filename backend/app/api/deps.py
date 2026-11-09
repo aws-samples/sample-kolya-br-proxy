@@ -567,3 +567,30 @@ def check_resource_scope(user: User, permission: str, resource_id: str) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this resource",
         )
+
+
+def can_access_token(user: User, token: APIToken) -> bool:
+    """True if the user owns the token or holds it in their manage_api_keys scope."""
+    if token.user_id == user.id:
+        return True
+    allowed_ids = get_allowed_resource_ids(user, "manage_api_keys")
+    return allowed_ids is None or str(token.id) in allowed_ids
+
+
+async def require_token_access(
+    db: AsyncSession, user: User, token_id: UUID
+) -> APIToken:
+    """Load a token and raise unless the user may manage it.
+
+    Out-of-scope tokens get the same 404 as missing ones so the endpoint does
+    not confirm which token IDs exist.
+    """
+    from sqlalchemy import select
+
+    result = await db.execute(select(APIToken).where(APIToken.id == token_id))
+    token = result.scalar_one_or_none()
+    if token is None or not can_access_token(user, token):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Token not found"
+        )
+    return token

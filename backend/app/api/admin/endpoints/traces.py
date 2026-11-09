@@ -11,10 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import (
     get_allowed_resource_ids,
+    get_audit_log_service,
     get_current_superadmin,
     require_permission,
 )
-from app.models.user import User
+from app.models.audit_log import AuditAction
+from app.models.user import User, UserRole
+from app.services.audit_log import AuditLogService
 from app.services.trace_store import TraceStore
 
 router = APIRouter()
@@ -22,6 +25,10 @@ router = APIRouter()
 
 def _visible_token_ids(user: User) -> Optional[set[str]]:
     """Token IDs whose traces the user may read; None means all."""
+    # Viewers read every dashboard page, but traces carry raw prompt and
+    # response bodies, which a read-only role should not see.
+    if user.role == UserRole.VIEWER:
+        return set()
     allowed = get_allowed_resource_ids(user, "manage_api_keys")
     return None if allowed is None else set(allowed)
 
@@ -62,7 +69,14 @@ async def get_trace(
 @router.delete("/")
 async def clear_traces(
     current_user: User = Depends(get_current_superadmin),
+    audit_service: AuditLogService = Depends(get_audit_log_service),
 ):
     """Clear all stored traces. The buffer is shared, so super_admin only."""
     TraceStore.get_instance().clear()
+    await audit_service.log(
+        action=AuditAction.OBSERVABILITY_UPDATED,
+        user=current_user,
+        resource_type="trace_buffer",
+        details={"op": "traces_cleared"},
+    )
     return {"message": "Traces cleared"}
