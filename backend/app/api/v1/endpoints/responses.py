@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.api.deps import get_current_token_streaming
 from app.api.v1.endpoints.chat import record_usage
 from app.core.config import get_settings
+from app.core.stream_heartbeat import HEARTBEAT, with_heartbeat
 from app.core.database import session_scope
 from app.models.model import Model
 from app.models.token import APIToken
@@ -265,7 +266,14 @@ async def _stream_responses(
         )
 
     try:
-        async for raw in MantleClient.responses_passthrough_stream(body):
+        async for raw in with_heartbeat(
+            MantleClient.responses_passthrough_stream(body),
+            settings.STREAM_HEARTBEAT_INTERVAL,
+        ):
+            if raw is HEARTBEAT:
+                yield b": heartbeat\n\n"
+                last_heartbeat = time.time()
+                continue
             # Parse usage before yielding: if the client disconnects while the
             # final chunk is suspended at yield, the finally block can still bill it.
             last_heartbeat = time.time()
