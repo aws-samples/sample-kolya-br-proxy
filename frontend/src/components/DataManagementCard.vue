@@ -22,10 +22,11 @@
         />
       </div>
 
-      <q-separator class="q-mb-lg" />
+      <!-- Import is a write; viewers only get the export above. -->
+      <q-separator v-if="authStore.canWrite" class="q-mb-lg" />
 
       <!-- Import -->
-      <div>
+      <div v-if="authStore.canWrite">
         <div class="text-subtitle2 q-mb-sm">Import Configuration</div>
         <div class="text-body2 text-grey q-mb-md">
           Upload a previously exported JSON file to restore configuration.
@@ -172,9 +173,12 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import { Notify, copyToClipboard } from 'quasar';
 import { api } from '@/boot/axios';
 import { extractErrorMessage } from '@/utils/error';
+
+const authStore = useAuthStore();
 
 interface SectionResult {
   created: number;

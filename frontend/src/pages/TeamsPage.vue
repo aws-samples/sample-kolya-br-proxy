@@ -5,6 +5,7 @@
       <div class="row items-center justify-between q-mb-md">
         <div class="text-h4">Teams</div>
         <q-btn
+          v-if="authStore.canWrite"
           color="grey-8"
           icon="add"
           label="Create Team"
@@ -69,6 +70,7 @@
 
             <template v-slot:body-cell-actions="props">
               <q-td :props="props">
+                <template v-if="authStore.canWrite">
                 <q-btn
                   flat
                   dense
@@ -92,6 +94,7 @@
                 >
                   <q-tooltip>Delete Team</q-tooltip>
                 </q-btn>
+                </template>
               </q-td>
             </template>
           </q-table>
@@ -111,6 +114,7 @@
         />
         <div class="text-h4">{{ selectedTeam.name }}</div>
         <q-space />
+        <template v-if="authStore.canWrite">
         <q-btn
           color="grey-8"
           icon="playlist_add"
@@ -135,6 +139,7 @@
           @click="openTeamAlertDialog"
           unelevated
         />
+        </template>
       </div>
 
       <!-- Budget Summary -->
@@ -237,6 +242,7 @@
 
             <template v-slot:body-cell-actions="props">
               <q-td :props="props">
+                <template v-if="authStore.canWrite">
                 <q-btn
                   flat
                   dense
@@ -260,6 +266,7 @@
                 >
                   <q-tooltip>Remove Member</q-tooltip>
                 </q-btn>
+                </template>
               </q-td>
             </template>
           </q-table>
@@ -669,6 +676,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import { useTeamsStore } from '@/stores/teams';
 import { useTokensStore } from '@/stores/tokens';
 import { useModelsStore } from '@/stores/models';
@@ -678,6 +686,8 @@ import { Dialog, Notify } from 'quasar';
 import { extractErrorMessage } from '@/utils/error';
 import { formatCostUsd } from '@/utils/balance';
 import type { TeamListItem, TeamMember } from '@/stores/teams';
+
+const authStore = useAuthStore();
 
 const teamsStore = useTeamsStore();
 const tokensStore = useTokensStore();

@@ -25,6 +25,9 @@ class UserRole(enum.Enum):
 
     SUPER_ADMIN = "super_admin"
     ADMIN = "admin"
+    # Read-only: sees every admin page but cannot perform any write and
+    # cannot read plaintext API keys (enforced in get_current_user_from_jwt).
+    VIEWER = "viewer"
 
 
 class User(Base):

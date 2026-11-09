@@ -340,7 +340,56 @@ async def get_current_token_from_gemini_key(
     return token
 
 
+# HTTP methods a viewer may use. Everything else is a write.
+_VIEWER_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# Route templates (as declared on the app, not the raw URL) for writes a
+# viewer may still perform: ending their own sessions.
+_VIEWER_ALLOWED_WRITE_ROUTES = frozenset({"/admin/auth/revoke-all"})
+
+# Route templates for reads a viewer may not perform because they return
+# plaintext API keys.
+_VIEWER_DENIED_READ_ROUTES = frozenset(
+    {
+        "/admin/tokens/{token_id}/plain",
+        "/admin/tokens/export/keys",
+    }
+)
+
+
+def _route_template(request: Request) -> str:
+    """Matched route template, e.g. ``/admin/tokens/{token_id}/plain``.
+
+    Falls back to the raw path if routing hasn't resolved a route.
+    """
+    route = request.scope.get("route")
+    return getattr(route, "path", None) or request.url.path
+
+
+def enforce_viewer_read_only(user: User, method: str, route: str) -> None:
+    """Raise 403 if a viewer attempts a write or reads plaintext API keys.
+
+    Applied centrally in get_current_user_from_jwt so every JWT-authenticated
+    endpoint is covered, including ones added later.
+    """
+    if user.role != UserRole.VIEWER:
+        return
+    if method.upper() not in _VIEWER_SAFE_METHODS:
+        if route in _VIEWER_ALLOWED_WRITE_ROUTES:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Read-only access: viewers cannot modify data",
+        )
+    if route in _VIEWER_DENIED_READ_ROUTES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Read-only access: viewers cannot view API keys",
+        )
+
+
 async def get_current_user_from_jwt(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> User:
@@ -395,6 +444,8 @@ async def get_current_user_from_jwt(
             detail="Inactive user",
         )
 
+    enforce_viewer_read_only(user, request.method, _route_template(request))
+
     return user
 
 
@@ -435,7 +486,13 @@ async def get_current_user(
 async def get_current_superadmin(
     current_user: User = Depends(get_current_user_from_jwt),
 ) -> User:
-    """Require super_admin role."""
+    """Require super_admin role.
+
+    Viewers also pass: they may read super-admin pages, and any write they
+    attempt was already rejected by get_current_user_from_jwt.
+    """
+    if current_user.role == UserRole.VIEWER:
+        return current_user
     if not current_user.role or current_user.role != UserRole.SUPER_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -456,7 +513,8 @@ def require_permission(permission: str):
     async def _check_permission(
         current_user: User = Depends(get_current_user_from_jwt),
     ) -> User:
-        if current_user.role == UserRole.SUPER_ADMIN:
+        # Viewers read everything; their writes are rejected upstream.
+        if current_user.role in (UserRole.SUPER_ADMIN, UserRole.VIEWER):
             return current_user
         if current_user.role == UserRole.ADMIN or current_user.is_admin:
             user_perms = current_user.permissions or {}
@@ -488,7 +546,7 @@ def get_allowed_resource_ids(user: User, permission: str) -> Optional[list[str]]
     Returns a list of ID strings if access is scoped.
     Returns an empty list if access is denied.
     """
-    if user.role == UserRole.SUPER_ADMIN:
+    if user.role in (UserRole.SUPER_ADMIN, UserRole.VIEWER):
         return None
     user_perms = user.permissions or {}
     if not user_perms:
