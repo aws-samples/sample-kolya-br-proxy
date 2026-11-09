@@ -462,15 +462,16 @@ def require_permission(permission: str):
             user_perms = current_user.permissions or {}
             if not user_perms:
                 return current_user
-            perm_value = user_perms.get(permission)
-            # Booleans by type, not equality: 0/1 are not False/True here
-            # (pinned by tests/test_permission_values.py).
-            if perm_value is None or (isinstance(perm_value, bool) and not perm_value):
+            # Grant only what get_allowed_resource_ids would grant: true,
+            # "all", or a non-empty list of IDs. Anything else ("none", [],
+            # stray strings or ints) is denied, so the endpoint gate never
+            # lets through a user whose resource scope is empty.
+            allowed_ids = get_allowed_resource_ids(current_user, permission)
+            if allowed_ids is not None and not allowed_ids:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Permission denied: {permission}",
                 )
-            # true, "all", or a list of IDs all grant access
             return current_user
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
