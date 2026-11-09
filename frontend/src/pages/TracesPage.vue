@@ -27,6 +27,7 @@
         @click="toggleAuto"
       />
       <q-btn
+        v-if="authStore.canWrite"
         flat
         dense
         icon="delete_outline"
@@ -237,8 +238,11 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import { api } from '@/boot/axios';
 import { Dialog, Notify } from 'quasar';
+
+const authStore = useAuthStore();
 
 interface ContentBlock {
   type?: string;

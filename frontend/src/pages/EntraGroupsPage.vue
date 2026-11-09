@@ -3,7 +3,7 @@
     <div class="row items-center q-mb-lg">
       <div class="text-h5">Entra ID Group Mappings</div>
       <q-space />
-      <q-btn color="primary" icon="add" label="Add Mapping" @click="openCreateDialog" />
+      <q-btn v-if="authStore.canWrite" color="primary" icon="add" label="Add Mapping" @click="openCreateDialog" />
     </div>
 
     <q-table
@@ -40,8 +40,10 @@
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
+          <template v-if="authStore.canWrite">
           <q-btn flat dense round size="xs" icon="edit" class="action-btn" @click="openEditDialog(props.row)" />
           <q-btn flat dense round size="xs" icon="delete" color="negative" class="action-btn" @click="deleteMapping(props.row)" />
+          </template>
         </q-td>
       </template>
     </q-table>
@@ -107,11 +109,14 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { useAuthStore } from '@/stores/auth';
 import { api } from '@/boot/axios';
 import { Notify } from 'quasar';
 import { extractErrorMessage } from '@/utils/error';
 import PermissionEditor from '@/components/PermissionEditor.vue';
 import type { Resources } from '@/types/permissions';
+
+const authStore = useAuthStore();
 
 interface GroupMapping {
   id: string;

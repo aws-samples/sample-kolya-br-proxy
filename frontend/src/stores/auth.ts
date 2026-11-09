@@ -9,7 +9,7 @@ export interface User {
   last_name: string | null;
   is_active: boolean;
   is_admin: boolean;
-  role?: 'super_admin' | 'admin';
+  role?: 'super_admin' | 'admin' | 'viewer';
   permissions?: Record<string, boolean | string | string[]> | null;
   email_verified: boolean;
   current_balance: string;
@@ -40,10 +40,16 @@ export const useAuthStore = defineStore('auth', {
     currentUser: (state) => state.user,
     isAdmin: (state) => state.user?.is_admin || false,
     isSuperAdmin: (state) => state.user?.role === 'super_admin',
+    // Viewer: read-only access to every page; no writes, no plaintext keys.
+    // The backend enforces this; these getters only shape the UI.
+    isViewer: (state) => state.user?.role === 'viewer',
+    canWrite: (state) => Boolean(state.user) && state.user?.role !== 'viewer',
+    canViewSuperAdminPages: (state) =>
+      state.user?.role === 'super_admin' || state.user?.role === 'viewer',
     groupSyncEnabled: (state) => state.user?.group_sync_enabled || false,
     hasPermission: (state) => (permission: string) => {
       if (!state.user) return false;
-      if (state.user.role === 'super_admin') return true;
+      if (state.user.role === 'super_admin' || state.user.role === 'viewer') return true;
       if (!state.user.permissions || Object.keys(state.user.permissions).length === 0) return true;
       const val = state.user.permissions[permission];
       if (val === 'all' || val === true) return true;

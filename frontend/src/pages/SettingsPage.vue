@@ -23,6 +23,7 @@
                 label="First Name"
                 outlined
                 dense
+                :readonly="!authStore.canWrite"
                 class="q-mb-md"
               />
 
@@ -31,6 +32,7 @@
                 label="Last Name"
                 outlined
                 dense
+                :readonly="!authStore.canWrite"
                 class="q-mb-md"
               />
 
@@ -47,6 +49,7 @@
               </div>
 
               <q-btn
+                v-if="authStore.canWrite"
                 label="Save"
                 color="grey-8"
                 @click="saveProfile"
@@ -60,8 +63,8 @@
 
 
 
-      <!-- Data Management (super-admin only) -->
-      <div class="col-12" v-if="authStore.isSuperAdmin">
+      <!-- Data Management (super-admin; viewers see export only) -->
+      <div class="col-12" v-if="authStore.canViewSuperAdminPages">
         <DataManagementCard />
       </div>
 
@@ -83,6 +86,7 @@
                   emit-value
                   map-options
                   :loading="obsLoading"
+                  :disable="!authStore.canWrite"
                 />
               </div>
 
@@ -93,12 +97,12 @@
                   v-model="obs.metrics_enabled"
                   :label="obs.metrics_enabled ? 'Enabled' : 'Disabled'"
                   dense
-                  :disable="obsLoading"
+                  :disable="obsLoading || !authStore.canWrite"
                 />
               </div>
 
               <!-- Save Button -->
-              <div class="col-12 col-sm-4">
+              <div v-if="authStore.canWrite" class="col-12 col-sm-4">
                 <q-btn
                   label="Apply"
                   color="grey-8"
