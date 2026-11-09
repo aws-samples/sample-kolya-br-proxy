@@ -35,6 +35,15 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+_MULTI_TENANT_AUTHORITIES = {"", "common", "organizations", "consumers"}
+
+
+def _microsoft_single_tenant(settings) -> bool:
+    """True when the Microsoft app is pinned to one Entra tenant."""
+    tenant = (settings.MICROSOFT_TENANT_ID or "").strip().lower()
+    return tenant not in _MULTI_TENANT_AUTHORITIES
+
+
 def _claim_is_true(value: object) -> bool:
     """OIDC boolean claim; Cognito's userinfo returns it as "true"/"false"."""
     return value is True or (isinstance(value, str) and value.lower() == "true")
@@ -475,14 +484,15 @@ async def microsoft_callback(
 
         group_sync = EntraGroupSyncService(db)
 
-        # Bootstrap: no mappings AND no Microsoft users yet → first user gets super_admin
+        # Bootstrap: no mappings AND no super_admin of any kind yet → the first
+        # login becomes super_admin. Counting only Microsoft users would hand
+        # super_admin to whoever logs in first after a Cognito-run deployment
+        # enables group sync.
         if not await group_sync.has_any_mappings():
-            from app.models.user import AuthMethod
-
-            ms_user_count = await db.execute(
-                select(User.id).where(User.auth_method == AuthMethod.MICROSOFT).limit(1)
+            existing_super = await db.execute(
+                select(User.id).where(User.role == UserRole.SUPER_ADMIN).limit(1)
             )
-            if ms_user_count.scalar_one_or_none() is None:
+            if existing_super.scalar_one_or_none() is None:
                 logger.info(
                     f"MICROSOFT_GROUP_SYNC: Bootstrap — first user, granting super_admin to {email}"
                 )
@@ -561,6 +571,22 @@ async def microsoft_callback(
                     detail="Account deactivated. Contact admin.",
                 )
 
+            # The Graph mail/UPN is not a verified claim. With a multi-tenant
+            # app any tenant admin can set it to someone else's address, so
+            # only link by email when the app is pinned to one tenant.
+            if not _microsoft_single_tenant(settings):
+                logger.warning(
+                    "ACCOUNT_LINKING_REFUSED: multi-tenant Microsoft app",
+                    extra={"event_type": "account_linking_refused", "email": email},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "An account with this email already exists. "
+                        "Sign in with its original method or contact admin."
+                    ),
+                )
+
             # Link Microsoft account to existing user
             from app.models.user import AuthMethod
 
@@ -615,7 +641,14 @@ async def microsoft_callback(
                 is_active=True,
                 is_admin=True,
                 role=resolved_role if resolved_role else UserRole.ADMIN,
-                permissions=resolved_permissions,
+                # Without group sync nothing vouches for this user's access.
+                # Empty permissions would mean full admin, so start with a
+                # non-empty map that grants nothing until a super_admin edits it.
+                permissions=(
+                    resolved_permissions
+                    if resolved_role
+                    else {"pending_approval": True}
+                ),
                 email_verified=True,
             )
             db.add(user)

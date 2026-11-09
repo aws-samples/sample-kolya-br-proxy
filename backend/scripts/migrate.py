@@ -29,12 +29,33 @@ logger = logging.getLogger("migrate")
 MIGRATION_LOCK_ID = 7239841
 
 
-async def check_and_stamp():
-    """Phase 1: Acquire lock, check state, auto-stamp if needed.
+def run_alembic(stamp_rev):
+    """Stamp (if needed) and upgrade to head.
 
-    Returns the stamp revision applied (or None if no stamp needed).
-    The advisory lock is held for the entire duration to prevent
-    concurrent migrations from other Pods.
+    Runs in a worker thread: alembic's env.py starts its own event loop,
+    which cannot nest inside the one holding the advisory lock.
+    """
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_cfg = Config("alembic.ini")
+
+    if stamp_rev is not None:
+        logger.info(f"Stamping to revision: {stamp_rev}")
+        command.stamp(alembic_cfg, stamp_rev)
+        logger.info(f"Stamped to {stamp_rev}")
+
+    logger.info("Running alembic upgrade head...")
+    command.upgrade(alembic_cfg, "head")
+    logger.info("Migration completed successfully")
+
+
+async def check_and_stamp(upgrade=run_alembic):
+    """Acquire the lock, check state, then stamp and upgrade while holding it.
+
+    The advisory lock is held until alembic finishes so a second Pod's
+    initContainer waits instead of running the same migrations
+    concurrently. Returns the stamp revision applied (or None).
     """
     from app.core.config import get_settings
 
@@ -94,6 +115,8 @@ async def check_and_stamp():
                 logger.info(f"Current alembic revision: {current_rev}")
 
             await conn.commit()
+
+            await asyncio.to_thread(upgrade, stamp_rev)
         finally:
             await conn.execute(
                 text("SELECT pg_advisory_unlock(:lock_id)"),
@@ -140,24 +163,7 @@ async def detect_stamp_revision(conn, existing_tables: list[str]) -> str:
 
 def main():
     try:
-        # Phase 1: Check state and auto-stamp (async)
-        stamp_rev = asyncio.run(check_and_stamp())
-
-        # Phase 2: Run alembic commands (alembic manages its own async internally)
-        from alembic.config import Config
-        from alembic import command
-
-        alembic_cfg = Config("alembic.ini")
-
-        if stamp_rev is not None:
-            logger.info(f"Stamping to revision: {stamp_rev}")
-            command.stamp(alembic_cfg, stamp_rev)
-            logger.info(f"Stamped to {stamp_rev}")
-
-        logger.info("Running alembic upgrade head...")
-        command.upgrade(alembic_cfg, "head")
-        logger.info("Migration completed successfully")
-
+        asyncio.run(check_and_stamp())
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
         sys.exit(1)
