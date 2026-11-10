@@ -14,6 +14,8 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
+from app.core.log_redaction import redact, redact_value
+
 # Standard LogRecord attributes to exclude from the ``extra`` section.
 _BUILTIN_ATTRS = frozenset(
     {
@@ -62,7 +64,7 @@ class StructuredJsonFormatter(logging.Formatter):
             ).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.message,
+            "message": redact(record.message),
             "token_name": getattr(record, "token_name", "-"),
             "token_id": getattr(record, "token_id", "-"),
             "trace_id": getattr(record, "trace_id", "-"),
@@ -71,12 +73,21 @@ class StructuredJsonFormatter(logging.Formatter):
 
         for key, value in record.__dict__.items():
             if key not in _BUILTIN_ATTRS and not key.startswith("_"):
-                obj[key] = value
+                obj[key] = redact_value(value)
 
         if record.exc_info and record.exc_info[0] is not None:
-            obj["exception"] = "".join(traceback.format_exception(*record.exc_info))
+            obj["exception"] = redact(
+                "".join(traceback.format_exception(*record.exc_info))
+            )
 
         return json.dumps(obj, ensure_ascii=False, default=str)
+
+
+class RedactingTextFormatter(logging.Formatter):
+    """Human-readable format with the same redaction as the JSON output."""
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: A003
+        return redact(super().format(record))
 
 
 class _HealthCheckFilter(logging.Filter):
@@ -128,7 +139,7 @@ def configure_logging() -> None:
     if settings.LOG_FORMAT == "json":
         handler.setFormatter(StructuredJsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter(_TEXT_FORMAT))
+        handler.setFormatter(RedactingTextFormatter(_TEXT_FORMAT))
 
     root.addHandler(handler)
 

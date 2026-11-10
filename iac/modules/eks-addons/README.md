@@ -48,10 +48,12 @@ No modules.
 |------|-------------|------|---------|:--------:|
 | <a name="input_account"></a> [account](#input\_account) | AWS account | `string` | n/a | yes |
 | <a name="input_cluster_name"></a> [cluster\_name](#input\_cluster\_name) | EKS cluster name | `string` | n/a | yes |
+| <a name="input_cognito_user_pool_arn"></a> [cognito\_user\_pool\_arn](#input\_cognito\_user\_pool\_arn) | ARN of the Cognito user pool the backend administers (null when Cognito is disabled) | `string` | `null` | no |
 | <a name="input_default_tags"></a> [default\_tags](#input\_default\_tags) | Default tags to apply to resources | `map(string)` | `{}` | no |
 | <a name="input_partition"></a> [partition](#input\_partition) | AWS partition | `string` | `"aws"` | no |
 | <a name="input_project_name_alias"></a> [project\_name\_alias](#input\_project\_name\_alias) | The short name of the project | `string` | n/a | yes |
 | <a name="input_region"></a> [region](#input\_region) | AWS region | `string` | n/a | yes |
+| <a name="input_ses_sender_identity_arns"></a> [ses\_sender\_identity\_arns](#input\_ses\_sender\_identity\_arns) | SES identity ARNs the backend may send from. Empty allows any identity in this account. | `list(string)` | `[]` | no |
 | <a name="input_workspace"></a> [workspace](#input\_workspace) | Terraform workspace | `string` | n/a | yes |
 
 ## Outputs

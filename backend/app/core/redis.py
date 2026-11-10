@@ -12,6 +12,7 @@ from typing import Any, Optional
 import redis.asyncio as aioredis
 
 from app.core.config import get_settings
+from app.core.log_redaction import redact
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ async def get_redis() -> Optional[aioredis.Redis]:
             retry_on_timeout=True,
         )
         await _redis_client.ping()
-        logger.info(f"Redis connected: {settings.REDIS_URL}")
+        logger.info("Redis connected: %s", redact(settings.REDIS_URL))
         return _redis_client
     except Exception as e:
         logger.warning(f"Redis connection failed: {e}")

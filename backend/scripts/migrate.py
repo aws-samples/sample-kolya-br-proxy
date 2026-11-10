@@ -39,6 +39,9 @@ def run_alembic(stamp_rev):
     from alembic import command
 
     alembic_cfg = Config("alembic.ini")
+    # Keep this script's logging. alembic's fileConfig would otherwise disable
+    # the "migrate" logger and raise root to WARN, hiding "lock released".
+    alembic_cfg.attributes["configure_logger"] = False
 
     if stamp_rev is not None:
         logger.info(f"Stamping to revision: {stamp_rev}")

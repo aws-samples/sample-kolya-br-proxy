@@ -230,6 +230,9 @@ module "eks_addons" {
   # EKS cluster information
   cluster_name = module.eks_karpenter.cluster_name
 
+  # Scope the backend's Cognito permissions to the pool it administers
+  cognito_user_pool_arn = var.enable_cognito ? module.cognito[0].user_pool_arn : null
+
   # Tags
   default_tags = local.default_tags
 
