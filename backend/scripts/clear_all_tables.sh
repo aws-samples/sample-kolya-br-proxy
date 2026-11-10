@@ -1,6 +1,9 @@
 #!/bin/bash
 # Truncate all tables in the database
-# Usage: ./scripts/clear_all_tables.sh
+# Usage: PGPASSWORD=... ./scripts/clear_all_tables.sh
+
+: "${PGPASSWORD:?Set PGPASSWORD for the local database}"
+export PGPASSWORD
 
 echo "⚠️  WARNING: This will delete ALL data from ALL tables!"
 echo "Database: kbp"
@@ -10,7 +13,7 @@ echo ""
 
 # Get all table names
 echo "Fetching table names..."
-TABLES=$(PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;")
+TABLES=$(psql -h 127.0.0.1 -U root -d kbp -t -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;")
 
 if [ -z "$TABLES" ]; then
     echo "No tables found."
@@ -28,7 +31,7 @@ echo ""
 
 # Truncate all tables
 echo "Truncating all tables..."
-PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp <<EOF
+psql -h 127.0.0.1 -U root -d kbp <<EOF
 -- Disable foreign key checks
 SET session_replication_role = 'replica';
 
@@ -47,7 +50,7 @@ echo ""
 echo "Verifying tables are empty:"
 for table in $TABLES; do
     table=$(echo $table | tr -d ' ')
-    count=$(PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -t -c "SELECT COUNT(*) FROM $table;")
+    count=$(psql -h 127.0.0.1 -U root -d kbp -t -c "SELECT COUNT(*) FROM $table;")
     echo "  $table: $count rows"
 done
 
