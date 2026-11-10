@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.config import get_settings
 from app.models.model_pricing import ModelPricing
-from app.services.pricing import OFFICIAL_PROFILE_PRICING
+from app.services.pricing import MODEL_CARD_FALLBACK_PRICING, OFFICIAL_PROFILE_PRICING
 from app.services.mantle_models import (
     get_mantle_model_regions,
     mantle_pricing_name_to_id,
@@ -219,7 +219,7 @@ class PricingUpdater:
         profile_ids = BedrockClient.get_instance()._profile_cache._local_profile_ids
         available_ids = set(OFFICIAL_PROFILE_PRICING) & set(profile_ids)
         if not available_ids:
-            return 0
+            return await self._ensure_model_card_fallback_pricing(profile_ids)
 
         result = await self.db.execute(
             select(ModelPricing.model_id).where(
@@ -242,9 +242,57 @@ class PricingUpdater:
                 }
             )
 
+        saved = (
+            await self._save_pricing_data(pricing_data, "aws-model-card")
+            if pricing_data
+            else 0
+        )
+        return saved + await self._ensure_model_card_fallback_pricing(profile_ids)
+
+    MODEL_CARD_FALLBACK_SOURCE = "aws-model-card-fallback"
+
+    async def _ensure_model_card_fallback_pricing(self, profile_ids) -> int:
+        """Seed published model-card rates the Price List API still lacks.
+
+        A row from any other source (the API, the scraper) is left alone, so
+        once AWS publishes the profile in the Price List its rate wins. Rows
+        this method wrote earlier are refreshed to track the model card.
+        """
+        settings = get_settings()
+        available_ids = set(MODEL_CARD_FALLBACK_PRICING) & set(profile_ids)
+        if not available_ids:
+            return 0
+
+        result = await self.db.execute(
+            select(ModelPricing.model_id, ModelPricing.source).where(
+                ModelPricing.region == settings.AWS_REGION,
+                ModelPricing.model_id.in_(available_ids),
+            )
+        )
+        owned_elsewhere = {
+            model_id
+            for model_id, source in result.fetchall()
+            if source != self.MODEL_CARD_FALLBACK_SOURCE
+        }
+
+        pricing_data = []
+        for model_id in sorted(available_ids - owned_elsewhere):
+            rates = MODEL_CARD_FALLBACK_PRICING[model_id].short
+            pricing_data.append(
+                {
+                    "model_id": model_id,
+                    "region": settings.AWS_REGION,
+                    "input_price_per_token": rates.input,
+                    "output_price_per_token": rates.output,
+                    "cached_input_price_per_token": rates.cache_read,
+                    "cache_write_price_per_token": rates.cache_write,
+                }
+            )
         if not pricing_data:
             return 0
-        return await self._save_pricing_data(pricing_data, "aws-model-card")
+        return await self._save_pricing_data(
+            pricing_data, self.MODEL_CARD_FALLBACK_SOURCE
+        )
 
     async def cleanup_stale_cross_region_entries(self) -> int:
         """Remove cross-region pricing entries not in the profile cache.
@@ -595,6 +643,9 @@ class PricingUpdater:
             # Newer Bedrock Marketplace products use service_tier/tokenType
             # instead of feature/inferenceType. Keyed by (model, profile scope).
             modern_products = {}
+            # One usagetype per model name, used to identify models whose
+            # display name has no mapping (see _map_price_list_model).
+            usagetypes: Dict[str, List[str]] = {}
 
             for product_id, product in products.items():
                 attrs = product.get("attributes", {})
@@ -611,6 +662,7 @@ class PricingUpdater:
 
                 if not model:
                     continue
+                usagetypes.setdefault(model, []).append(usagetype)
 
                 # Marketplace-backed Bedrock models (for example Grok 4.6)
                 # expose Standard dimensions through these newer attributes.
@@ -661,7 +713,9 @@ class PricingUpdater:
                 output_price = self._extract_price_from_terms(terms, output_id)
 
                 if input_price is not None and output_price is not None:
-                    model_id = self._map_model_name_to_id(model)
+                    model_id = self._map_price_list_model(
+                        model, usagetypes.get(model, [])
+                    )
                     if model_id:
                         row = {
                             "model_id": model_id,
@@ -697,7 +751,9 @@ class PricingUpdater:
                 output_price = self._extract_price_from_terms(terms, output_id)
 
                 if input_price is not None and output_price is not None:
-                    base_model_id = self._map_model_name_to_id(model)
+                    base_model_id = self._map_price_list_model(
+                        model, usagetypes.get(model, [])
+                    )
                     if base_model_id:
                         pricing_data.append(
                             {
@@ -714,6 +770,7 @@ class PricingUpdater:
             # attributes above, service_tier explicitly distinguishes Global
             # CRIS from Geo CRIS, so preserve that distinction in the model ID.
             unmatched_modern = []
+            priced_base_ids = {d["model_id"] for d in pricing_data}
             for (model, scope), type_map in modern_products.items():
                 input_id = type_map.get("input")
                 output_id = type_map.get("output")
@@ -724,22 +781,33 @@ class PricingUpdater:
                 output_price = self._extract_price_from_terms(terms, output_id)
 
                 if input_price is not None and output_price is not None:
-                    base_model_id = self._map_model_name_to_id(model)
+                    base_model_id = self._map_price_list_model(
+                        model, usagetypes.get(model, [])
+                    )
                     if base_model_id:
                         prefix = "global" if scope == "global" else geo_prefix
-                        row = {
-                            "model_id": f"{prefix}.{base_model_id}",
-                            "region": target_region,
-                            "input_price_per_token": input_price,
-                            "output_price_per_token": output_price,
-                        }
-                        self._add_cache_prices(
-                            row,
-                            terms,
-                            type_map.get("cache_read"),
-                            type_map.get("cache_write"),
-                        )
-                        pricing_data.append(row)
+                        model_ids = [f"{prefix}.{base_model_id}"]
+                        # "standard" (non-global) rows are the Region's own
+                        # rate. Models served only in-Region (e.g. Qwen3 Next)
+                        # have no geo profile, so the prefixed row is pruned
+                        # by cleanup_stale_cross_region_entries; keep a base
+                        # row unless a legacy on-demand row already priced it.
+                        if scope != "global" and base_model_id not in priced_base_ids:
+                            model_ids.append(base_model_id)
+                        for model_id in model_ids:
+                            row = {
+                                "model_id": model_id,
+                                "region": target_region,
+                                "input_price_per_token": input_price,
+                                "output_price_per_token": output_price,
+                            }
+                            self._add_cache_prices(
+                                row,
+                                terms,
+                                type_map.get("cache_read"),
+                                type_map.get("cache_write"),
+                            )
+                            pricing_data.append(row)
                     else:
                         unmatched_modern.append(model)
 
@@ -775,6 +843,46 @@ class PricingUpdater:
             f"for region {target_region} (standard: {standard_count}, cross-region: {cross_region_count})"
         )
         return pricing_data
+
+    _USAGETYPE_MODEL_ID = re.compile(
+        r"^[A-Z0-9]+-([a-z0-9-]+\.[a-z0-9][a-z0-9.:-]*?)-(?:mantle-)?(?:input|output)-tokens"
+    )
+
+    def _map_price_list_model(
+        self, model_name: str, usagetypes: List[str]
+    ) -> Optional[str]:
+        """Map a Price List ``model`` attribute to a Bedrock model ID.
+
+        Display names are matched first. Newer rows often use a name with no
+        mapping ("Devstral", "Minimax M2.1") while their usagetype embeds the
+        model ID itself ("USW2-mistral.devstral-2-123b-input-tokens"). That ID
+        is used only when Bedrock lists it, so a usagetype is never guessed
+        into an ID that does not exist.
+        """
+        model_id = self._map_model_name_to_id(model_name)
+        if model_id:
+            return model_id
+        known = None
+        for usagetype in usagetypes:
+            match = self._USAGETYPE_MODEL_ID.match(usagetype or "")
+            if not match:
+                continue
+            if known is None:
+                known = self._known_bedrock_model_ids()
+            if match.group(1) in known:
+                return match.group(1)
+        return None
+
+    def _known_bedrock_model_ids(self) -> Set[str]:
+        known = set(self._dynamic_mapping_cache.values())
+        try:
+            from app.services.bedrock import BedrockClient
+
+            cache = BedrockClient.get_instance()._profile_cache
+            known |= set(cache._local_fm) | set(cache._fallback_fm)
+        except Exception:
+            pass
+        return known
 
     @staticmethod
     def _strip_prefix(model_id: str) -> str:
@@ -1496,11 +1604,14 @@ class PricingUpdater:
             # ── Google ──────────────────────────────────────────────
             "Gemma 3 4B": "google.gemma-3-4b-it",
             "Gemma 3 12B": "google.gemma-3-12b-it",
-            "Gemma 3 27B": "google.gemma-3-27b-pt",
+            # Bedrock serves 27B as "-it" (its display name says "PT").
+            "Gemma 3 27B": "google.gemma-3-27b-it",
             # ── MiniMax AI ─────────────────────────────────────────
             "Minimax M2": "minimax.minimax-m2",
             # ── Moonshot AI ────────────────────────────────────────
             "Kimi K2 Thinking": "moonshot.kimi-k2-thinking",
+            "Kimi K3.1 Pro - Highspeed": "moonshotai.kimi-k3.1",
+            "moonshotai.kimi-k3.1": "moonshotai.kimi-k3.1",
             # ── NVIDIA ─────────────────────────────────────────────
             # Price List usagetypes: "Nano 2" = 9B v2, "Nano 2 VL" = 12B v2 VL.
             "NVIDIA Nemotron Nano 2": "nvidia.nemotron-nano-9b-v2",
@@ -1510,12 +1621,14 @@ class PricingUpdater:
             # New Marketplace-backed Price List rows use the model ID itself
             # in the `model` attribute instead of the Bedrock display name.
             "openai.gpt-6.1-sol": "openai.gpt-6.1-sol",
+            "openai.gpt-6.1-terra": "openai.gpt-6.1-terra",
             "openai.gpt-6-sol": "openai.gpt-6-sol",
             "openai.gpt-6-luna": "openai.gpt-6-luna",
             "openai.gpt-6-astra": "openai.gpt-6-astra",
             "xai.grok-4.3": "xai.grok-4.3",
             "xai.grok-4.6": "xai.grok-4.6",
             "GPT-6.1 Sol": "openai.gpt-6.1-sol",
+            "GPT-6.1 Terra": "openai.gpt-6.1-terra",
             "GPT-6 Sol": "openai.gpt-6-sol",
             "GPT-6 Luna": "openai.gpt-6-luna",
             "GPT-6 Astra": "openai.gpt-6-astra",
@@ -1531,11 +1644,13 @@ class PricingUpdater:
             "Qwen3 Coder 30B A3B": "qwen.qwen3-coder-30b-a3b-v1:0",
             "Qwen3 Coder 480B A35B": "qwen.qwen3-coder-480b-a35b-v1:0",
             "Qwen3 VL 235B A22B": "qwen.qwen3-vl-235b-a22b-v1:0",
-            "Qwen3 Next 80B A3B": "qwen.qwen3-next-80b-a3b-v1:0",
+            "Qwen3 Next 80B A3B": "qwen.qwen3-next-80b-a3b",
             # ── Writer ─────────────────────────────────────────────
             "Palmyra X4": "writer.palmyra-x4-v1:0",
             "Palmyra X5": "writer.palmyra-x5-v1:0",
             # ── Z AI ──────────────────────────────────────────────
+            "GLM 5.3": "zai.glm-5.3",
+            "zai.glm-5.3": "zai.glm-5.3",
             "GLM 5": "zai.glm-5",
             "GLM-5": "zai.glm-5",
             "GLM 4.7": "zai.glm-4.7",
