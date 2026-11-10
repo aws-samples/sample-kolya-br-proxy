@@ -27,8 +27,14 @@ WORKDIR /app
 # Copy built application from builder
 COPY --from=builder /app/dist/spa /usr/share/nginx/html
 
-# Copy nginx config
+# Copy nginx config and security headers. CSP connect-src gets the API
+# origin from the same build arg the bundle was built with.
+ARG VITE_API_BASE_URL
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY security-headers.inc /etc/nginx/conf.d/security-headers.inc
+RUN api_origin=$(echo "${VITE_API_BASE_URL:-http://localhost:8000}" | sed -E 's#^(https?://[^/]+).*#\1#') && \
+    sed -i "s#__API_ORIGIN__#${api_origin}#" /etc/nginx/conf.d/security-headers.inc && \
+    ! grep -q __API_ORIGIN__ /etc/nginx/conf.d/security-headers.inc
 
 # Run as non-root nginx user
 RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx /etc/nginx/conf.d && \
