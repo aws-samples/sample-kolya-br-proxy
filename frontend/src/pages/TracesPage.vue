@@ -198,12 +198,9 @@
                     <div class="block-text">{{ m.content }}</div>
                   </template>
                   <template v-else>
-                    <div
-                      v-for="(b, j) in m.content"
-                      :key="j"
-                      v-html="renderBlock(b)"
-                      class="block-wrap"
-                    ></div>
+                    <div v-for="(b, j) in m.content" :key="j" class="block-wrap">
+                      <TraceBlock :block="b" />
+                    </div>
                   </template>
                 </div>
               </div>
@@ -218,12 +215,9 @@
               dense
             >
               <div class="section-scroll">
-                <div
-                  v-for="(b, i) in t.response_content"
-                  :key="i"
-                  v-html="renderBlock(b)"
-                  class="block-wrap"
-                ></div>
+                <div v-for="(b, i) in t.response_content" :key="i" class="block-wrap">
+                  <TraceBlock :block="b" />
+                </div>
               </div>
             </q-expansion-item>
 
@@ -241,20 +235,10 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/boot/axios';
 import { Dialog, Notify } from 'quasar';
+import TraceBlock from '@/components/TraceBlock.vue';
+import type { ContentBlock } from '@/utils/traceBlocks';
 
 const authStore = useAuthStore();
-
-interface ContentBlock {
-  type?: string;
-  text?: string;
-  thinking?: string;
-  name?: string;
-  id?: string;
-  input?: unknown;
-  content?: unknown;
-  is_error?: boolean;
-  source?: { media_type?: string };
-}
 
 interface Trace {
   request_id: string;
@@ -395,40 +379,6 @@ function systemText(t: Trace): string {
 
 function schemaPreview(schema: unknown): string {
   return JSON.stringify(schema, null, 2).slice(0, 500);
-}
-
-function esc(s: string | number | null | undefined): string {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function renderBlock(b: ContentBlock): string {
-  if (!b) return '';
-  const type = b.type || 'text';
-  if (type === 'text') return `<div class="block-text">${esc(b.text)}</div>`;
-  if (type === 'thinking') return `<div class="block-text thinking-block">${esc(b.thinking)}</div>`;
-  if (type === 'tool_use') {
-    const inputStr =
-      typeof b.input === 'string' ? b.input : JSON.stringify(b.input || {}, null, 2);
-    return `<div class="block-text tool-use-block"><span class="tool-name">${esc(
-      b.name,
-    )}</span> <span class="tool-id">${esc(b.id)}</span><div class="tool-input">${esc(
-      inputStr,
-    )}</div></div>`;
-  }
-  if (type === 'tool_result') {
-    const content =
-      typeof b.content === 'string' ? b.content : JSON.stringify(b.content || '', null, 2);
-    return `<div class="block-text tool-result-block${
-      b.is_error ? ' error-block' : ''
-    }">${esc(content)}</div>`;
-  }
-  if (type === 'image') return `<div class="block-text">[image: ${esc(b.source?.media_type)}]</div>`;
-  if (type === 'redacted_thinking')
-    return `<div class="block-text thinking-block">[redacted thinking]</div>`;
-  return `<div class="block-text">${esc(JSON.stringify(b))}</div>`;
 }
 
 onMounted(() => {

@@ -65,6 +65,10 @@ export default defineConfigWithVueTs(
     rules: {
       'prefer-promise-reject-errors': 'off',
 
+      // Trace and playground content is caller-supplied text; never render it
+      // as HTML.
+      'vue/no-v-html': 'error',
+
       // allow debugger during development only
       'no-debugger': process.env.NODE_ENV === 'production' ? 'error' : 'off',
     },
