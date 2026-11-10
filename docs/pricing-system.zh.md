@@ -443,17 +443,17 @@ Authorization: Bearer {admin_token}
 
 ```bash
 # 查看总记录数和模型数
-PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
+psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT COUNT(*) as total_records, COUNT(DISTINCT model_id) as unique_models FROM model_pricing;"
 
 # 专项检查 Gemini 模型价格
-PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
+psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT model_id, input_price_per_token * 1e6 as input_per_1m,
           output_price_per_token * 1e6 as output_per_1m, source
    FROM model_pricing WHERE region = 'global' ORDER BY model_id;"
 
 # 查看特定模型的价格
-PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
+psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT model_id, region,
    input_price_per_token * 1000000 as input_per_1m,
    output_price_per_token * 1000000 as output_per_1m,

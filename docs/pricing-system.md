@@ -455,17 +455,17 @@ Use after manual pricing updates to force the next request to read from the data
 
 ```bash
 # Total records and unique models
-PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
+psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT COUNT(*) as total_records, COUNT(DISTINCT model_id) as unique_models FROM model_pricing;"
 
 # Check Gemini models specifically
-PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
+psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT model_id, input_price_per_token * 1e6 as input_per_1m,
           output_price_per_token * 1e6 as output_per_1m, source
    FROM model_pricing WHERE region = 'global' ORDER BY model_id;"
 
 # Check for a specific model
-PGPASSWORD=root psql -h 127.0.0.1 -U root -d kbp -c \
+psql -h 127.0.0.1 -U root -d kbp -c \
   "SELECT model_id, region,
    input_price_per_token * 1000000 as input_per_1m,
    output_price_per_token * 1000000 as output_per_1m,
