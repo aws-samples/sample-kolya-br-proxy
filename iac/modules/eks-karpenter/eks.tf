@@ -51,6 +51,10 @@ module "eks" {
     {
       for name, config in {
         amazon-cloudwatch-observability = {
+          # Pinned: v7 is a major release and this agent carries our X-Ray
+          # traces. Upgrade deliberately (read the v7 notes, then confirm traces
+          # still arrive) instead of picking it up on an unrelated apply.
+          addon_version = "v6.7.0-eksbuild.1"
           pod_identity_association = [{
             role_arn        = try(aws_iam_role.cloudwatch_agent[0].arn, null)
             service_account = "cloudwatch-agent"
