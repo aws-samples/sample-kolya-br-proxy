@@ -34,3 +34,15 @@ variable "default_tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "cognito_user_pool_arn" {
+  description = "ARN of the Cognito user pool the backend administers (null when Cognito is disabled)"
+  type        = string
+  default     = null
+}
+
+variable "ses_sender_identity_arns" {
+  description = "SES identity ARNs the backend may send from. Empty allows any identity in this account."
+  type        = list(string)
+  default     = []
+}

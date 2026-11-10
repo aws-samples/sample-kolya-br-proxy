@@ -91,7 +91,7 @@ resource "aws_iam_policy" "backend_bedrock" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         # Data-plane + read-only discovery only. A leaked pod credential must not
         # be able to touch invocation logging, guardrails, custom models, etc.
@@ -111,17 +111,36 @@ resource "aws_iam_policy" "backend_bedrock" {
       {
         # OpenAI GPT-5.x models served by the AWS "mantle" inference engine use
         # a distinct "bedrock-mantle" IAM service prefix that "bedrock:*" does
-        # not cover, so it must be granted explicitly. Covers both inference
-        # (InvokeModel) and model discovery (ListModels, used by the backend's
-        # mantle registry refresh task).
+        # not cover. The backend only runs inference (POST /responses) and model
+        # discovery (GET /v1/models); fine-tuning, files, projects, reservations
+        # and account data-retention settings stay out of reach.
         Sid    = "MantleOpenAIModels"
         Effect = "Allow"
         Action = [
-          "bedrock-mantle:*"
+          "bedrock-mantle:CreateInference",
+          "bedrock-mantle:GetInference",
+          "bedrock-mantle:CountTokens",
+          "bedrock-mantle:ListModels",
+          "bedrock-mantle:GetModel"
         ]
         Resource = "*"
       },
       {
+        # Alert and key-delivery emails. Limited to this account's verified
+        # identities (or the configured sender identities).
+        Sid    = "SesSendFromOwnIdentities"
+        Effect = "Allow"
+        Action = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Resource = length(var.ses_sender_identity_arns) > 0 ? var.ses_sender_identity_arns : [
+          "arn:${var.partition}:ses:*:${var.account}:identity/*"
+        ]
+      },
+      ], var.cognito_user_pool_arn == null ? [] : [
+      {
+        Sid    = "CognitoAdminOwnPool"
         Effect = "Allow"
         Action = [
           "cognito-idp:AdminCreateUser",
@@ -133,17 +152,9 @@ resource "aws_iam_policy" "backend_bedrock" {
           "cognito-idp:ListUsers",
           "cognito-idp:AdminDeleteUser"
         ]
-        Resource = "*"
+        Resource = var.cognito_user_pool_arn
       },
-      {
-        Effect = "Allow"
-        Action = [
-          "ses:SendEmail",
-          "ses:SendRawEmail"
-        ]
-        Resource = "*"
-      },
-    ]
+    ])
   })
 
   tags = var.default_tags
