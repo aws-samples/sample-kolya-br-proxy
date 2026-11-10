@@ -7,6 +7,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -696,3 +697,199 @@ async def test_litellm_tiers_are_never_used_for_billing():
     [entry] = entries
     assert "long_context_threshold" not in entry
     assert tiered == ["gemini-x-preview"]
+
+
+# ── Coverage gaps found reconciling the live model list (2026-11-10) ───────
+
+
+def _modern(model, kind, usagetype, tier="standard"):
+    return {
+        "model": model,
+        "service_tier": tier,
+        "inferenceType": kind,
+        "usagetype": usagetype,
+    }
+
+
+@pytest.mark.asyncio
+async def test_in_region_only_model_gets_a_base_row():
+    """Qwen3 Next has only "standard" mantle rows and no geo profile.
+
+    The us.-prefixed row alone is pruned by the stale cross-region cleanup,
+    leaving the in-Region model unpriced, so a base row is emitted as well.
+    """
+    offer = _offer(
+        [
+            (
+                "in",
+                _modern(
+                    "Qwen3 Next 80B A3B",
+                    "Input tokens",
+                    "USW2-qwen.qwen3-next-80b-a3b-instruct-mantle-input-tokens-standard",
+                ),
+                "0.00014",
+                "1K tokens",
+            ),
+            (
+                "out",
+                _modern(
+                    "Qwen3 Next 80B A3B",
+                    "Output tokens",
+                    "USW2-qwen.qwen3-next-80b-a3b-instruct-mantle-output-tokens-standard",
+                ),
+                "0.0012",
+                "1K tokens",
+            ),
+        ]
+    )
+    rows = await _fetch_price_list(offer, {})
+    base = rows["qwen.qwen3-next-80b-a3b"]
+    assert base["input_price_per_token"] == per_m("0.14")
+    assert base["output_price_per_token"] == per_m("1.2")
+    assert "us.qwen.qwen3-next-80b-a3b" in rows
+
+
+@pytest.mark.asyncio
+async def test_global_rows_do_not_create_a_base_row():
+    offer = _offer(
+        [
+            (
+                f"{k}",
+                _modern(
+                    "Kimi K3", f"{k} tokens global", f"USW2-kimi-{k}", "global-standard"
+                ),
+                "0.003",
+                "1K tokens",
+            )
+            for k in ("Input", "Output")
+        ]
+    )
+    rows = await _fetch_price_list(offer, {"Kimi K3": "moonshotai.kimi-k3"})
+    assert set(rows) == {"global.moonshotai.kimi-k3"}
+
+
+@pytest.mark.asyncio
+async def test_unmapped_name_resolves_through_a_listed_usagetype_id():
+    offer = _offer(
+        [
+            (
+                "in",
+                _legacy(
+                    "Devstral",
+                    "Input tokens",
+                    "USW2-mistral.devstral-2-123b-input-tokens",
+                ),
+                "0.0004",
+                "1K tokens",
+            ),
+            (
+                "out",
+                _legacy(
+                    "Devstral",
+                    "Output tokens",
+                    "USW2-mistral.devstral-2-123b-output-tokens",
+                ),
+                "0.002",
+                "1K tokens",
+            ),
+        ]
+    )
+    with patch.object(
+        PricingUpdater,
+        "_known_bedrock_model_ids",
+        return_value={"mistral.devstral-2-123b"},
+    ):
+        rows = await _fetch_price_list(offer, {})
+    assert rows["mistral.devstral-2-123b"]["output_price_per_token"] == per_m("2")
+
+
+def test_usagetype_id_is_ignored_unless_bedrock_lists_it():
+    updater = PricingUpdater(MagicMock())
+    with (
+        patch.object(PricingUpdater, "_dynamic_mapping_cache", {}),
+        patch.object(PricingUpdater, "_known_bedrock_model_ids", return_value=set()),
+    ):
+        assert (
+            updater._map_price_list_model(
+                "Devstral", ["USW2-mistral.devstral-2-123b-input-tokens"]
+            )
+            is None
+        )
+
+
+def test_gemma_and_qwen_static_names_point_at_served_ids():
+    updater = PricingUpdater(MagicMock())
+    with patch.object(PricingUpdater, "_dynamic_mapping_cache", {}):
+        assert updater._map_model_name_to_id("Gemma 3 27B") == "google.gemma-3-27b-it"
+        assert (
+            updater._map_model_name_to_id("Qwen3 Next 80B A3B")
+            == "qwen.qwen3-next-80b-a3b"
+        )
+
+
+# ── Model-card fallback (API wins) ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fallback_rate_bills_without_a_db_row():
+    from app.services.pricing import ModelPricing as PricingService
+
+    cost = await PricingService(db=None).calculate_cost(
+        "global.zai.glm-5.3",
+        1_000_000,
+        1_000_000,
+        region="us-west-2",
+        cache_read_input_tokens=1_000_000,
+        cache_creation_input_tokens=1_000_000,
+    )
+    assert cost == Decimal("1.68") + Decimal("5.28") + Decimal("0.312") + Decimal(
+        "2.10"
+    )
+
+
+async def _seed_fallback(db, profile_ids):
+    updater = PricingUpdater(db)
+    with patch(
+        "app.services.pricing_updater.get_settings",
+        return_value=MagicMock(AWS_REGION="us-west-2"),
+    ):
+        return await updater._ensure_model_card_fallback_pricing(profile_ids)
+
+
+@pytest.mark.asyncio
+async def test_fallback_seeds_missing_profiles_only(db):
+    assert await _seed_fallback(db, {"us.moonshotai.kimi-k3.1", "other.model"}) == 1
+    row = (await db.execute(select(ModelPricing))).scalar_one()
+    assert row.model_id == "us.moonshotai.kimi-k3.1"
+    assert row.input_price_per_token == per_m("4.40")
+    assert row.cache_write_price_per_token == per_m("5.50")
+    assert row.source == PricingUpdater.MODEL_CARD_FALLBACK_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_api_row_beats_fallback_and_is_never_overwritten(db):
+    await _seed_fallback(db, {"us.zai.glm-5.3"})
+    # AWS later publishes the profile in the Price List API.
+    await PricingUpdater(db)._save_pricing_data(
+        [
+            {
+                "model_id": "us.zai.glm-5.3",
+                "region": "us-west-2",
+                "input_price_per_token": per_m("1.50"),
+                "output_price_per_token": per_m("5.00"),
+            }
+        ],
+        "api",
+    )
+    assert await _seed_fallback(db, {"us.zai.glm-5.3"}) == 0
+    row = (await db.execute(select(ModelPricing))).scalar_one()
+    assert (row.source, row.input_price_per_token) == ("api", per_m("1.50"))
+
+
+def test_dated_gpt_snapshot_bills_at_alias_rate():
+    from app.services.pricing import get_official_profile_pricing
+
+    snap = get_official_profile_pricing("openai.gpt-5.5-2026-04-23")
+    assert snap is get_official_profile_pricing("openai.gpt-5.5")
+    assert get_official_profile_pricing("openai.gpt-oss-120b-2026-01-01") is None
+    assert get_official_profile_pricing("xai.grok-4.6-2026-01-01") is None

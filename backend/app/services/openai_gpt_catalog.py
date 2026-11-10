@@ -228,6 +228,19 @@ _FAMILIES: tuple[_Family, ...] = (
         ultrafast_multiplier=6,
         ultrafast_mantle_regions=("us-east-1",),
     ),
+    _family(
+        "openai.gpt-6.1-terra",
+        "GPT-6.1 Terra",
+        "openai-gpt-6-1-terra",
+        regional=(
+            ("1.10", "1.375", "0.055", "5.50"),
+            ("2.20", "2.75", "0.11", "8.25"),
+        ),
+        global_=(("1.00", "1.25", "0.05", "5.00"), ("2.00", "2.50", "0.10", "7.50")),
+        # The card lists explicit caching for Responses but no content types
+        # and it has not been probed live yet; rely on implicit caching until
+        # it is (pricing is unaffected either way).
+    ),
     # GPT-5.5 and earlier: Mantle only, implicit caching with no write fee
     # (cache-write tokens bill at the normal input rate).
     _family(

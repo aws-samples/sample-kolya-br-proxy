@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 # fails — discovered data (see refresh_mantle_registry) takes precedence.
 MANTLE_MODEL_REGIONS: Dict[str, List[str]] = {
     "openai.gpt-6.1-sol": ["us-east-1"],
+    "openai.gpt-6.1-terra": ["us-east-1"],
     "openai.gpt-6-sol": ["us-east-1"],
     "openai.gpt-6-luna": ["us-east-1"],
     "openai.gpt-6-astra": ["us-east-1"],

@@ -7,12 +7,14 @@ from typing import Optional
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+import re
 
 from app.services.openai_gpt_catalog import gpt_official_pricing, resolve_gpt_route
 from app.services.pricing_types import OfficialProfilePricing, TokenRates
 from app.services.pricing_types import per_token as _per_token
 
 __all__ = [
+    "MODEL_CARD_FALLBACK_PRICING",
     "OFFICIAL_PROFILE_PRICING",
     "ModelPricing",
     "OfficialProfilePricing",
@@ -21,6 +23,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_GPT_SNAPSHOT_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
 # Gemini implicit cache: if no explicit cached price in DB, use 25% of input price
 GEMINI_CACHE_READ_FALLBACK_RATIO = Decimal("0.25")
@@ -47,6 +51,55 @@ OFFICIAL_PROFILE_PRICING: dict[str, OfficialProfilePricing] = {
 }
 
 
+_BEDROCK_PRICING_URL = "https://aws.amazon.com/bedrock/pricing/"
+_KIMI_K31_CARD = (
+    "https://docs.aws.amazon.com/bedrock/latest/userguide/"
+    "model-card-moonshot-ai-kimi-k3-1-highspeed.html"
+)
+
+
+def _fallback(model_id, url, input_, output, cache_read, cache_write):
+    return OfficialProfilePricing(
+        model_id=model_id,
+        source_url=url,
+        short=TokenRates(
+            input=_per_token(input_),
+            output=_per_token(output),
+            cache_read=_per_token(cache_read),
+            cache_write=_per_token(cache_write),
+        ),
+    )
+
+
+# Published on the AWS pricing page / model cards but not (yet) in the Price
+# List API. Unlike OFFICIAL_PROFILE_PRICING these never override the database:
+# the updater seeds them only where no row exists, and an API-sourced row for
+# the same profile replaces them as soon as AWS publishes one. Standard tier,
+# USD per 1M tokens; cache write is the 30-minute rate.
+MODEL_CARD_FALLBACK_PRICING: dict[str, OfficialProfilePricing] = {
+    p.model_id: p
+    for p in (
+        _fallback(
+            "global.zai.glm-5.3", _BEDROCK_PRICING_URL, "1.68", "5.28", "0.312", "2.10"
+        ),
+        _fallback(
+            "us.zai.glm-5.3", _BEDROCK_PRICING_URL, "1.848", "5.808", "0.3432", "2.31"
+        ),
+        _fallback(
+            "global.moonshotai.kimi-k3.1",
+            _KIMI_K31_CARD,
+            "4.00",
+            "20.00",
+            "0.20",
+            "5.00",
+        ),
+        _fallback(
+            "us.moonshotai.kimi-k3.1", _KIMI_K31_CARD, "4.40", "22.00", "0.22", "5.50"
+        ),
+    )
+}
+
+
 def get_official_profile_pricing(
     model_id: str,
     service_tier: str | None = None,
@@ -59,6 +112,11 @@ def get_official_profile_pricing(
     """
     pricing = OFFICIAL_PROFILE_PRICING.get(model_id)
     if pricing is None:
+        # Mantle also lists dated snapshots of a GPT alias
+        # ("openai.gpt-5.5-2026-04-23"), billed at the alias's model-card rate.
+        alias = _GPT_SNAPSHOT_SUFFIX.sub("", model_id)
+        if alias != model_id and alias.startswith("openai.gpt-"):
+            return get_official_profile_pricing(alias, service_tier)
         return None
     route = resolve_gpt_route(model_id)
     return route.pricing_for_tier(service_tier) if route else pricing
@@ -360,6 +418,18 @@ class ModelPricing:
                     + cache_write_cost
                     + Decimal(cache_read_input_tokens) * rates.cache_read
                 )
+
+        # No database row yet (e.g. before the first pricing update seeds it):
+        # use the published model-card rate rather than billing $0.
+        fallback = MODEL_CARD_FALLBACK_PRICING.get(model)
+        if fallback is not None:
+            return _calculate_official_cost(
+                fallback,
+                prompt_tokens,
+                completion_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+            )
 
         # If no database or pricing not found, raise error
         logger.error(f"No pricing found for model: {model}, region: {region}")
