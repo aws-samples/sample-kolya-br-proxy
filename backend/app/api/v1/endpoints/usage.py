@@ -26,7 +26,11 @@ MAX_QUERY_DAYS = 90
 def _naive_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    try:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    except OverflowError as e:
+        # e.g. 0001-01-01T00:00:00+05:00 has no UTC equivalent.
+        raise HTTPException(status_code=400, detail="Date out of range") from e
 
 
 def _aware_utc(value: datetime) -> datetime:

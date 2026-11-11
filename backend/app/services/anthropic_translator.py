@@ -9,6 +9,7 @@ streaming event format conversion.
 import logging
 from typing import Any
 
+from app.services.request_errors import reject_malformed
 from app.schemas.anthropic import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
@@ -34,6 +35,7 @@ class AnthropicRequestTranslator:
     """Translates Anthropic Messages API requests to Bedrock format."""
 
     @staticmethod
+    @reject_malformed
     def to_bedrock(request: AnthropicMessagesRequest) -> BedrockRequest:
         """
         Convert Anthropic Messages API request to internal BedrockRequest.

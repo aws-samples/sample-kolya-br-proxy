@@ -11,6 +11,13 @@ from app.schemas.common import ModelId
 # --- Request schemas ---
 
 
+def _text_value(value: Any) -> str:
+    # Called from model validators, so a ValueError becomes a 4xx.
+    if not isinstance(value, str):
+        raise ValueError("text content must be a string")
+    return value
+
+
 def _extract_text(content: Any) -> str:
     """Flatten Anthropic content (str or list of text blocks) into plain text.
 
@@ -27,13 +34,13 @@ def _extract_text(content: Any) -> str:
         for block in content:
             if isinstance(block, dict):
                 if block.get("type", "text") == "text" and block.get("text"):
-                    texts.append(block["text"])
+                    texts.append(_text_value(block["text"]))
             elif isinstance(block, str):
                 texts.append(block)
             else:
                 text = getattr(block, "text", None)
                 if text:
-                    texts.append(text)
+                    texts.append(_text_value(text))
         return "\n".join(texts)
     return str(content)
 
