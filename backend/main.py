@@ -301,6 +301,8 @@ def create_app() -> FastAPI:
         version="1.0.0",
         docs_url="/docs" if settings.DEBUG else None,
         redoc_url="/redoc" if settings.DEBUG else None,
+        # The schema maps every admin route; publish it only with the docs.
+        openapi_url="/openapi.json" if settings.DEBUG else None,
         lifespan=lifespan,
     )
 
@@ -341,6 +343,11 @@ def create_app() -> FastAPI:
     from app.middleware.body_limit import BodySizeLimitMiddleware
 
     app.add_middleware(BodySizeLimitMiddleware)
+
+    # Outermost: fix the scheme before anything builds a URL (redirects).
+    from app.middleware.https_scheme import HttpsSchemeMiddleware
+
+    app.add_middleware(HttpsSchemeMiddleware)
 
     # Auto-instrument FastAPI routes for X-Ray tracing (no-op when disabled)
     from app.core.tracing import instrument_app

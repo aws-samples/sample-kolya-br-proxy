@@ -3,6 +3,7 @@
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+from app.schemas.common import ModelId
 
 EmbeddingInputType = Literal["text", "image"]
 ImageFormat = Literal["png", "jpeg", "gif", "webp"]
@@ -52,7 +53,7 @@ class OpenAIEmbeddingRequest(BaseModel):
     as ``{"image": ...}``. Parsing lives in ``app.services.embedding_inputs``.
     """
 
-    model: str
+    model: ModelId
     input: str | list[str | dict[str, Any]]
     dimensions: int | None = None
     encoding_format: Literal["float"] = "float"

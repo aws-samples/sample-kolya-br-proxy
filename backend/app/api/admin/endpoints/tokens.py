@@ -11,14 +11,14 @@ import csv
 import re
 import io
 import uuid as uuid_mod
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import List
+from typing import Annotated, List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel, BeforeValidator
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,12 +83,40 @@ def validate_token_metadata(meta: dict | None) -> dict | None:
     return meta
 
 
+def _reject_bare_number(value):
+    # Pydantic would read "3" as 3 seconds after the epoch (1970), which
+    # then fails deep in the database driver as a 500.
+    if isinstance(value, (int, float)) or (
+        isinstance(value, str) and re.fullmatch(r"\s*-?\d+(\.\d+)?\s*", value)
+    ):
+        raise ValueError("expires_at must be a date or datetime, e.g. 2026-12-31")
+    return value
+
+
+def _future_naive_utc(value: datetime | None) -> datetime | None:
+    # Columns are naive UTC; an offset-aware value can't be bound to them.
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    if value <= datetime.utcnow():
+        raise ValueError("expires_at must be in the future")
+    return value
+
+
+ExpiresAt = Annotated[
+    datetime | None,
+    BeforeValidator(_reject_bare_number),
+    AfterValidator(_future_naive_utc),
+]
+
+
 class CreateTokenRequest(BaseModel):
     """Create token request."""
 
     name: str
     description: str | None = None
-    expires_at: datetime | None = None
+    expires_at: ExpiresAt = None
     quota_usd: Decimal | None = None
     monthly_quota_usd: Decimal | None = None
     monthly_reset_policy: str | None = None
@@ -104,7 +132,7 @@ class BatchCreateTokenRequest(BaseModel):
     """
 
     names: str
-    expires_at: datetime | None = None
+    expires_at: ExpiresAt = None
     quota_usd: Decimal | None = None
     monthly_quota_usd: Decimal | None = None
     monthly_reset_policy: str | None = None
@@ -126,7 +154,7 @@ class UpdateTokenRequest(BaseModel):
 
     name: str | None = None
     description: str | None = None
-    expires_at: datetime | None = None
+    expires_at: ExpiresAt = None
     quota_usd: Decimal | None = None
     monthly_quota_usd: Decimal | None = None
     monthly_reset_policy: str | None = None

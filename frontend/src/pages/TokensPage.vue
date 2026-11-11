@@ -312,6 +312,8 @@
 
             <q-input
               v-model="newToken.expires_at"
+              mask="####-##-##"
+              placeholder="YYYY-MM-DD"
               label="Expiration Time"
               outlined
               dense
@@ -498,6 +500,8 @@
 
             <q-input
               v-model="batchForm.expires_at"
+              mask="####-##-##"
+              placeholder="YYYY-MM-DD"
               label="Expiration Time"
               outlined
               dense

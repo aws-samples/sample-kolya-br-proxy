@@ -5,6 +5,7 @@ Anthropic Messages API compatible request/response schemas.
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
+from app.schemas.common import ModelId
 
 
 # --- Request schemas ---
@@ -201,7 +202,7 @@ class AnthropicThinkingConfig(BaseModel):
 class AnthropicMessagesRequest(BaseModel):
     """Anthropic Messages API request."""
 
-    model: str
+    model: ModelId
     messages: List[AnthropicMessage]
     max_tokens: int = Field(ge=1)
     system: Optional[Union[str, List[AnthropicSystemBlock]]] = None
