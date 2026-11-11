@@ -762,6 +762,10 @@ run_config_wizard() {
         "aws-region": $region
       }')
 
+    # Merge over what's stored so keys this script doesn't manage (e.g.
+    # gemini-api-key, tavily-api-key added later) survive a redeploy.
+    secret_json=$(jq -n --argjson old "${existing_secret:-{\}}" --argjson new "$secret_json" '$old + $new')
+
     aws secretsmanager put-secret-value \
       --secret-id "$secret_name" \
       --secret-string "$secret_json" \
