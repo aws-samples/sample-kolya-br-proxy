@@ -23,6 +23,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
 from app.core.config import get_settings
+from app.services.cache_scope import scope_responses_cache
 from app.services.mantle_models import (
     MANTLE_BASE_URL,
     is_openai_runtime_responses_model,
@@ -804,11 +805,12 @@ class MantleClient:
                         yield raw
 
     @classmethod
-    async def invoke(cls, payload: dict) -> dict:
+    async def invoke(cls, payload: dict, cache_scope: str | None = None) -> dict:
         """Non-streaming request to the selected Bedrock Responses endpoint."""
         model = payload.get("model", "")
         target = cls._endpoint(model, payload.get("service_tier"))
         body = _openai_to_responses(payload)
+        scope_responses_cache(body, cache_scope)
         body["stream"] = False
         _log_request_structure(body, target)
         body_bytes = json.dumps(body).encode("utf-8")
@@ -840,7 +842,9 @@ class MantleClient:
         return _responses_to_openai(resp.json(), model, request_id)
 
     @classmethod
-    async def invoke_stream(cls, payload: dict) -> AsyncGenerator[str, None]:
+    async def invoke_stream(
+        cls, payload: dict, cache_scope: str | None = None
+    ) -> AsyncGenerator[str, None]:
         """Streaming request to the selected Bedrock Responses endpoint.
 
         The Responses API streams *named* SSE events. We translate:
@@ -853,6 +857,7 @@ class MantleClient:
         model = payload.get("model", "")
         target = cls._endpoint(model, payload.get("service_tier"))
         body = _openai_to_responses(payload)
+        scope_responses_cache(body, cache_scope)
         body["stream"] = True
         _log_request_structure(body, target)
         body_bytes = json.dumps(body).encode("utf-8")

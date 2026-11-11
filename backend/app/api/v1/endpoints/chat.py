@@ -642,7 +642,7 @@ async def _handle_mantle_request(
 
     # Non-streaming
     try:
-        response_data = await MantleClient.invoke(payload)
+        response_data = await MantleClient.invoke(payload, cache_scope=str(token.id))
     except httpx.HTTPStatusError as e:
         logger.error(
             "Bedrock Responses API error: model=%s, status=%s",
@@ -719,7 +719,8 @@ async def stream_mantle_completion(
 
     try:
         async for chunk in with_heartbeat(
-            MantleClient.invoke_stream(payload), settings.STREAM_HEARTBEAT_INTERVAL
+            MantleClient.invoke_stream(payload, cache_scope=str(token.id)),
+            settings.STREAM_HEARTBEAT_INTERVAL,
         ):
             if chunk is HEARTBEAT:
                 yield ": heartbeat\n\n"

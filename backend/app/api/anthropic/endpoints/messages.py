@@ -1327,7 +1327,7 @@ async def _handle_mantle_via_anthropic(
 
     # Non-streaming
     try:
-        response_data = await MantleClient.invoke(payload)
+        response_data = await MantleClient.invoke(payload, cache_scope=str(token.id))
     except httpx.HTTPStatusError as e:
         raise HTTPException(
             status_code=e.response.status_code,
@@ -1414,7 +1414,7 @@ async def _stream_mantle_as_anthropic(
         )
 
         async for chunk in with_heartbeat(
-            MantleClient.invoke_stream(payload),
+            MantleClient.invoke_stream(payload, cache_scope=str(token.id)),
             get_settings().STREAM_HEARTBEAT_INTERVAL,
         ):
             if chunk is HEARTBEAT:

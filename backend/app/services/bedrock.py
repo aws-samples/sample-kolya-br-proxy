@@ -13,7 +13,6 @@ ConverseStream API, which is model-agnostic and handles format conversion
 automatically.
 """
 
-import hashlib
 import asyncio
 import json
 import logging
@@ -25,6 +24,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from opentelemetry import trace
 
+from app.services.cache_scope import marker_text
 from app.services.request_errors import InvalidRequestError, reject_malformed
 from app.core.config import get_settings
 from app.core.metrics import emit_bedrock_call_metrics, emit_failover_metrics
@@ -1105,8 +1105,7 @@ class BedrockClient:
         else:
             blocks = []
 
-        digest = hashlib.sha256(f"kbp-cache-scope:{scope}".encode()).hexdigest()
-        blocks.insert(0, {"type": "text", "text": f"[cache scope {digest[:16]}]"})
+        blocks.insert(0, {"type": "text", "text": marker_text(scope)})
 
         last = blocks[-1]
         if moved is not None and isinstance(last, dict) and "cache_control" not in last:

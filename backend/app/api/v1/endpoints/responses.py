@@ -40,6 +40,7 @@ from app.models.model import Model
 from app.models.token import APIToken
 from app.services.background_tasks import BackgroundTaskManager
 from app.services import response_ownership
+from app.services.cache_scope import scope_responses_cache
 from app.services.mantle_client import (
     MantleClient,
     ResponsesRequestValidationError,
@@ -201,6 +202,9 @@ async def create_response(
             status_code=400,
             detail="'conversation' is not supported; use previous_response_id",
         )
+
+    # Keep this key's cached prefixes out of every other key's reach.
+    scope_responses_cache(body, str(token.id))
 
     if stream:
         return StreamingResponse(
