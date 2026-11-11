@@ -14,6 +14,7 @@
 </template>
 
 <script setup lang="ts">
+import { setAccessToken } from '@/auth/credential';
 import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
@@ -61,7 +62,7 @@ onMounted(async () => {
     authStore.user = user;
     authStore.isAuthenticated = true;
 
-    localStorage.setItem('access_token', access_token);
+    setAccessToken(access_token);
 
     api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 

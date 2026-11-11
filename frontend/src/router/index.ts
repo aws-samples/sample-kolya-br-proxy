@@ -5,7 +5,8 @@ import {
   createWebHashHistory,
   createWebHistory,
 } from 'vue-router';
-import { ACCESS_CREDENTIAL_STORAGE_KEY, useAuthStore } from '@/stores/auth';
+import { useAuthStore } from '@/stores/auth';
+import { getAccessToken } from '@/auth/credential';
 import routes from './routes'; // pi-lens-ignore: find-import-file-without-extension
 
 /*
@@ -40,11 +41,16 @@ export default defineRouter(function (/* { store, ssrContext } */) {
     const requiresAuth = to.matched.some((record) => record.meta.requiresAuth);
     const requiresSuperAdmin = to.matched.some((record) => record.meta.requiresSuperAdmin);
     const requiresWrite = to.matched.some((record) => record.meta.requiresWrite);
-    const storedCredential = localStorage.getItem(ACCESS_CREDENTIAL_STORAGE_KEY);
+    // The access token is memory-only; on a fresh page load restore it from
+    // the refresh cookie before deciding (once - later navigations reuse it).
+    if (!getAccessToken() && (requiresAuth || to.path === '/login')) {
+      await useAuthStore().initializeAuth();
+    }
+    const hasSession = Boolean(getAccessToken());
 
-    if (requiresAuth && !storedCredential) {
+    if (requiresAuth && !hasSession) {
       next('/login');
-    } else if (!requiresAuth && storedCredential && to.path === '/login') {
+    } else if (!requiresAuth && hasSession && to.path === '/login') {
       next('/');
     } else if (requiresSuperAdmin || requiresWrite) {
       const authStore = useAuthStore();

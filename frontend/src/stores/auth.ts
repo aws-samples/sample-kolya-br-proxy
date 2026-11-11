@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { api } from '@/boot/axios';
 import { Notify } from 'quasar';
+import { clearAccessToken, getAccessToken, restoreSession, setAccessToken } from '@/auth/credential';
 
 export interface User {
   id: string;
@@ -22,11 +23,6 @@ export interface LoginResponse {
   user: User;
 }
 
-export const ACCESS_CREDENTIAL_STORAGE_KEY = 'access_token';
-
-function readStoredCredential(): string | null {
-  return localStorage.getItem(ACCESS_CREDENTIAL_STORAGE_KEY);
-}
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -108,7 +104,7 @@ export const useAuthStore = defineStore('auth', {
         const { access_token } = response.data;
 
         this.accessToken = access_token;
-        localStorage.setItem(ACCESS_CREDENTIAL_STORAGE_KEY, access_token);
+        setAccessToken(access_token);
         api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
 
         return true;
@@ -135,7 +131,7 @@ export const useAuthStore = defineStore('auth', {
       this.accessToken = null;
       this.isAuthenticated = false;
 
-      localStorage.removeItem(ACCESS_CREDENTIAL_STORAGE_KEY);
+      clearAccessToken();
 
       delete api.defaults.headers.common['Authorization'];
     },
@@ -163,9 +159,20 @@ export const useAuthStore = defineStore('auth', {
     },
 
     async initializeAuth() {
-      const storedCredential = readStoredCredential();
-      if (!this.accessToken && storedCredential) {
-        this.accessToken = storedCredential;
+      // The access token is memory-only, so a fresh page load has none:
+      // restore it from the HttpOnly refresh cookie.
+      if (!this.accessToken) {
+        this.accessToken = getAccessToken();
+      }
+      if (!this.accessToken) {
+        const restored = await restoreSession(async () => {
+          const response = await api.post<LoginResponse>('/admin/auth/refresh', {}, {
+            _skipAuthRefresh: true,
+            _silent: true,
+          } as Record<string, unknown>);
+          return response.data.access_token;
+        });
+        if (restored) this.accessToken = getAccessToken();
       }
 
       if (this.accessToken) {

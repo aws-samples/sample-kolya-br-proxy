@@ -1,6 +1,7 @@
 import { defineBoot } from '#q-app';
 import axios, { type AxiosInstance } from 'axios';
 import { Notify } from 'quasar';
+import { clearAccessToken, getAccessToken, setAccessToken } from '@/auth/credential';
 
 declare module 'vue' {
   interface ComponentCustomProperties {
@@ -35,7 +36,7 @@ const api = axios.create({
 // Add request interceptor to attach Authorization header
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -104,13 +105,17 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       // Skip refresh for refresh token requests to prevent infinite loop
       if (config._skipAuthRefresh) {
+        // A silent session restore (page load) just reports "no session".
+        if (config._silent) {
+          return Promise.reject(error as Error);
+        }
         Notify.create({
           type: 'warning',
           message: 'Session expired, please login again',
           position: 'top',
         });
         // Clear auth state and redirect
-        localStorage.removeItem('access_token');
+        clearAccessToken();
         if (typeof window !== 'undefined') {
           window.location.assign('/login');
         }
@@ -142,8 +147,8 @@ api.interceptors.response.use(
 
           const { access_token } = response.data;
 
-          // Save new access token
-          localStorage.setItem('access_token', access_token);
+          // Keep the new access token in memory only
+          setAccessToken(access_token);
 
           // Update authorization header
           api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
@@ -165,7 +170,7 @@ api.interceptors.response.use(
             message: 'Session expired, please login again',
             position: 'top',
           });
-          localStorage.removeItem('access_token');
+          clearAccessToken();
           if (typeof window !== 'undefined') {
             window.location.assign('/login');
           }
@@ -180,7 +185,7 @@ api.interceptors.response.use(
     if (error.response?.status === 403) {
       const detail = error.response?.data?.detail || '';
       if (detail === 'Inactive user') {
-        localStorage.removeItem('access_token');
+        clearAccessToken();
         if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
           window.location.assign('/login');
         }

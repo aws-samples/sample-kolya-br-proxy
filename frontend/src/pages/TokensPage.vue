@@ -790,6 +790,7 @@
 </template>
 
 <script setup lang="ts">
+import { getAccessToken } from '@/auth/credential';
 import { ref, computed, onMounted } from 'vue';
 import { useAuthStore } from '@/stores/auth';
 import { useTokensStore } from '../stores/tokens';
@@ -1059,7 +1060,7 @@ async function copyTokenKey(token: APIToken) {
     // Get decrypted token from backend
     const response = await fetch(`${apiBaseUrl}/admin/tokens/${token.id}/plain`, {
       headers: {
-        'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+        'Authorization': `Bearer ${getAccessToken()}`,
       },
     });
 
