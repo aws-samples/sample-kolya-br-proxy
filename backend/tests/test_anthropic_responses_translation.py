@@ -217,7 +217,7 @@ def test_chat_conversion_keeps_text_alongside_tool_calls():
 
 @pytest.mark.asyncio
 async def test_streaming_tool_call_becomes_anthropic_tool_events():
-    async def chunks(_payload):
+    async def chunks(_payload, **_kwargs):
         yield (
             'data: {"choices":[{"delta":{"content":"checking","tool_calls":[{"index":0,'
             '"id":"call-1","type":"function","function":{"name":"lookup",'
@@ -268,7 +268,7 @@ async def test_streaming_tool_call_becomes_anthropic_tool_events():
 
 @pytest.mark.asyncio
 async def test_streaming_upstream_error_becomes_anthropic_error_event():
-    async def chunks(_payload):
+    async def chunks(_payload, **_kwargs):
         yield (
             'data: {"error":{"message":"public","type":"server_error",'
             '"code":"upstream_failed"}}\n\n'

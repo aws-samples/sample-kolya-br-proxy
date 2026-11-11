@@ -94,7 +94,7 @@ def _responses_completed_event():
 
 @pytest.mark.asyncio
 async def test_openai_chat_mantle_stream_records_all_cache_categories():
-    async def stream(_payload):
+    async def stream(_payload, **_kwargs):
         yield _chat_usage_chunk()
 
     recorded = []
@@ -119,7 +119,7 @@ async def test_openai_chat_mantle_stream_records_all_cache_categories():
 
 @pytest.mark.asyncio
 async def test_anthropic_mantle_stream_records_all_cache_categories():
-    async def stream(_payload):
+    async def stream(_payload, **_kwargs):
         yield _chat_usage_chunk()
 
     recorded = []
