@@ -7,6 +7,7 @@ from app.models.embedding_pricing import EmbeddingPricing
 from app.models.entra_group_mapping import EntraGroupMapping
 from app.models.oauth_state import OAuthState
 from app.models.refresh_token import RefreshToken
+from app.models.stored_response import StoredResponse
 from app.models.system_config import SystemConfig
 from app.models.token import APIToken
 from app.models.usage import UsageRecord
@@ -23,6 +24,7 @@ __all__ = [
     "User",
     "APIToken",
     "UsageRecord",
+    "StoredResponse",
     "SystemConfig",
     "OAuthState",
     "RefreshToken",

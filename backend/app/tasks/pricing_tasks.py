@@ -91,6 +91,19 @@ async def cleanup_refresh_tokens_task():
             logger.error(f"Refresh token cleanup failed: {e}", exc_info=True)
 
 
+async def cleanup_stored_responses_task():
+    """Drop owner rows for responses upstream no longer keeps."""
+    from app.services.response_ownership import cleanup_expired
+
+    async with async_session_maker() as db:
+        try:
+            deleted = await cleanup_expired(db)
+            if deleted:
+                logger.info(f"Deleted {deleted} expired stored-response owners")
+        except Exception as e:
+            logger.error(f"Stored response cleanup failed: {e}", exc_info=True)
+
+
 def start_scheduler():
     """Start the background task scheduler."""
     global scheduler
@@ -143,6 +156,14 @@ def start_scheduler():
         trigger=CronTrigger(hour=3, minute=0),
         id="cleanup_refresh_tokens",
         name="Delete expired refresh tokens",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        cleanup_stored_responses_task,
+        trigger=CronTrigger(hour=3, minute=15),
+        id="cleanup_stored_responses",
+        name="Delete expired stored-response owners",
         replace_existing=True,
     )
 
