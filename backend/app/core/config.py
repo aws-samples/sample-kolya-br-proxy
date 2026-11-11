@@ -139,6 +139,15 @@ class Settings(BaseSettings):
         default=False,
         description="Default behavior for auto-injecting cache_control breakpoints (can be overridden per-request via bedrock_auto_cache)",
     )
+    PROMPT_CACHE_TENANT_ISOLATION: bool = Field(
+        default=True,
+        description=(
+            "Partition the Bedrock prompt cache per API key. Every key shares "
+            "the gateway's AWS account and therefore one cache, so without "
+            "this a key can probe whether another key sent a given prompt "
+            "prefix by reading the cache-read token counters."
+        ),
+    )
     PROMPT_CACHE_TTL: str = Field(
         default="1h",
         description="Prompt cache TTL. Supported values: '5m' (default Anthropic TTL) or '1h' (extended). "
