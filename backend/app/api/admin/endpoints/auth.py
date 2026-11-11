@@ -8,7 +8,18 @@ Authentication endpoints for user registration and login.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from typing import Annotated
+
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -378,6 +389,14 @@ async def update_profile(
     return UserResponse.from_user(current_user)
 
 
+class OAuthCallbackBody(BaseModel):
+    """OAuth callback parameters, sent in the body to keep them out of logs."""
+
+    code: str
+    redirect_uri: str
+    state: str
+
+
 @router.get("/microsoft/login")
 async def microsoft_login(
     redirect_uri: str,
@@ -414,14 +433,17 @@ async def microsoft_login(
 
 @router.post("/microsoft/callback", response_model=LoginResponse)
 async def microsoft_callback(
-    code: str,
-    redirect_uri: str,
-    state: str,
     http_request: Request,
     response: Response,
     auth_service: AuthService = Depends(get_auth_service),
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
     db: AsyncSession = Depends(get_db),
+    body: Annotated[OAuthCallbackBody | None, Body()] = None,
+    # Query-string form kept only for browsers still running the previous
+    # frontend; it puts the code in access logs, so the UI no longer uses it.
+    code: Annotated[str | None, Query()] = None,
+    redirect_uri: Annotated[str | None, Query()] = None,
+    state: Annotated[str | None, Query()] = None,
 ):
     """
     Handle Microsoft OAuth callback.
@@ -433,6 +455,14 @@ async def microsoft_callback(
     Creates or logs in user with Microsoft account.
     Refresh token is set as HttpOnly cookie.
     """
+    if body is not None:
+        code, redirect_uri, state = body.code, body.redirect_uri, body.state
+    if not code or not redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing code or redirect_uri",
+        )
+
     # Validate state parameter (CSRF protection)
     if not state:
         raise HTTPException(
@@ -763,14 +793,17 @@ async def cognito_login(
 
 @router.post("/cognito/callback", response_model=LoginResponse)
 async def cognito_callback(
-    code: str,
-    redirect_uri: str,
-    state: str,
     http_request: Request,
     response: Response,
     auth_service: AuthService = Depends(get_auth_service),
     refresh_token_service: RefreshTokenService = Depends(get_refresh_token_service),
     db: AsyncSession = Depends(get_db),
+    body: Annotated[OAuthCallbackBody | None, Body()] = None,
+    # Query-string form kept only for browsers still running the previous
+    # frontend; it puts the code in access logs, so the UI no longer uses it.
+    code: Annotated[str | None, Query()] = None,
+    redirect_uri: Annotated[str | None, Query()] = None,
+    state: Annotated[str | None, Query()] = None,
 ):
     """
     Handle AWS Cognito OAuth callback.
@@ -782,6 +815,14 @@ async def cognito_callback(
     Creates or logs in user with Cognito account.
     Refresh token is set as HttpOnly cookie.
     """
+    if body is not None:
+        code, redirect_uri, state = body.code, body.redirect_uri, body.state
+    if not code or not redirect_uri:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing code or redirect_uri",
+        )
+
     # Validate state parameter (CSRF protection)
     if not state:
         raise HTTPException(

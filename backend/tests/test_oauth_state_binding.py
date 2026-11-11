@@ -75,3 +75,37 @@ async def test_login_sets_state_cookie(monkeypatch, provider):
     cookie = response.headers["set-cookie"]
     assert cookie.startswith(f"{OAUTH_STATE_COOKIE}=issued-state")
     assert "HttpOnly" in cookie and "Path=/admin/auth" in cookie
+
+
+# --- callback parameters travel in the body --------------------------------
+
+
+@pytest.mark.parametrize("provider", ["cognito", "microsoft"])
+def test_callback_reads_json_body(provider):
+    from fastapi.testclient import TestClient
+
+    from app.api.deps import get_auth_service, get_refresh_token_service
+    from app.core.database import get_db
+    from main import app
+
+    async def _no_db():
+        yield _NoDB()
+
+    app.dependency_overrides[get_db] = _no_db
+    app.dependency_overrides[get_auth_service] = lambda: None
+    app.dependency_overrides[get_refresh_token_service] = lambda: None
+    client = TestClient(app, raise_server_exceptions=False)
+    url = f"/admin/auth/{provider}/callback"
+    headers = {"X-Requested-With": "XMLHttpRequest"}
+    # Body parsed: the state is checked (and rejected: no cookie) before DB use.
+    r = client.post(
+        url,
+        json={"code": "c", "state": "s", "redirect_uri": "https://example/cb"},
+        headers=headers,
+    )
+    assert r.status_code == 403
+    # Nothing supplied at all is a 400, not a 422 or 500.
+    try:
+        assert client.post(url, headers=headers).status_code == 400
+    finally:
+        app.dependency_overrides.clear()
