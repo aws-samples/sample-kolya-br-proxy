@@ -201,6 +201,7 @@
 </template>
 
 <script setup lang="ts">
+import { getAccessToken } from '@/auth/credential';
 import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { Notify } from 'quasar';
 import { useTokensStore } from '@/stores/tokens';
@@ -406,7 +407,7 @@ async function getPlainToken(): Promise<string> {
   const apiBaseUrl = getApiBaseUrl();
   const response = await fetch(`${apiBaseUrl}/admin/tokens/${selectedToken.value}/plain`, {
     headers: {
-      'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+      'Authorization': `Bearer ${getAccessToken()}`,
       'Cache-Control': 'no-cache',
     },
   });
