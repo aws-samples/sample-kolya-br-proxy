@@ -156,6 +156,9 @@ async def test_embedding_pricing_failure_is_isolated_from_token_pricing_stats():
         patch.object(updater, "_fetch_from_price_list_api", AsyncMock(return_value=[])),
         patch.object(updater, "_scrape_aws_pricing_page", AsyncMock(return_value=[])),
         patch.object(
+            updater, "_fetch_marketplace_offer_pricing", AsyncMock(return_value=[])
+        ),
+        patch.object(
             updater, "_backfill_from_reference_region", AsyncMock(return_value=0)
         ),
         patch.object(
