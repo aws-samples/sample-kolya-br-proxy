@@ -184,6 +184,51 @@ ensure_ecr_repo() {
     fi
 }
 
+# Sign a pushed image (by digest) with the project's KMS key so Kyverno lets
+# it run (k8s/infrastructure/kyverno/policy-verify-images.yaml). The key alias
+# comes from IMAGE_SIGNING_KEY or the Terraform output; without either,
+# signing is skipped (deployments that don't enforce signatures).
+sign_image() {
+    local repo_name="$1" tag="$2"
+    local key="${IMAGE_SIGNING_KEY:-}"
+    if [[ -z "$key" ]]; then
+        key=$(terraform -chdir="$SCRIPT_DIR/iac" output -raw image_signing_key_alias 2>/dev/null || true)
+    fi
+    if [[ -z "$key" || "$key" == *"No outputs"* || "$key" == *"Warning"* ]]; then
+        print_warning "No image signing key configured; $repo_name:$tag left unsigned"
+        return 0
+    fi
+    if ! command -v cosign >/dev/null 2>&1; then
+        print_error "cosign is required to sign images (brew install cosign)"
+        return 1
+    fi
+
+    local digest
+    digest=$(aws ecr describe-images --repository-name "$repo_name" --image-ids imageTag="$tag" \
+        --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text)
+    if [[ -z "$digest" || "$digest" == "None" ]]; then
+        print_error "Could not resolve digest for $repo_name:$tag"
+        return 1
+    fi
+
+    # Empty signing config: sign with the KMS key only, publish nothing to
+    # the public Rekor transparency log.
+    local signing_config
+    signing_config=$(mktemp)
+    cosign signing-config create --out "$signing_config" >/dev/null
+
+    print_step "Signing $repo_name@$digest with awskms:///$key"
+    if AWS_REGION="$AWS_REGION" cosign sign --yes --key "awskms:///$key" \
+        --signing-config "$signing_config" "$ECR_BASE/$repo_name@$digest"; then
+        print_success "Signed: $repo_name@$digest"
+    else
+        rm -f "$signing_config"
+        print_error "Signing failed for $repo_name@$digest"
+        return 1
+    fi
+    rm -f "$signing_config"
+}
+
 # Build and push backend
 build_backend() {
     local repo_name="kolya-br-proxy-backend"
@@ -222,6 +267,8 @@ build_backend() {
         print_error "Failed to push: $image_timestamp"
         return 1
     fi
+
+    sign_image "$repo_name" "$TIMESTAMP_TAG" || return 1
 
     echo ""
     print_success "Backend images pushed successfully"
@@ -283,6 +330,8 @@ build_frontend() {
         print_error "Failed to push: $image_timestamp"
         return 1
     fi
+
+    sign_image "$repo_name" "$TIMESTAMP_TAG" || return 1
 
     echo ""
     print_success "Frontend images pushed successfully"

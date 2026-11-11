@@ -242,6 +242,18 @@ module "eks_addons" {
 # NOTE: Previously used data sources for K8s/Helm providers have been removed
 # as these providers are no longer used. K8s resources are managed separately.
 
+# Image signing (cosign + KMS) and Kyverno's ECR read access
+module "image_signing" {
+  source = "./modules/image-signing"
+
+  project_name_alias = var.project_name_alias
+  workspace          = local.workspace
+  account            = local.account
+  region             = local.region
+  cluster_name       = module.eks_karpenter.cluster_name
+  default_tags       = local.default_tags
+}
+
 # Cognito Module (Optional)
 module "cognito" {
   count  = var.enable_cognito ? 1 : 0

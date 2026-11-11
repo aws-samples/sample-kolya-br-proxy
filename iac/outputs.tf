@@ -213,3 +213,8 @@ output "waf_web_acl_id" {
   description = "ID of the WAF WebACL"
   value       = var.enable_waf ? module.waf[0].web_acl_id : null
 }
+
+output "image_signing_key_alias" {
+  description = "KMS alias cosign signs images with (awskms:///<alias>)"
+  value       = module.image_signing.key_alias
+}
