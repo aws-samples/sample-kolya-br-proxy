@@ -27,10 +27,17 @@ TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 @pytest.fixture(autouse=True)
 def _offline_embedding_pricing():
     """Keep update_all_pricing tests offline; embedding pricing has its own tests."""
-    with patch.object(
-        PricingUpdater,
-        "_update_embedding_pricing",
-        AsyncMock(return_value=0),
+    with (
+        patch.object(
+            PricingUpdater,
+            "_update_embedding_pricing",
+            AsyncMock(return_value=0),
+        ),
+        patch.object(
+            PricingUpdater,
+            "_fetch_marketplace_offer_pricing",
+            AsyncMock(return_value=[]),
+        ),
     ):
         yield
 
@@ -1176,3 +1183,46 @@ def test_marketplace_model_id_mapping_is_exact_and_non_speculative():
     assert updater._map_model_name_to_id("Llama 3.3 70B Custom") is None
     assert updater._map_model_name_to_id("Command") is None
     assert updater._map_model_name_to_id("Command-Light") is None
+
+
+@pytest.mark.asyncio
+async def test_marketplace_offer_only_fills_gaps(db_session):
+    """A model already priced by the main offer keeps that price."""
+    updater = PricingUpdater(db_session)
+    settings = MagicMock()
+    settings.AWS_REGION = "us-west-2"
+
+    def row(model_id, price):
+        return {
+            "model_id": model_id,
+            "region": "us-west-2",
+            "input_price_per_token": Decimal(price),
+            "output_price_per_token": Decimal(price),
+        }
+
+    marketplace = [
+        row("cohere.command-r-v1:0", "0.9"),
+        row("writer.palmyra-x4-v1:0", "0.0000025"),
+    ]
+    with (
+        patch("app.services.pricing_updater.get_settings", return_value=settings),
+        patch.object(
+            updater,
+            "_fetch_from_price_list_api",
+            AsyncMock(return_value=[row("cohere.command-r-v1:0", "0.0000005")]),
+        ),
+        patch.object(updater, "_scrape_aws_pricing_page", AsyncMock(return_value=[])),
+        patch.object(
+            updater,
+            "_fetch_marketplace_offer_pricing",
+            AsyncMock(return_value=marketplace),
+        ),
+        patch.object(
+            updater, "_save_pricing_data", AsyncMock(side_effect=lambda d, s: len(d))
+        ) as save,
+        patch("app.services.pricing_updater.refresh_mantle_registry", AsyncMock()),
+    ):
+        await updater.update_all_pricing()
+
+    saved = {s: [d["model_id"] for d in data] for (data, s), _ in save.call_args_list}
+    assert saved["aws-marketplace-offer"] == ["writer.palmyra-x4-v1:0"]

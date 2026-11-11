@@ -134,6 +134,32 @@ class PricingUpdater:
             logger.warning(f"Failed to scrape AWS pricing page: {e}")
             stats["failed"] += 1
 
+        # 2b. Marketplace-sold models (AmazonBedrockFoundationModels offer).
+        #     Third-party models billed through AWS Marketplace (e.g. Writer
+        #     Palmyra) are priced only in this separate offer. Used to fill
+        #     gaps only: anything already priced above keeps its source, and
+        #     OpenAI GPT stays on the model-card catalog.
+        try:
+            marketplace_data = [
+                d
+                for d in await self._fetch_marketplace_offer_pricing()
+                if self._strip_prefix(d["model_id"]) not in found_model_ids
+            ]
+            if marketplace_data:
+                mp_count = await self._save_pricing_data(
+                    marketplace_data, self.MARKETPLACE_OFFER_SOURCE
+                )
+                stats["updated"] += mp_count
+                stats["sources"].append(self.MARKETPLACE_OFFER_SOURCE)
+                for d in marketplace_data:
+                    found_model_ids.add(self._strip_prefix(d["model_id"]))
+                logger.info(
+                    f"Added {mp_count} pricing records from the Marketplace offer"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch Marketplace offer pricing: {e}")
+            stats["failed"] += 1
+
         # 3. Back-fill pricing from reference regions for models available
         #    via the fallback region (e.g. GLM routed to us-west-2) but
         #    missing from the configured region's Price List data.
@@ -250,6 +276,7 @@ class PricingUpdater:
         return saved + await self._ensure_model_card_fallback_pricing(profile_ids)
 
     MODEL_CARD_FALLBACK_SOURCE = "aws-model-card-fallback"
+    MARKETPLACE_OFFER_SOURCE = "aws-marketplace-offer"
 
     async def _ensure_model_card_fallback_pricing(self, profile_ids) -> int:
         """Seed published model-card rates the Price List API still lacks.
@@ -601,6 +628,95 @@ class PricingUpdater:
                     return None
                 return price / tokens
         return None
+
+    # OpenAI GPT is priced from the model-card catalog, and Claude (with its
+    # cache tiers) from the pricing page; this offer lists neither's cache
+    # dimensions completely, so it must never stand in for them.
+    _MARKETPLACE_SKIP_PROVIDERS = frozenset({"OpenAI", "Anthropic"})
+
+    _MARKETPLACE_TOKEN_TYPES = {
+        "Input tokens": "input",
+        "Output tokens": "output",
+        "Prompt cache read input tokens": "cache_read",
+        "Prompt cache write input tokens": "cache_write",
+    }
+
+    async def _fetch_marketplace_offer_pricing(self) -> List[Dict]:
+        """Standard on-demand token prices from the Marketplace offer.
+
+        Rows are the Region's own rate. They are emitted for the base model
+        ID and for the geo profile (Geo CRIS bills at the Region's rate);
+        cleanup_stale_cross_region_entries prunes profiles the account
+        doesn't have. Long-context, batch and other surcharge dimensions are
+        skipped, as for the main offer.
+        """
+        settings = get_settings()
+        region = settings.AWS_REGION
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{self.PRICE_LIST_API_URL}/offers/v1.0/aws/"
+                f"AmazonBedrockFoundationModels/current/{region}/index.json"
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        products = data.get("products", {})
+        terms = data.get("terms", {})
+        by_model: Dict[str, Dict[str, str]] = {}
+        usagetypes: Dict[str, List[str]] = {}
+        for product_id, product in products.items():
+            attrs = product.get("attributes", {})
+            model = attrs.get("model")
+            if (
+                not model
+                or attrs.get("regionCode") != region
+                or attrs.get("provider") in self._MARKETPLACE_SKIP_PROVIDERS
+                or attrs.get("feature") != "On-demand Inference"
+            ):
+                continue
+            usagetype = attrs.get("usagetype", "")
+            lowered = usagetype.lower()
+            if (
+                "long_ctx" in lowered
+                or "global" in lowered
+                or self._is_surcharge_usagetype(usagetype)
+            ):
+                continue
+            kind = self._MARKETPLACE_TOKEN_TYPES.get(attrs.get("inferenceType", ""))
+            if kind:
+                by_model.setdefault(model, {})[kind] = product_id
+                usagetypes.setdefault(model, []).append(usagetype)
+
+        from app.services.bedrock import BedrockClient
+
+        geo_prefix = BedrockClient.get_geo_prefix(region)
+        rows: List[Dict] = []
+        unmatched = []
+        for model, kinds in by_model.items():
+            if "input" not in kinds or "output" not in kinds:
+                continue
+            input_price = self._extract_price_from_terms(terms, kinds["input"])
+            output_price = self._extract_price_from_terms(terms, kinds["output"])
+            if input_price is None or output_price is None:
+                continue
+            base_id = self._map_price_list_model(model, usagetypes.get(model, []))
+            if not base_id:
+                unmatched.append(model)
+                continue
+            for model_id in (base_id, f"{geo_prefix}.{base_id}"):
+                row = {
+                    "model_id": model_id,
+                    "region": region,
+                    "input_price_per_token": input_price,
+                    "output_price_per_token": output_price,
+                }
+                self._add_cache_prices(
+                    row, terms, kinds.get("cache_read"), kinds.get("cache_write")
+                )
+                rows.append(row)
+        if unmatched:
+            logger.info(f"Marketplace offer models without a mapping: {unmatched}")
+        return rows
 
     async def _fetch_from_price_list_api(self) -> List[Dict]:
         """
