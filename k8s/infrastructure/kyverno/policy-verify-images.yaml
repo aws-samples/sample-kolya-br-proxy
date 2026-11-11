@@ -1,0 +1,48 @@
+# Only images signed with the project's KMS key (alias
+# kbr-proxy-kolya-image-signing, see iac/modules/image-signing) may run as
+# kolya-br-proxy-* containers in the kbp namespace.
+#
+# Rollout: Audit first (reports only, nothing blocked, no mutation). After a
+# clean week switch validationActions to [Deny] and mutateDigest to true.
+# The public key below is the key's public half; it is not a secret.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: kbp-verify-image-signatures
+spec:
+  validationActions: [Audit]
+  failurePolicy: Ignore
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: kbp
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchImageReferences:
+    - glob: "612674025488.dkr.ecr.us-west-2.amazonaws.com/kolya-br-proxy-*"
+  credentials:
+    providers: ["amazon"]
+  validationConfigurations:
+    required: true
+    mutateDigest: false
+    verifyDigest: false
+  attestors:
+    - name: kms
+      cosign:
+        key:
+          data: |
+              -----BEGIN PUBLIC KEY-----
+              MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQsSdcx80X9m3JTUgTwQ200fpStMu
+              ctQT3gHIkyrBEaKji7/rRfI0NVm4VIn4vsAVmrjJQwbN9e1+k6L/wFjpig==
+              -----END PUBLIC KEY-----
+        ctlog:
+          # Signed without a transparency log (nothing published to Rekor).
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.kms])).all(e, e > 0)
+      message: "kolya-br-proxy images must be signed with the project KMS key"

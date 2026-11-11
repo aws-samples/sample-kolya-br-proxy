@@ -1,0 +1,28 @@
+# Kyverno: verifies kbp image signatures (see policy-verify-images.yaml).
+# Pinned chart: helm upgrade --install kyverno kyverno/kyverno -n kyverno \
+#   --create-namespace --version 3.9.2 -f values.yaml
+admissionController:
+  replicas: 3
+  # Spread across nodes so one node going away doesn't stop admission.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: admission-controller
+backgroundController:
+  replicas: 1
+cleanupController:
+  replicas: 1
+reportsController:
+  replicas: 1
+config:
+  # Only the application namespace goes through Kyverno's webhooks; system
+  # namespaces (and Kyverno itself) are never blocked by a Kyverno outage.
+  webhooks:
+    - namespaceSelector:
+        matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: In
+            values: ["kbp"]
