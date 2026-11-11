@@ -1,0 +1,35 @@
+# One-off, idempotent: creates/updates the least-privilege database roles
+# (backend/scripts/db_least_privilege.py) with the cluster master
+# credentials. k8s/deploy.sh runs it before the backend, because db-migrate
+# connects as the migrator role and the backend as the app role.
+# The image is replaced by deploy.sh with the backend image in use.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-least-privilege
+  namespace: kbp
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: db-least-privilege
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: BACKEND_IMAGE
+          command: ["sh", "-c", "cd /app && python /scripts/db_least_privilege.py"]
+          env:
+            - name: KBR_MASTER_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: backend-secrets, key: database-url}}
+            - name: KBR_MIGRATE_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: backend-secrets, key: database-url-migrate}}
+            - name: KBR_APP_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: backend-secrets, key: database-url-app}}
+          volumeMounts:
+            - {name: script, mountPath: /scripts}
+      volumes:
+        - name: script
+          configMap: {name: db-least-privilege-script}

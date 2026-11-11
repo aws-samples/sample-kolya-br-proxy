@@ -368,6 +368,23 @@ deploy_app() {
     print_info "生成 Ingress 配置..."
     ./generate-ingress.sh
 
+    # db-migrate 以 migrator 角色连接、backend 以 app 角色连接，所以先确保角色存在
+    print_info "配置数据库最小权限角色..."
+    kubectl -n ${NAMESPACE} create configmap db-least-privilege-script \
+        --from-file=db_least_privilege.py="$SCRIPT_DIR/../backend/scripts/db_least_privilege.py" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    kubectl -n ${NAMESPACE} delete job db-least-privilege --ignore-not-found=true
+    local backend_image
+    backend_image=$(grep -m1 'image:' backend-deployment.yaml | awk '{print $2}')
+    sed "s|BACKEND_IMAGE|${backend_image}|" db-roles-job.yaml | kubectl apply -f -
+    if ! kubectl -n ${NAMESPACE} wait --for=condition=complete job/db-least-privilege --timeout=180s; then
+        print_error "数据库角色配置失败"
+        kubectl -n ${NAMESPACE} logs job/db-least-privilege || true
+        exit 1
+    fi
+    kubectl -n ${NAMESPACE} logs job/db-least-privilege
+    print_success "数据库角色已就绪"
+
     print_info "步骤 5/9: 部署 Backend..."
     kubectl apply -f backend-deployment.yaml
 

@@ -56,7 +56,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: backend-secrets
-              key: database-url
+              key: database-url-migrate  # schema owner; DDL only here
         - name: KBR_JWT_SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -81,7 +81,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: backend-secrets
-              key: database-url
+              key: database-url-app  # rows only, no DDL
         - name: KBR_JWT_SECRET_KEY
           valueFrom:
             secretKeyRef:
