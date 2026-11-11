@@ -39,6 +39,7 @@ from app.core.database import session_scope
 from app.models.model import Model
 from app.models.token import APIToken
 from app.services.background_tasks import BackgroundTaskManager
+from app.services import response_ownership
 from app.services.mantle_client import (
     MantleClient,
     ResponsesRequestValidationError,
@@ -73,6 +74,20 @@ def _usage_from_response(usage: Dict[str, Any]) -> Dict[str, int]:
         "cached": cached,
         "cache_write": cache_write,
     }
+
+
+async def _record_owner(body: dict, response: dict, token: APIToken) -> None:
+    """Remember which key owns a stored response, for later continuations."""
+    response_id = response.get("id")
+    if not isinstance(response_id, str) or not response_ownership.is_stored(
+        body, response
+    ):
+        return
+    try:
+        await response_ownership.record_owner(response_id, token.id)
+    except Exception:
+        # Fail closed: without a row the response simply can't be continued.
+        logger.error("Failed to record response owner", exc_info=True)
 
 
 @router.post("/responses")
@@ -169,6 +184,24 @@ async def create_response(
     except ResponsesRequestValidationError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
+    # Stored responses live in the gateway's shared AWS account, so a
+    # continuation is only allowed from the key that created the response.
+    # Not-owned and unknown IDs get the same answer.
+    previous_id = body.get("previous_response_id")
+    if previous_id is not None:
+        if not isinstance(previous_id, str) or not await response_ownership.is_owner(
+            previous_id, token.id
+        ):
+            raise HTTPException(
+                status_code=404, detail="previous_response_id not found"
+            )
+    if body.get("conversation") is not None:
+        # Conversation objects aren't tracked per key; use previous_response_id.
+        raise HTTPException(
+            status_code=400,
+            detail="'conversation' is not supported; use previous_response_id",
+        )
+
     if stream:
         return StreamingResponse(
             _stream_responses(
@@ -195,6 +228,8 @@ async def create_response(
             status_code=e.response.status_code,
             detail=f"Bedrock Responses API error: status {e.response.status_code}",
         )
+
+    await _record_owner(body, response_data, token)
 
     usage = _usage_from_response(response_data.get("usage") or {})
     background_tasks.create_task(
@@ -312,6 +347,8 @@ async def _stream_responses(
                 except json.JSONDecodeError:
                     continue
                 etype = event.get("type")
+                if etype == "response.created":
+                    await _record_owner(body, event.get("response") or {}, token)
                 if (
                     isinstance(etype, str)
                     and etype.endswith(".delta")

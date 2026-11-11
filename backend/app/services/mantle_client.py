@@ -415,6 +415,9 @@ def _openai_to_responses(payload: Dict[str, Any]) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "model": payload.get("model", ""),
         "input": input_items,
+        # The gateway never continues these, and upstream storage is shared
+        # by every key on the account: don't keep tenant conversations there.
+        "store": False,
     }
     if _has_explicit_prompt_cache_breakpoint(input_items):
         # Explicit mode disables the automatic latest-message breakpoint, so
