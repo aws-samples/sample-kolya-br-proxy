@@ -286,6 +286,7 @@ async def create_chat_completion(
 
         # Translate request
         bedrock_request = await RequestTranslator.openai_to_bedrock(request_data)
+        bedrock_request.cache_scope = str(token.id)
 
         # Handle streaming
         if request_data.stream:

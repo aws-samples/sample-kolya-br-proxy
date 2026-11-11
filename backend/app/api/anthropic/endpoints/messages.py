@@ -236,6 +236,7 @@ async def create_message(
         bedrock_request = AnthropicRequestTranslator.to_bedrock(request_data)
         bedrock_request.auto_cache = auto_cache
         bedrock_request.cache_ttl = cache_ttl
+        bedrock_request.cache_scope = str(token.id)
 
         # Handle streaming
         if request_data.stream:

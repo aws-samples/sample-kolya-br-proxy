@@ -73,6 +73,9 @@ class BedrockRequest(BaseModel):
     request_metadata: Optional[Dict[str, str]] = None
     auto_cache: Optional[bool] = None
     cache_ttl: Optional[str] = None  # Per-request TTL override ("5m" or "1h")
+    # Who the prompt cache is partitioned for (the API key). Set by the
+    # gateway endpoints, never by the client.
+    cache_scope: Optional[str] = Field(default=None, exclude=True)
 
 
 class BedrockContentBlock(BaseModel):

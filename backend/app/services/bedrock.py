@@ -13,6 +13,7 @@ ConverseStream API, which is model-agnostic and handles format conversion
 automatically.
 """
 
+import hashlib
 import asyncio
 import json
 import logging
@@ -1073,6 +1074,45 @@ class BedrockClient:
             )
 
     @staticmethod
+    def _scope_prompt_cache(body: dict, scope: str) -> None:
+        """Keep one API key's cache entries out of every other key's reach.
+
+        Bedrock caches per AWS account and every key shares the gateway's
+        account, so a cached prefix written for one key is a cache hit for
+        any other key sending the same text - and the usage counters say so.
+        Cached prefixes are tools, then system, then messages. Putting a
+        per-key marker at the head of ``system`` makes every system or
+        message breakpoint key-specific. A breakpoint on the tools alone
+        would still end before the marker, so it is moved to the end of the
+        system blocks, which caches the same tools plus the marker.
+
+        Requests with no breakpoint are left untouched: nothing is cached.
+        """
+        if not BedrockClient._body_has_cache_control(body):
+            return
+
+        moved = None
+        for tool in body.get("tools") or []:
+            if isinstance(tool, dict) and "cache_control" in tool:
+                moved = tool.pop("cache_control")
+
+        system = body.get("system")
+        if isinstance(system, str):
+            blocks = [{"type": "text", "text": system}] if system else []
+        elif isinstance(system, list):
+            blocks = list(system)
+        else:
+            blocks = []
+
+        digest = hashlib.sha256(f"kbp-cache-scope:{scope}".encode()).hexdigest()
+        blocks.insert(0, {"type": "text", "text": f"[cache scope {digest[:16]}]"})
+
+        last = blocks[-1]
+        if moved is not None and isinstance(last, dict) and "cache_control" not in last:
+            last["cache_control"] = moved
+        body["system"] = blocks
+
+    @staticmethod
     def _build_anthropic_body(
         request: BedrockRequest, model_id: str | None = None
     ) -> dict:
@@ -1172,6 +1212,9 @@ class BedrockClient:
             BedrockClient._inject_prompt_cache_breakpoints(
                 body, ttl=request.cache_ttl, model_id=model_id
             )
+
+        if request.cache_scope and get_settings().PROMPT_CACHE_TENANT_ISOLATION:
+            BedrockClient._scope_prompt_cache(body, request.cache_scope)
 
         # --- effort parameter: requires beta flag + output_config wrapper ---
         # Users may pass "effort" as a top-level field (via additional_model_request_fields).
