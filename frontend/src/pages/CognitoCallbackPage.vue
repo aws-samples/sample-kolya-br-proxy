@@ -30,6 +30,10 @@ onMounted(async () => {
     const code = urlParams.get('code');
     const state = urlParams.get('state');
 
+    // The code and state are single-use, but keep them out of the address
+    // bar, browser history and any Referer sent from this page.
+    window.history.replaceState(null, '', window.location.pathname);
+
     if (!code) {
       throw new Error('No authorization code received');
     }
@@ -43,17 +47,13 @@ onMounted(async () => {
     // Exchange code for token
     const redirectUri = (window as unknown as Record<string, Record<string, string>>).__CONFIG__?.cognitoRedirectUri || `${window.location.origin}/auth/cognito/callback`;
 
-    console.log('Exchanging code for token...', { code, redirectUri });
-
-    const response = await api.post('/admin/auth/cognito/callback', null, {
-      params: {
-        code,
-        state,
-        redirect_uri: redirectUri,
-      },
+    // Sent in the body, not the query string, so the code never lands in
+    // access logs.
+    const response = await api.post('/admin/auth/cognito/callback', {
+      code,
+      state,
+      redirect_uri: redirectUri,
     });
-
-    console.log('Token exchange response:', response.data);
 
     // Save access token (refresh token is set as HttpOnly cookie by the server)
     const { access_token, user } = response.data;
