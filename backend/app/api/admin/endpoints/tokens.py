@@ -45,7 +45,7 @@ from app.services.token import TokenService
 router = APIRouter()
 
 
-ALLOWED_METADATA_KEYS = {"prompt_cache_enabled", "prompt_cache_ttl"}
+ALLOWED_METADATA_KEYS = {"prompt_cache_enabled", "prompt_cache_ttl", "rate_limit_rpm"}
 ALLOWED_CACHE_TTL_VALUES = {"5m", "1h"}
 
 
@@ -79,6 +79,12 @@ def validate_token_metadata(meta: dict | None) -> dict | None:
         if meta["prompt_cache_ttl"] not in ALLOWED_CACHE_TTL_VALUES:
             raise ValueError(
                 f"prompt_cache_ttl must be one of {ALLOWED_CACHE_TTL_VALUES}"
+            )
+    if "rate_limit_rpm" in meta:
+        rpm = meta["rate_limit_rpm"]
+        if isinstance(rpm, bool) or not isinstance(rpm, int) or not 0 <= rpm <= 100_000:
+            raise ValueError(
+                "rate_limit_rpm must be an integer from 0 (no limit) to 100000"
             )
     return meta
 

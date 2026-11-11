@@ -154,6 +154,16 @@ class Settings(BaseSettings):
         "Using '1h' reduces cache misses in long-running sessions at no extra cost.",
     )
 
+    KEY_RATE_LIMIT_RPM: int = Field(
+        default=600,
+        ge=0,
+        description=(
+            "Requests per minute allowed per API key across all pods (0 = no "
+            "limit). A key's token_metadata.rate_limit_rpm overrides it. "
+            "Enforced in Redis; without Redis the limit is not applied."
+        ),
+    )
+
     # Redis configuration (for distributed rate limiting)
     REDIS_URL: Optional[str] = Field(
         default=None,

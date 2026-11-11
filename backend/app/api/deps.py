@@ -49,7 +49,23 @@ def client_ip_from_request(request: Request) -> Optional[str]:
 async def _validate_token_with_cache(
     token_service: TokenService, plain_token: str, client_ip: Optional[str] = None
 ) -> Optional[APIToken]:
-    """Validate a key, enforcing its allowed_ips when the key has any."""
+    """Validate a key (allowed_ips included), then apply its rate limit.
+
+    Every API-key dependency goes through here exactly once per request, so
+    this is the single place the per-key limit is enforced. It runs outside
+    the cache fallback below so a 429 is never swallowed by it.
+    """
+    token = await _lookup_token(token_service, plain_token, client_ip)
+    if token is not None:
+        from app.services.key_rate_limit import enforce_key_rate_limit
+
+        await enforce_key_rate_limit(token)
+    return token
+
+
+async def _lookup_token(
+    token_service: TokenService, plain_token: str, client_ip: Optional[str] = None
+) -> Optional[APIToken]:
     try:
         from app.core.redis import get_redis, RedisCache
         from app.services.token_cache import CachedTokenService
