@@ -19,8 +19,11 @@ from app.api.deps import (
     get_refresh_token_service,
 )
 from app.core.cookies import (
+    clear_oauth_state_cookie,
     clear_refresh_token_cookie,
     get_refresh_token_from_cookie,
+    oauth_state_matches_cookie,
+    set_oauth_state_cookie,
     set_refresh_token_cookie,
 )
 from app.core.database import get_db
@@ -378,6 +381,7 @@ async def update_profile(
 @router.get("/microsoft/login")
 async def microsoft_login(
     redirect_uri: str,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -400,6 +404,7 @@ async def microsoft_login(
     # Generate and store state with PKCE
     oauth_state_service = OAuthService(db)
     state, code_challenge = await oauth_state_service.generate_state("microsoft")
+    set_oauth_state_cookie(response, state)
 
     auth_url = oauth_service.get_authorization_url(
         redirect_uri, state, code_challenge=code_challenge
@@ -434,6 +439,13 @@ async def microsoft_callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing state parameter",
         )
+    if not oauth_state_matches_cookie(http_request, state):
+        # The state must come back to the browser it was issued to.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or expired state parameter",
+        )
+    clear_oauth_state_cookie(response)
 
     # Verify state against database and retrieve PKCE code_verifier
     from app.services.oauth import OAuthService
@@ -718,6 +730,7 @@ async def microsoft_callback(
 @router.get("/cognito/login")
 async def cognito_login(
     redirect_uri: str,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -740,6 +753,7 @@ async def cognito_login(
     # Generate and store state with PKCE
     oauth_state_service = OAuthService(db)
     state, code_challenge = await oauth_state_service.generate_state("cognito")
+    set_oauth_state_cookie(response, state)
 
     auth_url = oauth_service.get_authorization_url(
         redirect_uri, state, code_challenge=code_challenge
@@ -774,6 +788,13 @@ async def cognito_callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing state parameter",
         )
+    if not oauth_state_matches_cookie(http_request, state):
+        # The state must come back to the browser it was issued to.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or expired state parameter",
+        )
+    clear_oauth_state_cookie(response)
 
     # Verify state against database and retrieve PKCE code_verifier
     from app.services.oauth import OAuthService

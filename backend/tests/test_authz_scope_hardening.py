@@ -211,8 +211,10 @@ async def test_cognito_login_rejects_deactivated_user(monkeypatch):
             code="c",
             redirect_uri="https://example/cb",
             state="s",
-            http_request=SimpleNamespace(client=None, headers={}),
-            response=SimpleNamespace(),
+            http_request=SimpleNamespace(
+                client=None, headers={}, cookies={"kbr_oauth_state": "s"}
+            ),
+            response=SimpleNamespace(delete_cookie=lambda **_k: None),
             auth_service=None,
             refresh_token_service=None,
             db=_DeactivatedUserDB(),
