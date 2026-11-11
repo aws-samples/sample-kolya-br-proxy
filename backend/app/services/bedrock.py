@@ -25,6 +25,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from opentelemetry import trace
 
+from app.services.request_errors import InvalidRequestError, reject_malformed
 from app.core.config import get_settings
 from app.core.metrics import emit_bedrock_call_metrics, emit_failover_metrics
 from app.schemas.bedrock import (
@@ -1113,6 +1114,7 @@ class BedrockClient:
         body["system"] = blocks
 
     @staticmethod
+    @reject_malformed
     def _build_anthropic_body(
         request: BedrockRequest, model_id: str | None = None
     ) -> dict:
@@ -1288,6 +1290,7 @@ class BedrockClient:
         return body
 
     @staticmethod
+    @reject_malformed
     def _build_invoke_kwargs(request: BedrockRequest, model_id: str) -> dict:
         """
         Build the top-level keyword arguments for invoke_model /
@@ -1311,9 +1314,16 @@ class BedrockClient:
         if request.trace:
             kwargs["trace"] = request.trace
 
-        # Performance config
+        # Performance config: InvokeModel takes the latency as its own
+        # top-level parameter; only Converse accepts the performanceConfig
+        # object.
         if request.performance_config:
-            kwargs["performanceConfig"] = request.performance_config
+            latency = request.performance_config.get("latency")
+            if latency not in ("standard", "optimized"):
+                raise InvalidRequestError(
+                    "performanceConfig.latency must be 'standard' or 'optimized'"
+                )
+            kwargs["performanceConfigLatency"] = latency
 
         return kwargs
 
@@ -1322,6 +1332,7 @@ class BedrockClient:
     # ------------------------------------------------------------------
 
     @staticmethod
+    @reject_malformed
     def _build_converse_params(request: BedrockRequest, model_id: str) -> dict:
         """Build parameters for the Converse / ConverseStream API.
 

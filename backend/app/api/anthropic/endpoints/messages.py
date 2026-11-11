@@ -12,7 +12,7 @@ import uuid
 from decimal import Decimal
 from typing import AsyncGenerator
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -341,7 +341,7 @@ async def create_message(
         raise
     except ResponsesRequestValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except ValueError as e:
+    except (ValueError, ParamValidationError) as e:
         logger.error(
             "Invalid request",
             extra={"request_id": request_id, "error": str(e)},

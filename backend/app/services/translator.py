@@ -4,6 +4,7 @@ Request/response translator between OpenAI and Bedrock formats.
 
 import time
 
+from app.services.request_errors import reject_malformed
 from app.schemas.bedrock import BedrockMessage, BedrockRequest, BedrockResponse
 from app.schemas.openai import (
     ChatCompletionChoice,
@@ -100,6 +101,7 @@ class RequestTranslator:
         )
 
     @staticmethod
+    @reject_malformed
     async def openai_to_bedrock(request: ChatCompletionRequest) -> BedrockRequest:
         """
         Convert OpenAI chat completion request to Bedrock format.
