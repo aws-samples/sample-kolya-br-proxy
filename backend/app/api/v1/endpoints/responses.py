@@ -19,6 +19,7 @@ The request body is accepted as an open JSON object (not a strict schema) for
 exactly that reason: unknown/new Responses fields pass straight through.
 """
 
+import re
 import json
 import logging
 import time
@@ -44,12 +45,13 @@ from app.services.mantle_client import (
     validate_native_responses_cache,
 )
 from app.services.mantle_models import (
-    get_mantle_model_regions,
     resolve_responses_model_id,
     select_granted_responses_model,
 )
 
 router = APIRouter()
+_MODEL_ID = re.compile(r"[!-~]{1,256}")
+
 logger = logging.getLogger(__name__)
 background_tasks = BackgroundTaskManager()
 
@@ -101,6 +103,9 @@ async def create_response(
     requested_model = body.get("model")
     if not requested_model or not isinstance(requested_model, str):
         raise HTTPException(status_code=400, detail="Missing 'model' in request body")
+    if not _MODEL_ID.fullmatch(requested_model):
+        # Same rule as the schema ModelId: the value is logged below.
+        raise HTTPException(status_code=400, detail="Invalid 'model' value")
 
     stream = bool(body.get("stream", False))
 
@@ -117,8 +122,10 @@ async def create_response(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Model '{requested_model}' is not available on the Responses API. "
-                f"Available model families: {sorted(get_mantle_model_regions())}; "
+                # Don't list the registry: it includes models this key
+                # isn't granted. GET /v1/models shows what the key can use.
+                "This model is not available on the Responses API. "
+                "See GET /v1/models for the models this key can use; "
                 "use /v1/chat/completions for other models."
             ),
         )

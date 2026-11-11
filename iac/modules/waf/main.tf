@@ -45,8 +45,20 @@ resource "aws_wafv2_web_acl" "main" {
                   uri_path {}
                 }
 
+                # Match the path the app routes on: Starlette percent-decodes
+                # it, so /v1/ch%61t/completions must count as chat too.
                 text_transformation {
                   priority = 0
+                  type     = "URL_DECODE"
+                }
+
+                text_transformation {
+                  priority = 1
+                  type     = "NORMALIZE_PATH"
+                }
+
+                text_transformation {
+                  priority = 2
                   type     = "LOWERCASE"
                 }
               }
@@ -84,7 +96,8 @@ resource "aws_wafv2_web_acl" "main" {
   }
 
   # Rule 2: Rate limit on all inference endpoints
-  # /v1/chat/completions (OpenAI), /v1/messages (Anthropic), /v1beta/models/ (Gemini)
+  # /v1/chat/completions, /v1/responses, /v1/embeddings (OpenAI),
+  # /v1/messages (Anthropic), /v1beta/models/ (Gemini)
   rule {
     name     = "rate-limit-inference"
     priority = 2
@@ -109,8 +122,20 @@ resource "aws_wafv2_web_acl" "main" {
                   uri_path {}
                 }
 
+                # Match the path the app routes on: Starlette percent-decodes
+                # it, so /v1/ch%61t/completions must count as chat too.
                 text_transformation {
                   priority = 0
+                  type     = "URL_DECODE"
+                }
+
+                text_transformation {
+                  priority = 1
+                  type     = "NORMALIZE_PATH"
+                }
+
+                text_transformation {
+                  priority = 2
                   type     = "LOWERCASE"
                 }
               }
@@ -125,8 +150,74 @@ resource "aws_wafv2_web_acl" "main" {
                   uri_path {}
                 }
 
+                # Match the path the app routes on: Starlette percent-decodes
+                # it, so /v1/ch%61t/completions must count as chat too.
                 text_transformation {
                   priority = 0
+                  type     = "URL_DECODE"
+                }
+
+                text_transformation {
+                  priority = 1
+                  type     = "NORMALIZE_PATH"
+                }
+
+                text_transformation {
+                  priority = 2
+                  type     = "LOWERCASE"
+                }
+              }
+            }
+
+            statement {
+              byte_match_statement {
+                search_string         = "/v1/responses"
+                positional_constraint = "STARTS_WITH"
+                field_to_match {
+                  uri_path {}
+                }
+
+                # Match the path the app routes on: Starlette percent-decodes
+                # it, so /v1/ch%61t/completions must count as chat too.
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+
+                text_transformation {
+                  priority = 1
+                  type     = "NORMALIZE_PATH"
+                }
+
+                text_transformation {
+                  priority = 2
+                  type     = "LOWERCASE"
+                }
+              }
+            }
+
+            statement {
+              byte_match_statement {
+                search_string         = "/v1/embeddings"
+                positional_constraint = "STARTS_WITH"
+                field_to_match {
+                  uri_path {}
+                }
+
+                # Match the path the app routes on: Starlette percent-decodes
+                # it, so /v1/ch%61t/completions must count as chat too.
+                text_transformation {
+                  priority = 0
+                  type     = "URL_DECODE"
+                }
+
+                text_transformation {
+                  priority = 1
+                  type     = "NORMALIZE_PATH"
+                }
+
+                text_transformation {
+                  priority = 2
                   type     = "LOWERCASE"
                 }
               }
@@ -141,8 +232,20 @@ resource "aws_wafv2_web_acl" "main" {
                   uri_path {}
                 }
 
+                # Match the path the app routes on: Starlette percent-decodes
+                # it, so /v1/ch%61t/completions must count as chat too.
                 text_transformation {
                   priority = 0
+                  type     = "URL_DECODE"
+                }
+
+                text_transformation {
+                  priority = 1
+                  type     = "NORMALIZE_PATH"
+                }
+
+                text_transformation {
+                  priority = 2
                   type     = "LOWERCASE"
                 }
               }

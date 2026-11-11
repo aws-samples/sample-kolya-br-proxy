@@ -19,6 +19,9 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 
+ALLOWED_PORTS = frozenset({80, 443})
+
+
 class UnsafeURLError(ValueError):
     """The URL was refused or could not be fetched within limits."""
 
@@ -55,7 +58,14 @@ async def fetch_public_url(
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise UnsafeURLError("only http and https URLs are allowed")
     host = parts.hostname
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError as e:
+        raise UnsafeURLError("invalid port") from e
+    # Images live on web ports. Any other port only turns the fetch into a
+    # probe of which services a public host runs.
+    if port not in ALLOWED_PORTS:
+        raise UnsafeURLError("only ports 80 and 443 are allowed")
 
     async def _fetch() -> tuple[bytes, str]:
         ip = await _resolve_public(host, port)

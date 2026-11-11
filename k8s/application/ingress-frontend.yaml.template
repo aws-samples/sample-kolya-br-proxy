@@ -8,6 +8,8 @@ metadata:
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
+    # TLS 1.2+ only; the controller default still accepts TLS 1.0/1.1.
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
     alb.ingress.kubernetes.io/certificate-arn: ${FRONTEND_ACM_CERT}
     alb.ingress.kubernetes.io/load-balancer-name: kolya-br-proxy-frontend-alb
     alb.ingress.kubernetes.io/tags: Environment=${ENVIRONMENT},Project=kolya-br-proxy,Service=frontend

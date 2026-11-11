@@ -5,6 +5,7 @@ OpenAI API compatible request/response schemas.
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from app.schemas.common import ModelId
 
 
 class PromptCacheControl(BaseModel):
@@ -58,7 +59,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     """OpenAI chat completion request with Bedrock extension support."""
 
-    model: str
+    model: ModelId
     messages: List[ChatMessage]
     temperature: Optional[float] = Field(default=1.0, ge=0.0, le=2.0)
     top_p: Optional[float] = Field(default=1.0, ge=0.0, le=1.0)
