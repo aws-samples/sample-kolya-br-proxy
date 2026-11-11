@@ -84,6 +84,21 @@ print_step() {
     echo -e "${MAGENTA}▶ Step $1/3: $2${NC}"
 }
 
+# Least-privilege DB role URL: same host/database as the master URL, the
+# given role, and the password already stored for it (or a new random one).
+_role_db_url() {
+    local master_url="$1" role="$2" existing="$3"
+    python3 - "$master_url" "$role" "$existing" <<'PY'
+import secrets, sys
+from urllib.parse import urlsplit, urlunsplit
+master, role, existing = sys.argv[1], sys.argv[2], sys.argv[3]
+m = urlsplit(master)
+password = urlsplit(existing).password if existing else None
+host = m.hostname + (f":{m.port}" if m.port else "")
+print(urlunsplit((m.scheme, f"{role}:{password or secrets.token_urlsafe(32)}@{host}", m.path, m.query, "")))
+PY
+}
+
 print_substep() {
     echo -e "${CYAN}  → $1${NC}"
 }
@@ -700,9 +715,21 @@ run_config_wizard() {
         exit 1
     fi
 
+    # Keep the least-privilege role URLs across redeploys (the secret is
+    # rewritten wholesale below); create them on the first deploy.
+    local existing_secret db_url_migrate db_url_app
+    existing_secret=$(aws secretsmanager get-secret-value --secret-id "$secret_name" \
+      --region "$cfg_region" --query SecretString --output text 2>/dev/null || echo '{}')
+    db_url_migrate=$(_role_db_url "$cfg_database_url" kbp_migrator \
+      "$(echo "$existing_secret" | jq -r '."database-url-migrate" // empty' 2>/dev/null)")
+    db_url_app=$(_role_db_url "$cfg_database_url" kbp_app \
+      "$(echo "$existing_secret" | jq -r '."database-url-app" // empty' 2>/dev/null)")
+
     local secret_json
     secret_json=$(jq -n \
       --arg db_url "$cfg_database_url" \
+      --arg db_url_migrate "$db_url_migrate" \
+      --arg db_url_app "$db_url_app" \
       --arg jwt "$cfg_jwt_secret" \
       --arg ms_client_id "$cfg_ms_client_id" \
       --arg ms_client_secret "$cfg_ms_client_secret" \
@@ -717,6 +744,8 @@ run_config_wizard() {
       --arg region "$cfg_region" \
       '{
         "database-url": $db_url,
+        "database-url-migrate": $db_url_migrate,
+        "database-url-app": $db_url_app,
         "jwt-secret-key": $jwt,
         "aws-access-key-id": "",
         "aws-secret-access-key": "",
